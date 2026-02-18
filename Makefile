@@ -4,7 +4,7 @@ MAKEFLAGS += -j
 # compiler and flags
 CXX = g++
 CXXFLAGS = -Wall -Wextra -std=c++11 -O2
-INCLUDES = -Isrc -Isrc/global -Ilibs/hdf5/include
+INCLUDES = -Isrc -Isrc/global
 
 # directories
 SRC_DIR = src

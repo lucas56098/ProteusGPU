@@ -1,0 +1,36 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Update package list
+        run: sudo apt-get update
+
+      - name: Install HDF5
+        run: sudo apt-get install -y libhdf5-dev
+
+      - name: Build
+        run: |
+          cd ${{ github.workspace }}
+          make clean
+          make SYSTYPE=Ubuntu
+
+      - name: Verify executable
+        run: |
+          if [ -f ./ProteusGPU ]; then
+            echo "Build successful! Executable created."
+            ./ProteusGPU --version 2>/dev/null || echo "Executable exists."
+          else
+            echo "Error: Executable not created"
+            exit 1
+          fi
