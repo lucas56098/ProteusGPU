@@ -10,3 +10,6 @@ USE_HDF5
 
 # Debug
 #DEBUG_MODE
+
+# Dry-run mode for CI/CD (exits after printing welcome banner)
+#DRY_RUN

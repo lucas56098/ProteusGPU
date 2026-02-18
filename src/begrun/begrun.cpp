@@ -36,6 +36,11 @@ void print_banner() {
 #elif dim_3D
     std::cout << "Running in 3D mode" << std::endl;
 #endif
+
+    // early exit for CI test
+#ifdef DRY_RUN
+    exit(EXIT_SUCCESS);
+#endif
 }
 
 InputHandler loadInputFiles(int argc, char* argv[]) {
