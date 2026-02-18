@@ -1,0 +1,9 @@
+# Input/Output
+ic_file = IC.hdf5
+output_directory = ./output/
+output_mesh_file = mesh_output.hdf5
+
+# K-NN options
+knn_k = 20
+
+# more to follow i guess...

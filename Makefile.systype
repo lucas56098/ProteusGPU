@@ -1,0 +1,5 @@
+# Select your system type by uncommenting exactly one line.
+# If your system is not supported: add it here and the corresponding lines in the makefile
+
+#SYSTYPE = Ubuntu
+SYSTYPE = macOS

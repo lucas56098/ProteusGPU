@@ -1,0 +1,8 @@
+/build/
+/libs/
+/output/
+create_test_ic.py
+IC.hdf5
+ProteusGPU
+/visualize/
+.DS_Store
