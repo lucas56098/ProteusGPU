@@ -12,4 +12,5 @@ USE_HDF5
 #DEBUG_MODE
 
 # Dry-run mode for CI/CD (exits after printing welcome banner)
-#DRY_RUN
+# NOTE: turning this off requires a correct IC.hdf5 file...
+DRY_RUN

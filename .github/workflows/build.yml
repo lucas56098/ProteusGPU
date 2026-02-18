@@ -22,8 +22,6 @@ jobs:
       - name: Build
         run: |
           cd ${{ github.workspace }}
-          # Enable DRY_RUN for CI/CD testing
-          sed -i 's/#DRY_RUN/DRY_RUN/' Config.sh
           make clean
           make SYSTYPE=Ubuntu
 
