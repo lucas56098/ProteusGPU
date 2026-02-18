@@ -5,6 +5,11 @@
 #dim_2D
 dim_3D
 
+# GPU settings
+#CUDA -- not yet implemented
+#HIP -- not yet implemented
+CPU_DEBUG # -- mandatory for now
+
 # HDF5 for IC and output (currently mandatory)
 USE_HDF5
 

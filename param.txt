@@ -3,6 +3,9 @@ ic_file = IC.hdf5
 output_directory = ./output/
 output_mesh_file = mesh_output.hdf5
 
+# general options
+box_size = 1000
+
 # K-NN options
 knn_k = 20
 

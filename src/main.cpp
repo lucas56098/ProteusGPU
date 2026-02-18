@@ -27,8 +27,9 @@ int main(int argc, char* argv[]) {
     std::vector<double> pts = icData.seedpos;
 
 
-    // --- actual code starts here ---
+    // -------- actual code starts here --------
     _K_ = input.getParameterInt("knn_k");
+    _boxsize_ = input.getParameterDouble("box_size");
 
     // define knn problem
     knn_problem *knn = NULL;
@@ -36,9 +37,16 @@ int main(int argc, char* argv[]) {
     // prepare knn problem
     knn = knn::init((double3*) pts.data(), icData.seedpos_dims[0]);
 
+    // copy d_stored_points back to cpu
+    gpuMemcpy(pts.data(), knn->d_stored_points, knn->len_pts * sizeof(double3));
+
+    // -------- testing area --------
+    std::cout << knn->d_stored_points[0].x << ", " << knn->d_stored_points[0].y << ", " << knn->d_stored_points[0].z << std::endl;
+
+    std::cout << knn->d_stored_points[12999].x << ", " << knn->d_stored_points[12999].y << ", " << knn->d_stored_points[12999].z << std::endl;
 
 
-    knn::printInfo();
+    // ----------------
 
     knn::knn_free(&knn);
 
@@ -47,5 +55,6 @@ int main(int argc, char* argv[]) {
     // here meshData would have to be filled with actual data
     //if (!output.writeMeshFile(input.getParameter("output_mesh_file"), meshData)) {return EXIT_FAILURE;}
 
+    knn::printInfo();
     return 0;
 }

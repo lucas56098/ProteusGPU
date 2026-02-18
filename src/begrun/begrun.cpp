@@ -37,6 +37,10 @@ void print_banner() {
     std::cout << "Running in 3D mode" << std::endl;
 #endif
 
+#ifdef CPU_DEBUG
+    std::cout << "CPU debug mode enabled" << std::endl;
+#endif
+
     // early exit for CI test
 #ifdef DRY_RUN
     exit(EXIT_SUCCESS);

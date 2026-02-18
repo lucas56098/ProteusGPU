@@ -8,7 +8,9 @@ Work in progress: A GPU accelerated moving mesh hydrodynamics code.
 
 Dont expect anything to work yet for the forseeable future.
 
-Idea is to combine: ["Meshless Voronoi on the GPU" [Ray et. al 2018]](https://doi.org/10.1145/3272127.3275092) with a moving mesh hydro solver similar to ["AREPO" [Springel 2010]](https://academic.oup.com/mnras/article/401/2/791/1147356) ported to GPU. Doing this in a toy code allows to explore various ideas first.
+The idea is to combine: ["Meshless Voronoi on the GPU" [Ray et. al 2018]](https://doi.org/10.1145/3272127.3275092) with a moving mesh hydro solver similar to ["AREPO" [Springel 2010]](https://academic.oup.com/mnras/article/401/2/791/1147356) ported to GPU. Doing this in a toy code allows to explore various ideas first.
+
+This project is being done during my master's thesis, supervised by Dylan Nelson, at the Institute of Theoretical Astrophysics, Heidelberg University.
 
 ## Building
 
