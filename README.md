@@ -2,7 +2,7 @@
 
 [![Build and Test](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml/badge.svg)](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml) [![Version 0.0.1](https://img.shields.io/badge/version-0.0.1-blue)](https://github.com/lucas56098/ProteusGPU/releases)
 
-![Banner](/figures/banner_v1.jpg)
+![Banner](/figures/banner_v2.jpg)
 
 Work in progress: A GPU accelerated moving mesh hydrodynamics code.
 
