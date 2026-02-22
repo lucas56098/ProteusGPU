@@ -113,7 +113,14 @@ bool InputHandler::getParameterBool(const std::string& key) const {
 // opens IC.hdf5 file and reads initial conditions into ICData struct
 // will get extended if we read more than dimension, extend and seedpoints...
 bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
-    
+   
+    // check that file exists
+    std::ifstream f(filename);
+    if (!f.good()) {
+	std::cerr << "Error: IC file [" << filename << "] does not exist!" << std::endl;
+        return false;
+    }
+
     // open the file
     hid_t file_id = H5Fopen(filename.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file_id < 0) {

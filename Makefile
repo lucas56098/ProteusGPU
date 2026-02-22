@@ -53,6 +53,11 @@ ifeq ($(SYSTYPE),macOS)
 	HDF5_LIBS ?= -L/opt/homebrew/opt/hdf5/lib -lhdf5
 endif
 
+ifeq ($(SYSTYPE),MPCDF)
+        HDF5_CFLAGS ?= -I${HDF5_HOME}/include
+        HDF5_LIBS ?= -L${HDF5_HOME}/lib -lhdf5
+endif
+
 # ADD YOUR SYSTEM TYPE AND HDF5 PATHS HERE IF NOT SUPPORTED
 # ifeq ($(SYSTYPE),YourSystype)
 # ...
