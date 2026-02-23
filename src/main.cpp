@@ -30,18 +30,7 @@ int main(int argc, char* argv[]) {
 
 
     // -------- actual code starts here --------
-    _K_ = input.getParameterInt("knn_k");
-    _boxsize_ = input.getParameterDouble("box_size");
-    _KNN_BLOCK_SIZE_ = input.getParameterInt("knn_block_size");
-    _VORO_BLOCK_SIZE_ = input.getParameterInt("voro_block_size");
-
-
     voronoi::compute_mesh((POINT_TYPE*) pts.data(), icData, input, output);
-
-    // write mesh file
-    //MeshCellData meshData;
-    // here meshData would have to be filled with actual data
-    //if (!output.writeMeshFile(input.getParameter("output_mesh_file"), meshData)) {return EXIT_FAILURE;}
 
     std::cout << "Done." << std::endl;
 

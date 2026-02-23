@@ -13,6 +13,23 @@ typedef struct{
 typedef struct{
     double x, y, z;
 } double3;
+
+struct double4 {
+    double x, y, z, w;
+};
+
+inline double4 make_double4(double x, double y, double z, double w) {
+    return {x, y, z, w};
+}
+
+typedef unsigned char uchar;
+struct uchar3 {
+    uchar x, y, z;
+};
+
+inline uchar3 make_uchar3(uchar x, uchar y, uchar z) {
+    return {x, y, z};
+}
 #endif
 
 #ifdef dim_2D
@@ -26,10 +43,7 @@ typedef double3 POINT_TYPE;
 #endif
 
 #pragma once
-extern int _K_;
 extern double _boxsize_;
-extern int _KNN_BLOCK_SIZE_;
-extern int _VORO_BLOCK_SIZE_;
 
 // abstraction layer to later switch between CPU_DEBUG, CUDA and HIP defines
 // for now just CPU stuff

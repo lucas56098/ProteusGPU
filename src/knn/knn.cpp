@@ -237,8 +237,8 @@ void solve(knn_problem* knn) {
 void cpu_knearest(int blocksPerGrid, int threadsPerBlock, int N_grid, int len_pts, const int* d_ptrs, const int *d_counters, const POINT_TYPE* d_stored_points, int N_cell_offsets, const int* d_cell_offsets, const double* d_cell_offset_dists, unsigned int* d_knearest) {
 
     // __shared__ : each thread updates its k-nearest
-    unsigned int* knearest = (unsigned int*)malloc(_K_ * _KNN_BLOCK_SIZE_ * sizeof(unsigned int));
-    double* knearest_dists = (double*)malloc(_K_ * _KNN_BLOCK_SIZE_ * sizeof(double));
+    unsigned int knearest[_K_ * _KNN_BLOCK_SIZE_];
+    double knearest_dists[_K_ * _KNN_BLOCK_SIZE_];
 
     for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
         for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
@@ -309,9 +309,6 @@ void cpu_knearest(int blocksPerGrid, int threadsPerBlock, int N_grid, int len_pt
             }
         }
     }
-
-    free(knearest);
-    free(knearest_dists);
 }
 #endif
 

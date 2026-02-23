@@ -129,6 +129,19 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
         H5Sclose(dataspace_1d);
     }
 
+    // write face_counts (number of faces per cell)
+    if (!meshData.face_counts.empty()) {
+        hsize_t dims_1d[1] = {meshData.face_counts.size()};
+        hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+        hid_t dataset_id = H5Dcreate(cells_group, "face_counts", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        if (dataset_id >= 0) {
+            H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.face_counts.data());
+            H5Dclose(dataset_id);
+            std::cout << "  face_counts: " << meshData.face_counts.size() << " cells" << std::endl;
+        }
+        H5Sclose(dataspace_1d);
+    }
+
     // create faces subgroup
     hid_t faces_group = H5Gcreate(cells_group, "faces", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     if (faces_group < 0) {

@@ -4,6 +4,7 @@
 #include <chrono>
 #include "begrun.h"
 #include "../io/input.h"
+#include "../global/allvars.h"
 
 namespace begrun {
 
@@ -59,6 +60,8 @@ InputHandler loadInputFiles(int argc, char* argv[]) {
         std::cerr << "Failed to load parameters. Exiting." << std::endl;
         exit(EXIT_FAILURE);
     }
+
+    _boxsize_ = input.getParameterDouble("box_size");
 
     return input;
 }

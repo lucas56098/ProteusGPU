@@ -7,11 +7,4 @@ output_knn_file = knn_output.hdf5
 # general options
 box_size = 1000
 
-# K-NN options
-knn_k = 20
-knn_block_size = 64     # number of threads per GPU block
-
-# Voronoi options
-voro_block_size = 16    # number of threads per GPU block
-
 # more to follow i guess...

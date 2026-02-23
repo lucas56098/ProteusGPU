@@ -37,6 +37,7 @@ struct MeshCellData {
     std::vector<double> seeds;         // numCells x dimension
     std::vector<hsize_t> seeds_dims;   // [numCells, dimension]
     std::vector<double> volumes;
+    std::vector<int> face_counts;      // number of faces per cell
     MeshFaceData faces;
 };
 

@@ -25,3 +25,10 @@ USE_HDF5
 # Dry-run mode for CI/CD (exits after printing welcome banner)
 # NOTE: turning this off requires a correct IC.hdf5 file...
 DRY_RUN
+
+# Compile-time constants for KNN and Voronoi
+_K_=190                  # number of nearest neighbors
+_KNN_BLOCK_SIZE_=64     # number of threads per block for KNN
+_VORO_BLOCK_SIZE_=16    # number of threads per block for Voronoi
+_MAX_P_=64              # max number of clipping planes per Voronoi cell
+_MAX_T_=96              # max number of triangles per Voronoi cell
