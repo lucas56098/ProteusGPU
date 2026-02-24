@@ -1,9 +1,63 @@
 # parallel build is default
 MAKEFLAGS += -j
 
-# compiler and flags
-CXX = g++
-CXXFLAGS = -Wall -Wextra -std=c++11 -O2
+# load Config.sh options and convert them to -D flags FIRST (before compiler setup)
+SHELL := /bin/bash
+CONFIG_DEFINES := $(shell grep -v "^\#" Config.sh | grep -v "^$$" | grep -v "^!" | awk 'NF {print "-D" $$1}')
+
+# system-specific includes
+SYSTYPE ?= $(shell uname -s)
+-include Makefile.systype
+
+# Check for DEBUG_MODE FIRST (before compiler setup)
+DEBUG_MODE_ENABLED := $(findstring DEBUG_MODE,$(CONFIG_DEFINES))
+
+# Determine compiler based on DEBUG_MODE and platform
+ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
+	# Debug mode: use clang on macOS for better ASan support, g++ elsewhere
+	ifeq ($(SYSTYPE),macOS)
+		CXX = clang++
+		COMPILER_MESSAGE = clang++ (DEBUG mode, macOS)
+	else
+		CXX = g++
+		COMPILER_MESSAGE = g++ (DEBUG mode, Linux/other)
+	endif
+else
+	# Release mode: use platform-specific compiler
+	ifeq ($(SYSTYPE),macOS)
+		CXX = g++-15
+		COMPILER_MESSAGE = g++-15 (macOS)
+	else
+		CXX = g++
+		COMPILER_MESSAGE = g++ (Linux/other)
+	endif
+endif
+
+# Base compiler flags
+CXXFLAGS = -Wall -Wextra -std=c++11
+
+# Check for DEBUG_MODE and set optimization flags
+ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
+	# Debug mode: enable AddressSanitizer
+	CXXFLAGS += -O0 -g -fsanitize=address
+	LDFLAGS = -fsanitize=address
+	BUILD_MODE_MESSAGE = DEBUG mode (AddressSanitizer enabled)
+else
+	# Release mode: optimize for performance
+	CXXFLAGS += -O3
+	LDFLAGS = 
+	BUILD_MODE_MESSAGE = RELEASE mode (optimized)
+endif
+
+# Check if OpenMP is enabled
+ifneq (,$(findstring USE_OPENMP,$(CONFIG_DEFINES)))
+	CXXFLAGS += -fopenmp
+	LDFLAGS += -fopenmp
+	OPENMP_MESSAGE = OpenMP enabled
+else
+	OPENMP_MESSAGE = OpenMP disabled
+endif
+
 INCLUDES = -Isrc -Isrc/global
 
 # directories
@@ -38,14 +92,6 @@ OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI
 # name of executable (see: https://en.wikipedia.org/wiki/Proteus :D)
 TARGET = ProteusGPU
 
-# load Config.sh options and convert them to -D flags
-SHELL := /bin/bash
-CONFIG_DEFINES := $(shell grep -v "^\#" Config.sh | grep -v "^$$" | grep -v "^!" | awk 'NF {print "-D" $$1}')
-
-# system-specific includes
-SYSTYPE ?= $(shell uname -s)
--include Makefile.systype
-
 ifeq ($(SYSTYPE),Ubuntu)
 	HDF5_CFLAGS ?= -I/usr/include/hdf5/serial
 	HDF5_LIBS ?= -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5
@@ -78,7 +124,12 @@ CXXFLAGS += $(CONFIG_DEFINES)
 
 # default target
 all: $(TARGET)
+	@echo "=========================================="
 	@echo "Build complete! Executable: $(TARGET)"
+	@echo "Compiler: $(COMPILER_MESSAGE)"
+	@echo "Mode: $(BUILD_MODE_MESSAGE)"
+	@echo "OpenMP: $(OPENMP_MESSAGE)"
+	@echo "=========================================="
 	@echo "Run with: ./$(TARGET)"
 
 $(TARGET): $(OBJECTS) | $(BUILD_DIR)

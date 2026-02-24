@@ -244,6 +244,9 @@ void cpu_knearest(int blocksPerGrid, int threadsPerBlock, int N_grid, int len_pt
         for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
             int point_in = threadId + blockId * threadsPerBlock;
             if (point_in >= len_pts) return;
+            if (point_in % 1000000 == 0) {
+                std::cout << "Processing point " << point_in << " / " << len_pts << std::endl;
+            }
 
             // point considered by this thread
             POINT_TYPE p = d_stored_points[point_in];

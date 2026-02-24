@@ -28,7 +28,6 @@ void print_banner() {
     std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
     std::cout << "==========================================================================" << std::endl;
 
-    std::this_thread::sleep_for(std::chrono::seconds(1));
 
 #if (!defined(dim_3D) && !defined(dim_2D)) || (defined(dim_3D) && defined(dim_2D))
     #error "Choose a dimension in Config.sh: [dim_3D] OR [dim_2D]"

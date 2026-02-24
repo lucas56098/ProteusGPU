@@ -33,9 +33,11 @@ namespace voronoi {
         // prepare knn problem
         int n_pts = icData.seedpos_dims[0];
         knn = knn::init((POINT_TYPE*) pts_data, n_pts);
+        std::cout << "KNN problem initialized." << std::endl;
 
         // solve knn problem
         knn::solve(knn);
+        std::cout << "KNN problem solved." << std::endl;
 
         #ifdef VERIFY
         if (!knn::verify(knn)) {exit(EXIT_FAILURE);}
@@ -70,7 +72,9 @@ namespace voronoi {
         meshData.header.store_edge_coords = true;
         meshData.seeds_dims = {(hsize_t)n_pts, DIMENSION};
 
+        std::cout << "Computing Voronoi cells" << std::endl;
         compute_cells(icData.seedpos_dims[0], knn, stat, meshData);
+        std::cout << "Voronoi cells computed." << std::endl;
 
         // set final dims for face data
         hsize_t numFaces = meshData.faces.area.size();
@@ -96,10 +100,10 @@ namespace voronoi {
 
         cpu_compute_cell(blocksPerGrid, threadsPerBlock, N_seedpts, (double*)knn->d_stored_points, knn->d_knearests, gpu_stat.gpu_data, meshData); // add stats and output later ... :D
         
-        gpu_stat.gpu2cpu();
+        //gpu_stat.gpu2cpu();
         //for (int i = 0; i < N_seedpts; i++) {
         //    std::cout << gpu_stat.cpu_data[i] << std::endl;
-        //}
+        //} //not used so far... have to think about that
     }
 
 #ifdef CPU_DEBUG
@@ -109,7 +113,9 @@ namespace voronoi {
             for (threadId = 0; threadId < threadsPerBlock; threadId++) {
                 int seed_id = threadsPerBlock * blockId + threadId;
                 if (seed_id >= N_seedpts) {break;}
-                
+                if (seed_id % 1000000 == 0) {
+                    std::cout << "Processing cell " << seed_id << " / " << N_seedpts << std::endl;
+                }
                 // compute a single voronoi cell in here...
 
                 //create and initalize convex cell
