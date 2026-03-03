@@ -1,3 +1,6 @@
 #include "allvars.h"
 
-// maybe we need global variables?
+#ifdef CPU_DEBUG
+int3 blockId;
+int3 threadId;
+#endif

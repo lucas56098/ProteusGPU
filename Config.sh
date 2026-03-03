@@ -14,7 +14,7 @@ CPU_DEBUG # -- mandatory for now
 USE_HDF5
 
 # Debug
-#DEBUG_MODE
+#DEBUG_MODE # also enables writing voronoi edges...
 
 # OpenMP parallelization (requires g++-15 on macOS)
 # Uncomment to enable OpenMP for parallelizing loops (still work in progrss)

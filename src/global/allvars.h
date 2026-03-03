@@ -9,6 +9,15 @@
 
 // eventually i should split these into data_types, gpu_utils, math_utils :D
 
+enum Status {
+        triangle_overflow = 0,
+        vertex_overflow = 1,
+        inconsistent_boundary = 2,
+        security_radius_not_reached = 3,
+        success = 4,
+        needs_exact_predicates = 5
+    };
+
 #ifdef CPU_DEBUG
 // explicitly define types that exist in CUDA and HIP but not for CPU only
 
@@ -59,6 +68,12 @@ typedef uchar2 VERT_TYPE;
 #define DIMENSION 3
 typedef double3 POINT_TYPE;
 typedef uchar3 VERT_TYPE;
+#endif
+
+#ifdef CPU_DEBUG
+    #pragma once
+    extern int3 blockId;
+    extern int3 threadId;
 #endif
 
 // abstraction layer to later switch between CPU_DEBUG, CUDA and HIP defines
