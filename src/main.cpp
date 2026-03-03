@@ -10,29 +10,31 @@
 #include "voronoi/voronoi.h"
 
 int main(int argc, char* argv[]) {
-    
-    // welcome
-    begrun::print_banner();
+    // welcome :D
 
-    // load param.txt
-    InputHandler input = begrun::loadInputFiles(argc, argv);
-    
-    // initalize output handler
-    std::string outputDir = input.getParameter("output_directory");
-    OutputHandler output(outputDir);
-    if (!output.initialize()) return EXIT_FAILURE;
-
-    // read IC file
+    // structs for input, output and IC handling
+    InputHandler input;
     ICData icData;
-    if (!input.readICFile(input.getParameter("ic_file"), icData)) {return EXIT_FAILURE;}
+    OutputHandler output;
 
-    std::vector<double> pts = icData.seedpos;
-
+    // say hi and fill/prepare structs
+    begrun::begrun(argc, argv, input, icData, output);
 
     // -------- actual code starts here --------
-    voronoi::compute_mesh((POINT_TYPE*) pts.data(), icData, input, output);
+    VMesh* mesh = voronoi::compute_mesh((POINT_TYPE*) icData.seedpos.data(), icData, input, output);
 
-    std::cout << "Done." << std::endl;
+    // convert VMesh to MeshCellData and write to HDF5 file
+    #ifdef USE_HDF5
+    MeshCellData meshData;
+    voronoi::vmesh_to_meshdata(mesh, meshData);
+
+    std::string mesh_output_file = input.getParameter("output_mesh_file");
+    if (!output.writeMeshFile(mesh_output_file, meshData)) { exit(EXIT_FAILURE); }
+    #endif
+
+    voronoi::free_vmesh(mesh);
+
+    std::cout << "MAIN: Done." << std::endl;
 
     return 0;
 }

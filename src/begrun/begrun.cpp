@@ -4,10 +4,48 @@
 #include <chrono>
 #include "begrun.h"
 #include "../io/input.h"
+#include "../io/output.h"
 #include "../global/allvars.h"
 
 namespace begrun {
 
+
+// initalize Proteus
+void begrun(int argc, char* argv[], InputHandler& input, ICData& icData, OutputHandler& output) {
+
+    // welcome message
+    print_banner();
+
+    // check compiled dimension
+    #ifdef dim_2D
+    std::cout << "BEGRUN: Running in 2D mode" << std::endl;
+    #elif dim_3D
+    std::cout << "BEGRUN: Running in 3D mode" << std::endl;
+    #endif
+
+    // check if debug mode is enabled
+    #ifdef CPU_DEBUG
+    std::cout << "BEGRUN: CPU debug mode enabled" << std::endl;
+    #endif
+
+    // early exit for CI test
+    #ifdef DRY_RUN
+    exit(EXIT_SUCCESS);
+    #endif
+
+    // load param.txt
+    input = loadInputFiles(argc, argv);
+
+    // init output folder
+    output = OutputHandler(input.getParameter("output_directory"));
+    if (!output.initialize()) {exit(EXIT_FAILURE);}
+
+    // read IC file
+    if(!input.readICFile(input.getParameter("ic_file"), icData)) {exit(EXIT_FAILURE);}
+}
+
+
+// prints welcome message
 void print_banner() {
     std::cout << "==========================================================================" << std::endl;
     std::cout << R"(                                                                                                                                                       
@@ -18,7 +56,7 @@ void print_banner() {
          | |   | | | (_) | ||  __/ |_| \__ \ | |__| | |    | |__| |
          |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/ 
 
-)" << std::endl;
+    )" << std::endl;
     std::cout << "==========================================================================" << std::endl;
     std::cout << "A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics" << std::endl;
     std::cout << "==========================================================================" << std::endl;
@@ -27,40 +65,24 @@ void print_banner() {
     std::cout << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
     std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
     std::cout << "==========================================================================" << std::endl;
-
-
-#if (!defined(dim_3D) && !defined(dim_2D)) || (defined(dim_3D) && defined(dim_2D))
-    #error "Choose a dimension in Config.sh: [dim_3D] OR [dim_2D]"
-#elif dim_2D
-    std::cout << "Running in 2D mode" << std::endl;
-#elif dim_3D
-    std::cout << "Running in 3D mode" << std::endl;
-#endif
-
-#ifdef CPU_DEBUG
-    std::cout << "CPU debug mode enabled" << std::endl;
-#endif
-
-    // early exit for CI test
-#ifdef DRY_RUN
-    exit(EXIT_SUCCESS);
-#endif
 }
 
+
+// loads input parameters from param.txt into InputHandler
 InputHandler loadInputFiles(int argc, char* argv[]) {
 
+    // default is param.txt, otherwise ./ProteusGPU <param_file>
     std::string paramFile = "param.txt";
     if (argc > 1) {
         paramFile = argv[1];
     }
 
+    // load parameters into InputHandler
     InputHandler input(paramFile);
     if (!input.loadParameters()) {
-        std::cerr << "Failed to load parameters. Exiting." << std::endl;
+        std::cerr << "BEGRUN: Failed to load parameters. Exiting." << std::endl;
         exit(EXIT_FAILURE);
     }
-
-    _boxsize_ = input.getParameterDouble("box_size");
 
     return input;
 }

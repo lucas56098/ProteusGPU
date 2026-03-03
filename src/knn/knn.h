@@ -3,6 +3,8 @@
 
 #include <string>
 #include "global/allvars.h"
+#include "../io/input.h"
+#include "../io/output.h"
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -56,6 +58,8 @@ unsigned int* get_permutation(knn_problem* knn);
 
 // verify knn results
 bool verify(knn_problem* knn, double tol = 1e-8, int max_report = 5);
+
+void write_knn_output(knn_problem* knn, ICData& icData, InputHandler& input, OutputHandler& output);
 
 static inline double dist2_point(const POINT_TYPE& a, const POINT_TYPE& b) {
 #ifdef dim_2D

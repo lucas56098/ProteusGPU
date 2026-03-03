@@ -31,7 +31,7 @@ knn_problem* init(POINT_TYPE *pts, int len_pts) {
 
     int N_max = 16;
     if (knn->N_grid < N_max) {
-        std::cerr << "We don't support meshes with less than approx 12700 cells." << std::endl;
+        std::cerr << "KNN: We don't support meshes with less than approx 12700 cells." << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -59,7 +59,7 @@ knn_problem* init(POINT_TYPE *pts, int len_pts) {
                 cell_offsets[knn->N_cell_offsets] = id_offset;
 
                 // compute geometric distance for pruning later on
-                double d = _boxsize_ * (double)(ring - 1) / (double)(knn->N_grid);
+                double d = (double)(ring - 1) / (double)(knn->N_grid); // assumes boxsize = 1.0
                 cell_offset_dists[knn->N_cell_offsets] = d*d;
 
                 knn->N_cell_offsets++;
@@ -78,7 +78,7 @@ knn_problem* init(POINT_TYPE *pts, int len_pts) {
                     cell_offsets[knn->N_cell_offsets] = id_offset;
 
                     // compute geometric distance for pruning later on
-                    double d = _boxsize_ * (double)(ring - 1) / (double)(knn->N_grid);
+                    double d = (double)(ring - 1) / (double)(knn->N_grid); // assumes boxsize = 1.0
                     cell_offset_dists[knn->N_cell_offsets] = d*d;
 
                     knn->N_cell_offsets++;
@@ -206,8 +206,8 @@ void cpu_store(int blocksPerGrid, int threadsPerBlock, const POINT_TYPE* d_point
 
 // get cell index from point position (will be __device__)
 int cellFromPoint(int N_grid, POINT_TYPE point) {
-    int i = (int)floor(point.x * (double) N_grid / _boxsize_);
-    int j = (int)floor(point.y * (double) N_grid / _boxsize_);
+    int i = (int)floor(point.x * (double) N_grid); // assumes boxsize = 1.0
+    int j = (int)floor(point.y * (double) N_grid); // assumes boxsize = 1.0
 
     i = std::max(0, std::min(i, N_grid-1));
     j = std::max(0, std::min(j, N_grid-1));
@@ -215,7 +215,7 @@ int cellFromPoint(int N_grid, POINT_TYPE point) {
 #ifdef dim_2D
     return i + j * N_grid;
 #else
-    int k = (int)floor(point.z * (double) N_grid / _boxsize_);
+    int k = (int)floor(point.z * (double) N_grid); // assumes boxsize = 1.0
     k = std::max(0, std::min(k, N_grid-1));
     return i + j * N_grid + k * N_grid * N_grid;
 #endif
@@ -244,8 +244,8 @@ void cpu_knearest(int blocksPerGrid, int threadsPerBlock, int N_grid, int len_pt
         for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
             int point_in = threadId + blockId * threadsPerBlock;
             if (point_in >= len_pts) return;
-            if (point_in % 1000000 == 0) {
-                std::cout << "Processing point " << point_in << " / " << len_pts << std::endl;
+            if (point_in % 1000000 == 0 || point_in == len_pts - 1) {
+                std::cout << "\rKNN: processing point " << point_in+1 << " / " << len_pts << std::flush;
             }
 
             // point considered by this thread
@@ -302,7 +302,7 @@ void cpu_knearest(int blocksPerGrid, int threadsPerBlock, int N_grid, int len_pt
             // if we exhausted all rings we might not have found all knn
             // mark with DBL_MAX for diagnostics
             if (search_cell_index == N_cell_offsets) {
-                std::cerr << "Not sure if we found all ngb here... Thats a problem!" << std::endl;
+                std::cerr << "KNN: Not sure if we found all ngb here... Thats a problem!" << std::endl;
             }
 
             heapsort(knearest + offs, knearest_dists + offs, _K_);
@@ -349,7 +349,7 @@ void heapsort(unsigned int *keys, double *vals, int size) {
 
 bool verify(knn_problem* knn, double tol, int max_report) {
     if (!knn) {
-        std::cerr << "KNN verify: null knn problem." << std::endl;
+        std::cerr << "KNN VERIFY: null knn problem." << std::endl;
         return false;
     }
 
@@ -359,7 +359,7 @@ bool verify(knn_problem* knn, double tol, int max_report) {
     const unsigned int* knn_idx = knn->d_knearests;
 
     if (!pts || !knn_idx) {
-        std::cerr << "KNN verify: missing data buffers." << std::endl;
+        std::cerr << "KNN VERIFY: missing data buffers." << std::endl;
         return false;
     }
 
@@ -405,19 +405,19 @@ bool verify(knn_problem* knn, double tol, int max_report) {
         if (!ok) {
             mismatches++;
             if (mismatches <= max_report) {
-                std::cerr << "KNN verify mismatch at point " << i
+                std::cerr << "KNN VERIFY: mismatch at point " << i
                           << " (" << mismatches << ")" << std::endl;
             }
         }
     }
 
     if (mismatches > 0) {
-        std::cerr << "KNN verify failed: " << mismatches << " / " << n
+        std::cerr << "KNN VERIFY: failed " << mismatches << " / " << n
                   << " points mismatch." << std::endl;
         return false;
     }
 
-    std::cout << "KNN verify passed: all points match brute-force." << std::endl;
+    std::cout << "KNN VERIFY: passed - all points match brute-force." << std::endl;
     return true;
 }
 
@@ -453,5 +453,22 @@ unsigned int* get_permutation(knn_problem* knn) {
     gpuMemcpy(permutation, knn->d_permutation, knn->len_pts*sizeof(int));
     return permutation;
 }
+
+#ifdef WRITE_KNN_OUTPUT
+    void write_knn_output(knn_problem* knn, ICData& icData, InputHandler& input, OutputHandler& output) {
+        POINT_TYPE* knn_pts = knn::get_points(knn);
+        unsigned int* knn_nearest = knn::get_knearest(knn);
+        unsigned int* knn_permutation = knn::get_permutation(knn);
+
+        std::string knn_output_file = input.getParameter("output_knn_file");
+        if (!output.writeKNNFile(knn_output_file, knn_pts, knn_nearest, knn_permutation, icData.seedpos_dims[0], _K_)) {
+            exit(EXIT_FAILURE);
+        }
+
+        free(knn_pts);
+        free(knn_nearest);
+        free(knn_permutation);
+    }
+#endif
 
 } // namespace knn

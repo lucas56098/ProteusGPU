@@ -7,15 +7,16 @@
 
 #ifdef USE_HDF5
 #include "hdf5.h"
-// structs to hoald IC data read from HDF5 file
+// structs to hold IC data read from HDF5 file
 struct ICHeader {
     int dimension; // 2D or 3D
-    double extent; // box size (for now assume cubic)
+    // additional information might be added here later
 };
 
 struct ICData {
     std::vector<double> seedpos;  // dimension * numSeeds
     std::vector<hsize_t> seedpos_dims;  // [numSeeds, dimension]
+    // other fields might be added later (e.g. hydro quantities)
     ICHeader header;
 };
 #endif

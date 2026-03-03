@@ -15,7 +15,30 @@
  * Sylvain Lefebvre, Bruno L'evy, "Meshless Voronoi on the GPU", ACM Trans. Graph., 
  * vol. 37, no. 6, Dec. 2018. If you build upon this code, we recommend  
  * reading and citing their paper: https://doi.org/10.1145/3272127.3275092
- */ 
+ */
+
+// probably add a voronoi mesh struct here (such that the output mesh data is seperate from the data the mesh stores)
+
+// not used yet but this will be a mesh struct for computation?
+struct VMesh {
+    hsize_t* cell_ids; // cell ids
+    double3* seeds; // seedpoints
+    hsize_t n_seeds; // number of cells
+    double* volumes; // area in 2D, volume in 3D
+    hsize_t* face_counts; // number of faces per cell
+    hsize_t* face_ptr; // pointer to start of each cell's faces in the face arrays
+    int* neighbor_cell; // global id of neighboring cell for each face (how will this work with ghost cells and periodic??)
+    double3* face_normal; // normal vector for each face
+    double* face_area; // edge length in 2D, face area in 3D
+    hsize_t num_faces; // total number of faces in the mesh
+    #ifdef DEBUG_MODE
+    double* edge_coords; // flat array of all face vertex coordinates (DIMENSION doubles per vertex)
+    hsize_t* edge_coords_offsets; // number of vertices per face
+    hsize_t num_edge_coord_verts; // total number of edge coord vertices
+    #endif
+};
+
+
 namespace voronoi {
 
     enum Status {
@@ -50,7 +73,9 @@ namespace voronoi {
 
         double *pts;
         int voro_id;
-        double4 voro_seed;
+        double4 voro_seed; // double4 so all math helpers (minus4, dot3, ...) work uniformly.
+                          // In 2D: z=0, w=1 (set by point_from_ptr). The z component is
+                          // harmless in dot3/cross3 since it's zero.
         uchar first_boundary;
         Status* status;
         uchar nb_v;
@@ -59,77 +84,42 @@ namespace voronoi {
         int plane_vid[_MAX_P_]; // maps plane index to global point id (-1 for boundary planes)
 
         void clip_by_plane(int vid);
-        int new_point(int vid);
+        int new_halfplane(int vid);
         void compute_boundary();
         bool is_security_radius_reached(double4 last_neig);
 
-        #ifdef dim_2D
-        bool edge_is_in_conflict(uchar2 e, double4 eqn) const;
-        void new_edge(uchar i, uchar j);
-        double4 compute_edge_point(uchar2 e, bool persp_divide=true) const;
-        #else
-        bool triangle_is_in_conflict(uchar3 t, double4 eqn) const;
-        void new_triangle(uchar i, uchar j, uchar k);
-        double4 compute_triangle_point(uchar3 t, bool persp_divide=true) const;
-        #endif
+        // unified 2D/3D vertex operations (VERT_TYPE = uchar2 in 2D, uchar3 in 3D)
+        bool vert_is_in_conflict(VERT_TYPE v, double4 eqn) const;
+        void new_vertex(uchar i, uchar j, uchar k = 0);
+        double4 compute_vertex_point(VERT_TYPE v, bool persp_divide=true) const;
     };
 
-    
-    // prob need a different struct to store the actual mesh then
+    // allocation and deallocation of VMesh
+    VMesh* allocate_vmesh(hsize_t n_seeds, hsize_t initial_face_capacity);
+    void free_vmesh(VMesh* mesh);
 
-    void compute_mesh(POINT_TYPE* pts_data, ICData& icData, InputHandler& input, OutputHandler& output);
+    // main mesh computation (returns VMesh*)
+    VMesh* compute_mesh(POINT_TYPE* pts_data, ICData& icData, InputHandler& input, OutputHandler& output);
+    void compute_cells(int N_seedpts, knn_problem* knn, std::vector<Status>& stat, VMesh* mesh);
 
-    void compute_cells(int N_seedpts, knn_problem* knn, std::vector<Status>& stat, MeshCellData& meshData);
-    
-    void cpu_compute_cell(int blocksPerGrid, int threadsPerBlock, int N_seedpts, double* d_stored_points, unsigned int* d_knearests, Status* gpu_stat, MeshCellData& meshData);
+    #ifdef CPU_DEBUG
+    void cpu_compute_cell(int blocksPerGrid, int threadsPerBlock, int N_seedpts, double* d_stored_points, unsigned int* d_knearests, Status* gpu_stat, VMesh* mesh, hsize_t& face_capacity);
+    #endif
 
-    void extract_cell_mesh_data(ConvexCell& cell, MeshCellData& meshData);
+    void extract_cell_to_vmesh(ConvexCell& cell, VMesh* mesh, hsize_t cell_index, hsize_t& face_capacity);
 
+    #ifdef USE_HDF5
+    void vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData);
+    #endif
 
-    // many inline helpers....
-    double4 point_from_ptr(double* f);
-    double4 minus4(double4 A, double4 B);
-    double4 plus4(double4 A, double4 B);
-    double dot4(double4 A, double4 B);
-    double dot3(double4 A, double4 B);
-    double4 mul3(double s, double4 A);
-    double4 cross3(double4 A, double4 B);
-    
-    inline double det2x2(double a11, double a12, double a21, double a22) {
-        return a11*a22 - a12*a21;
-    }
+    double compute_cell_area_2d(const std::vector<double4>& vertices, int nb_t);
+    bool collect_face_vertices(ConvexCell& cell, int p, const std::vector<double4>& vertices, std::vector<double4>& face_verts);
+    double3 compute_face_normal(int p);
+    double compute_face_measure(std::vector<double4>& face_verts, double4 seed, double* cell_volume);
+    void store_face_data(VMesh* mesh, const std::vector<double4>& face_verts, int neighbor_id, double3 normal, double face_measure);
 
-    inline double det3x3(double a11, double a12, double a13, double a21, double a22, double a23, double a31, double a32, double a33) {
-        return a11*det2x2(a22, a23, a32, a33) - a21*det2x2(a12, a13, a32, a33) + a31*det2x2(a12, a13, a22, a23);
-    }
+    void unpermute_vmesh(VMesh* mesh, const unsigned int* sorted_to_original);
 
-    inline double det4x4(
-        double a11, double a12, double a13, double a14,
-        double a21, double a22, double a23, double a24,               
-        double a31, double a32, double a33, double a34,  
-        double a41, double a42, double a43, double a44) {
-
-        double m12 = a21*a12 - a11*a22;
-        double m13 = a31*a12 - a11*a32;
-        double m14 = a41*a12 - a11*a42;
-        double m23 = a31*a22 - a21*a32;
-        double m24 = a41*a22 - a21*a42;
-        double m34 = a41*a32 - a31*a42;
-    
-        double m123 = m23*a13 - m13*a23 + m12*a33;
-        double m124 = m24*a13 - m14*a23 + m12*a43;
-        double m134 = m34*a13 - m14*a33 + m13*a43;
-        double m234 = m34*a23 - m24*a33 + m23*a43;
-    
-        return (m234*a14 - m134*a24 + m124*a34 - m123*a44);
-    }
-
-    template <typename T> void inline swap(T& a, T& b) { T c(a); a = b; b = c; }
-
-    inline void get_minmax3(double& m, double& M, double x1, double x2, double x3) {
-        m = std::min(std::min(x1, x2), x3);
-        M = std::max(std::max(x1, x2), x3);
-    }
 
 } // namespace voronoi
 
