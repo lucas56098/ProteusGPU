@@ -1,5 +1,6 @@
 #ifndef ALLVARS_H
 #define ALLVARS_H
+#pragma once
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -71,10 +72,19 @@ typedef uchar3 VERT_TYPE;
 #endif
 
 #ifdef CPU_DEBUG
-    #pragma once
-    extern int3 blockId;
-    extern int3 threadId;
+extern int3 blockId;
+extern int3 threadId;
 #endif
+
+// structs for input, output and IC handling
+class InputHandler;
+struct ICData;
+class OutputHandler;
+
+extern InputHandler input;
+extern ICData icData;
+extern OutputHandler output;
+extern double buff; // buffer for the periodic bc (box will then be 1 + 2*buff long)
 
 // abstraction layer to later switch between CPU_DEBUG, CUDA and HIP defines
 // for now just CPU stuff

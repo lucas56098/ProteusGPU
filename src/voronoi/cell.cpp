@@ -472,7 +472,7 @@ namespace voronoi {
     // -------- helper functions for this --------
 #ifdef dim_2D
     // compute cell area using shoelace formula (2D only)
-    static double compute_cell_area_2d(const std::vector<double4>& vertices, int nb_t) {
+    double compute_cell_area_2d(const std::vector<double4>& vertices, int nb_t) {
         double cx = 0, cy = 0;
         for (int i = 0; i < nb_t; i++) {
             cx += vertices[i].x;
@@ -632,7 +632,7 @@ namespace voronoi {
 
 #ifdef DEBUG_MODE
     // helper needed in store_face_data
-    static hsize_t edge_coords_capacity_global = 0;
+    hsize_t edge_coords_capacity_global = 0;
     static void ensure_edge_coords_capacity(VMesh* mesh, hsize_t needed_verts) {
         if (needed_verts <= edge_coords_capacity_global) return;
         hsize_t new_capacity = edge_coords_capacity_global * 2;

@@ -35,6 +35,9 @@ struct VMesh {
     hsize_t* edge_coords_offsets; // number of vertices per face
     hsize_t num_edge_coord_verts; // total number of edge coord vertices
     #endif
+
+    hsize_t n_hydro; // number of active cells (n_ghost = n_seeds - n_hydro)
+    hsize_t* ghost_ids; // ids of the corresponding original cell (i.e. the ghost cell with id cell_ids[(n_hydro-1) + 4] has ghost_ids[4])
 };
 
 namespace voronoi {
@@ -62,7 +65,7 @@ namespace voronoi {
     void free_vmesh(VMesh* mesh);
 
     // main mesh computation
-    VMesh* compute_mesh(POINT_TYPE* pts_data, ICData& icData, InputHandler& input, OutputHandler& output);
+    VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points);
     void compute_cells(int N_seedpts, knn_problem* knn, std::vector<Status>& stat, VMesh* mesh);
 
     // kernels

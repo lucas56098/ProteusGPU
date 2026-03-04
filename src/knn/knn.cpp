@@ -31,7 +31,7 @@ knn_problem* init(POINT_TYPE *pts, int len_pts) {
 
     int N_max = 16;
     if (knn->N_grid < N_max) {
-        std::cerr << "KNN: We don't support meshes with less than approx 12700 cells." << std::endl;
+        std::cerr << "KNN: We don't support meshes with less than approx 12700 cells (3D)." << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -247,7 +247,6 @@ void cpu_knearest(int blocksPerGrid, int threadsPerBlock, int N_grid, int len_pt
             if (point_in % 1000000 == 0 || point_in == len_pts - 1) {
                 std::cout << "\rKNN: processing point " << point_in+1 << " / " << len_pts << std::flush;
             }
-
             // point considered by this thread
             POINT_TYPE p = d_stored_points[point_in];
 
@@ -455,7 +454,7 @@ unsigned int* get_permutation(knn_problem* knn) {
 }
 
 #ifdef WRITE_KNN_OUTPUT
-    void write_knn_output(knn_problem* knn, ICData& icData, InputHandler& input, OutputHandler& output) {
+    void write_knn_output(knn_problem* knn) {
         POINT_TYPE* knn_pts = knn::get_points(knn);
         unsigned int* knn_nearest = knn::get_knearest(knn);
         unsigned int* knn_permutation = knn::get_permutation(knn);

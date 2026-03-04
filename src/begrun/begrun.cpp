@@ -11,7 +11,7 @@ namespace begrun {
 
 
 // initalize Proteus
-void begrun(int argc, char* argv[], InputHandler& input, ICData& icData, OutputHandler& output) {
+void begrun(int argc, char* argv[]) {
 
     // welcome message
     print_banner();
@@ -23,9 +23,9 @@ void begrun(int argc, char* argv[], InputHandler& input, ICData& icData, OutputH
     std::cout << "BEGRUN: Running in 3D mode" << std::endl;
     #endif
 
-    // check if debug mode is enabled
+    // check if CPU mode is enabled
     #ifdef CPU_DEBUG
-    std::cout << "BEGRUN: CPU debug mode enabled" << std::endl;
+    std::cout << "BEGRUN: CPU mode enabled" << std::endl;
     #endif
 
     // early exit for CI test
@@ -36,12 +36,13 @@ void begrun(int argc, char* argv[], InputHandler& input, ICData& icData, OutputH
     // load param.txt
     input = loadInputFiles(argc, argv);
 
+    // read IC file
+    if(!input.readICFile(input.getParameter("ic_file"), icData)) {exit(EXIT_FAILURE);}
+
     // init output folder
     output = OutputHandler(input.getParameter("output_directory"));
     if (!output.initialize()) {exit(EXIT_FAILURE);}
 
-    // read IC file
-    if(!input.readICFile(input.getParameter("ic_file"), icData)) {exit(EXIT_FAILURE);}
 }
 
 

@@ -97,7 +97,9 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.cell_ids.data());
             H5Dclose(dataset_id);
+            #ifdef DEBUG_MODE
             std::cout << "OUTPUT: cell_ids: " << meshData.cell_ids.size() << " cells" << std::endl;
+            #endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -109,7 +111,9 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.seeds.data());
             H5Dclose(dataset_id);
+            #ifdef DEBUG_MODE
             std::cout << "OUTPUT: seeds: " << meshData.seeds_dims[0] << " x " << meshData.seeds_dims[1] << std::endl;
+            #endif
         }
         H5Sclose(dataspace);
     }
@@ -122,7 +126,9 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.volumes.data());
             H5Dclose(dataset_id);
+            #ifdef DEBUG_MODE
             std::cout << "OUTPUT: volumes: " << meshData.volumes.size() << " volumes" << std::endl;
+            #endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -135,7 +141,9 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.face_counts.data());
             H5Dclose(dataset_id);
+            #ifdef DEBUG_MODE
             std::cout << "OUTPUT: face_counts: " << meshData.face_counts.size() << " cells" << std::endl;
+            #endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -157,7 +165,9 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.neighbor_cell.data());
             H5Dclose(dataset_id);
+            #ifdef DEBUG_MODE
             std::cout << "OUTPUT: neighbor_cell: " << meshData.faces.neighbor_cell.size() << " faces" << std::endl;
+            #endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -169,7 +179,9 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.normal.data());
             H5Dclose(dataset_id);
+            #ifdef DEBUG_MODE
             std::cout << "OUTPUT: normal: " << meshData.faces.normal_dims[0] << " x " << meshData.faces.normal_dims[1] << std::endl;
+            #endif
         }
         H5Sclose(dataspace);
     }
@@ -182,7 +194,9 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.area.data());
             H5Dclose(dataset_id);
+            #ifdef DEBUG_MODE
             std::cout << "OUTPUT: area: " << meshData.faces.area.size() << " areas" << std::endl;
+            #endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -217,11 +231,13 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
     H5Gclose(faces_group);
     H5Gclose(cells_group);
     H5Fclose(file_id);
-
+    #ifdef DEBUG_MODE
     std::cout << "OUTPUT: Mesh file written successfully to: " << fullPath << std::endl;
+    #endif
     return success;
 }
 
+#ifdef WRITE_KNN_OUTPUT
 bool OutputHandler::writeKNNFile(const std::string& filename, POINT_TYPE* knn_pts, unsigned int* knn_nearest, unsigned int* knn_permutation, int num_points, int k) {
     std::string fullPath = outputDirectory + filename;
     
@@ -326,5 +342,6 @@ bool OutputHandler::writeKNNFile(const std::string& filename, POINT_TYPE* knn_pt
     }
     return success;
 }
+#endif
 #endif
 

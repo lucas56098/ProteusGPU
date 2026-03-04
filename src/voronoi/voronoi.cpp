@@ -14,9 +14,7 @@ namespace voronoi {
 // ----------------------------------------------
 // -------- main voronoi mesh generation --------
 // ----------------------------------------------
-    VMesh* compute_mesh(POINT_TYPE* pts_data, ICData& icData, InputHandler& input, OutputHandler& output) {
-        (void)input;   // unused unless VERIFY or WRITE_KNN_OUTPUT is enabled
-        (void)output;  // unused unless VERIFY or WRITE_KNN_OUTPUT is enabled
+    VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points) {
         std::cout << "VORONOI: Computing Voronoi mesh..." << std::endl;
 
         // -------- KNN PROBLEM --------
@@ -24,20 +22,25 @@ namespace voronoi {
         knn_problem *knn = NULL;
 
         // prepare knn problem
-        int n_pts = icData.seedpos_dims[0];
+        int n_pts = num_points;
         knn = knn::init((POINT_TYPE*) pts_data, n_pts);
+        #ifdef DEBUG_MODE
         std::cout << "KNN: problem initialized." << std::endl;
+        #endif
 
         // solve knn problem
         knn::solve(knn);
-        std::cout << "\nKNN: problem solved." << std::endl;
+        std::cout << "\n";
+        #ifdef DEBUG_MODE
+        std::cout << "KNN: problem solved." << std::endl;
+        #endif
 
         // optional verify and output file
         #ifdef VERIFY
         if (!knn::verify(knn)) {exit(EXIT_FAILURE);}
         #endif
         #if defined(USE_HDF5) && defined(WRITE_KNN_OUTPUT)
-        knn::write_knn_output(knn, icData, input, output);
+        knn::write_knn_output(knn);
         #endif
 
         // -------- VORONOI MESH GENERATION --------
@@ -69,6 +72,7 @@ namespace voronoi {
         // initial capacities for face arrays
         hsize_t face_capacity = mesh->n_seeds * 16;
         #ifdef DEBUG_MODE
+        extern hsize_t edge_coords_capacity_global; 
         edge_coords_capacity_global = mesh->n_seeds * 16 * 4; // initial estimate
         #endif
 
@@ -76,9 +80,14 @@ namespace voronoi {
         int threadsPerBlock = _VORO_BLOCK_SIZE_;
         int blocksPerGrid = N_seedpts/threadsPerBlock + 1;
         
+        #ifdef DEBUG_MODE
         std::cout << "VORONOI: computing cells" << std::endl;
+        #endif
         cpu_compute_cell(blocksPerGrid, threadsPerBlock, N_seedpts, (double*)knn->d_stored_points, knn->d_knearests, gpu_stat.gpu_data, mesh, face_capacity);
-        std::cout << "\nVORONOI: cells computed" << std::endl;
+        std::cout << '\n';
+        #ifdef DEBUG_MODE
+        std::cout << "VORONOI: cells computed" << std::endl;
+        #endif
 
         // shrink face arrays to actual size
         if (mesh->num_faces > 0) {
@@ -153,6 +162,8 @@ namespace voronoi {
         VMesh* mesh = (VMesh*)malloc(sizeof(VMesh));
         mesh->n_seeds = n_seeds;
         mesh->num_faces = 0;
+        mesh->n_hydro = 0;
+        mesh->ghost_ids = NULL;
 
         // per-cell arrays (known size)
         mesh->cell_ids = (hsize_t*)calloc(n_seeds, sizeof(hsize_t));
@@ -172,6 +183,8 @@ namespace voronoi {
         mesh->num_edge_coord_verts = 0;
         #endif
 
+        // add ghost here
+
         return mesh;
     }
 
@@ -189,6 +202,7 @@ namespace voronoi {
         free(mesh->edge_coords);
         free(mesh->edge_coords_offsets);
         #endif
+        free(mesh->ghost_ids);
         free(mesh);
     }
 
@@ -327,7 +341,7 @@ namespace voronoi {
 
         // header
         meshData.header.dimension = DIMENSION;
-        meshData.header.extent = 1.0;
+        meshData.header.extent = 1.0; // think about if we want to include the buff here?
         meshData.header.n = n_pts;
         meshData.header.k = _K_;
         meshData.header.nmax = _MAX_P_;
@@ -399,8 +413,10 @@ namespace voronoi {
             meshData.faces.edge_coords_offsets[f] = (int)mesh->edge_coords_offsets[f];
         }
         #endif
-
+        
+        #ifdef DEBUG_MODE
         std::cout << "VORONOI: converted VMesh to MeshCellData (" << n_pts << " cells, " << nf << " faces)" << std::endl;
+        #endif
     }
 
 

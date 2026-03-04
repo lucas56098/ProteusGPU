@@ -14,7 +14,7 @@
 namespace begrun {
 
 // called in main
-void begrun(int argc, char* argv[], InputHandler& input, ICData& icData, OutputHandler& output);
+void begrun(int argc, char* argv[]);
 
 // helpers
 void print_banner();
