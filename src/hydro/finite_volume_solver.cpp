@@ -165,7 +165,7 @@ namespace hydro {
             #endif
 
             double P = get_P_ideal_gas(&state_i);
-            double c_i = sqrt(gamma * P / state_i.rho);
+            double c_i = sqrt(_gamma_ * P / state_i.rho);
 
             #ifdef dim_2D
             double R_i = sqrt(mesh->volumes[i] / M_PI);

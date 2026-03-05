@@ -18,8 +18,8 @@ namespace hydro {
 
         
         // wave speeds
-        double SL = std::min(st_l.v.x - sqrt((gamma * get_P_ideal_gas(&st_l))/st_l.rho), st_r.v.x - sqrt((gamma * get_P_ideal_gas(&st_r))/st_r.rho));
-        double SR = std::max(st_l.v.x + sqrt((gamma * get_P_ideal_gas(&st_l))/st_l.rho), st_r.v.x + sqrt((gamma * get_P_ideal_gas(&st_r))/st_r.rho));
+        double SL = std::min(st_l.v.x - sqrt((_gamma_ * get_P_ideal_gas(&st_l))/st_l.rho), st_r.v.x - sqrt((_gamma_ * get_P_ideal_gas(&st_r))/st_r.rho));
+        double SR = std::max(st_l.v.x + sqrt((_gamma_ * get_P_ideal_gas(&st_l))/st_l.rho), st_r.v.x + sqrt((_gamma_ * get_P_ideal_gas(&st_r))/st_r.rho));
 
         // calc HLL flux
         prim flux;
@@ -117,9 +117,9 @@ namespace hydro {
 
     double get_P_ideal_gas(prim* state) {
 #ifdef dim_2D
-        return (gamma - 1) * (state->E - (0.5 * state->rho * (state->v.x*state->v.x + state->v.y*state->v.y)));
+        return (_gamma_ - 1) * (state->E - (0.5 * state->rho * (state->v.x*state->v.x + state->v.y*state->v.y)));
 #else   
-        return (gamma - 1) * (state->E - (0.5 * state->rho * (state->v.x*state->v.x + state->v.y*state->v.y + state->v.z*state->v.z)));
+        return (_gamma_ - 1) * (state->E - (0.5 * state->rho * (state->v.x*state->v.x + state->v.y*state->v.y + state->v.z*state->v.z)));
 #endif
     }
 

@@ -85,7 +85,7 @@ extern InputHandler input;
 extern ICData icData;
 extern OutputHandler output;
 extern double buff; // buffer for the periodic bc (box will then be 1 + 2*buff long)
-extern double gamma; // ideal gas constant
+extern double _gamma_; // ideal gas constant
 
 // abstraction layer to later switch between CPU_DEBUG, CUDA and HIP defines
 // for now just CPU stuff
