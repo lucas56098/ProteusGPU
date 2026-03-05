@@ -210,6 +210,98 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
 
     H5Sclose(dataspace_id);
     H5Dclose(dataset_id);
+
+    // read rho dataset
+    dataset_id = H5Dopen(file_id, "rho", H5P_DEFAULT);
+    if (dataset_id < 0) {
+        std::cerr << "INPUT: Error! Could not open rho dataset" << std::endl;
+        H5Fclose(file_id);
+        return false;
+    }
+    
+    dataspace_id = H5Dget_space(dataset_id);
+    hsize_t rho_dims[1];
+    H5Sget_simple_extent_dims(dataspace_id, rho_dims, NULL);
+    icData.rho.resize(rho_dims[0]);
+    
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
+                     H5P_DEFAULT, icData.rho.data());
+    
+    if (status < 0) {
+        std::cerr << "INPUT: Error! Could not read rho data" << std::endl;
+        H5Sclose(dataspace_id);
+        H5Dclose(dataset_id);
+        H5Fclose(file_id);
+        return false;
+    }
+    
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+
+    // read vel dataset
+    dataset_id = H5Dopen(file_id, "vel", H5P_DEFAULT);
+    if (dataset_id < 0) {
+        std::cerr << "INPUT: Error! Could not open vel dataset" << std::endl;
+        H5Fclose(file_id);
+        return false;
+    }
+    
+    dataspace_id = H5Dget_space(dataset_id);
+    rank = H5Sget_simple_extent_ndims(dataspace_id);
+    
+    if (rank != 2) {
+        std::cerr << "INPUT: Error! vel dataset must be of shape N x DIM" << std::endl;
+        H5Sclose(dataspace_id);
+        H5Dclose(dataset_id);
+        H5Fclose(file_id);
+        return false;
+    }
+    
+    hsize_t vel_dims[2];
+    H5Sget_simple_extent_dims(dataspace_id, vel_dims, NULL);
+    totalElements = vel_dims[0] * vel_dims[1];
+    icData.vel.resize(totalElements);
+    
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
+                     H5P_DEFAULT, icData.vel.data());
+    
+    if (status < 0) {
+        std::cerr << "INPUT: Error! Could not read vel data" << std::endl;
+        H5Sclose(dataspace_id);
+        H5Dclose(dataset_id);
+        H5Fclose(file_id);
+        return false;
+    }
+    
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+
+    // read Energy dataset
+    dataset_id = H5Dopen(file_id, "Energy", H5P_DEFAULT);
+    if (dataset_id < 0) {
+        std::cerr << "INPUT: Error! Could not open Energy dataset" << std::endl;
+        H5Fclose(file_id);
+        return false;
+    }
+    
+    dataspace_id = H5Dget_space(dataset_id);
+    hsize_t Energy_dims[1];
+    H5Sget_simple_extent_dims(dataspace_id, Energy_dims, NULL);
+    icData.Energy.resize(Energy_dims[0]);
+    
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
+                     H5P_DEFAULT, icData.Energy.data());
+    
+    if (status < 0) {
+        std::cerr << "INPUT: Error! Could not read Energy data" << std::endl;
+        H5Sclose(dataspace_id);
+        H5Dclose(dataset_id);
+        H5Fclose(file_id);
+        return false;
+    }
+    
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
     H5Fclose(file_id);
     
     std::cout << "INPUT: IC file loaded successfully!" << std::endl;

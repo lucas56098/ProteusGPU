@@ -85,6 +85,7 @@ extern InputHandler input;
 extern ICData icData;
 extern OutputHandler output;
 extern double buff; // buffer for the periodic bc (box will then be 1 + 2*buff long)
+extern double gamma; // ideal gas constant
 
 // abstraction layer to later switch between CPU_DEBUG, CUDA and HIP defines
 // for now just CPU stuff
@@ -197,6 +198,23 @@ inline double4 point_from_ptr(double* f) {
         m = std::min(std::min(x1, x2), x3);
         M = std::max(std::max(x1, x2), x3);
     }
+
+// some hydro struct definitions
+struct primvars {
+    double* rho;
+    POINT_TYPE* v;
+    double* E; // energy per unit volume (so in the state vector we have E = rho e)
+};
+
+struct prim { // a single flux
+    double rho = 0;
+    #ifdef dim_2D
+    POINT_TYPE v = {0., 0.};
+    #else
+    POINT_TYPE v = {0., 0., 0.};
+    #endif
+    double E = 0;
+};
 
 
 #endif // ALLVARS_H

@@ -71,7 +71,7 @@ public:
 
 #ifdef USE_HDF5
     // write mesh data to HDF5 file
-    bool writeMeshFile(const std::string& filename, const MeshCellData& meshData);
+    bool writeMeshFile(const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro);
     
     // write KNN data to HDF5 file
     bool writeKNNFile(const std::string& filename, POINT_TYPE* knn_pts, unsigned int* knn_nearest, unsigned int* knn_permutation, int num_points, int k);

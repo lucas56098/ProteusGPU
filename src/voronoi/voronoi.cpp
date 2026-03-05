@@ -121,7 +121,7 @@ namespace voronoi {
                 // global seed_id
                 int seed_id = threadsPerBlock * blockId.x + threadId.x;
                 if (seed_id >= N_seedpts) {break;}
-                if (seed_id % 1000000 == 0 || seed_id == N_seedpts - 1) {
+                if (seed_id % 10000 == 0 || seed_id == N_seedpts - 1) {
                     std::cout << "\rVORONOI: processing cell " << seed_id+1 << " / " << N_seedpts << std::flush;
                 }
 
@@ -337,7 +337,8 @@ namespace voronoi {
 // ----------------------------------------------
 #ifdef USE_HDF5
     void vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
-        int n_pts = (int)mesh->n_seeds;
+        //int n_pts = (int)mesh->n_seeds;
+        int n_pts = (int)mesh->n_hydro;
 
         // header
         meshData.header.dimension = DIMENSION;

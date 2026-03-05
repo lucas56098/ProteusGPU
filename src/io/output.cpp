@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "../hydro/finite_volume_solver.h"
 
 // has to be improved once we are at a point that there actually is something to store...
 
@@ -24,7 +25,7 @@ bool OutputHandler::initialize() {
 }
 
 #ifdef USE_HDF5
-bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellData& meshData) {
+bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro) {
     std::string fullPath = outputDirectory + filename;
     
     std::cout << "OUTPUT: Writing mesh to: " << fullPath << std::endl;
@@ -230,6 +231,70 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
 
     H5Gclose(faces_group);
     H5Gclose(cells_group);
+
+    // create hydro group
+    hid_t hydro_group = H5Gcreate(file_id, "hydro", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    if (hydro_group < 0) {
+        std::cerr << "OUTPUT: Warning! Could not create hydro group" << std::endl;
+    } else {
+
+        // write rho (density)
+        if (primvar && primvar->rho) {
+            hsize_t dims_1d[1] = {(hsize_t)n_hydro};
+            hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+            hid_t dataset_id = H5Dcreate(hydro_group, "rho", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            if (dataset_id >= 0) {
+                H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, primvar->rho);
+                H5Dclose(dataset_id);
+                #ifdef DEBUG_MODE
+                std::cout << "OUTPUT: rho: " << n_hydro << " values" << std::endl;
+                #endif
+            }
+            H5Sclose(dataspace_1d);
+        }
+
+        // write vel (velocity) - convert from POINT_TYPE to flattened array
+        if (primvar && primvar->v) {
+            std::vector<double> vel_flat(n_hydro * DIMENSION);
+            for (int i = 0; i < n_hydro; i++) {
+                vel_flat[i * DIMENSION + 0] = primvar->v[i].x;
+                vel_flat[i * DIMENSION + 1] = primvar->v[i].y;
+                #ifdef dim_3D
+                vel_flat[i * DIMENSION + 2] = primvar->v[i].z;
+                #endif
+            }
+            
+            hsize_t dims_2d[2] = {(hsize_t)n_hydro, DIMENSION};
+            hid_t dataspace = H5Screate_simple(2, dims_2d, NULL);
+            hid_t dataset_id = H5Dcreate(hydro_group, "vel", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            if (dataset_id >= 0) {
+                H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, vel_flat.data());
+                H5Dclose(dataset_id);
+                #ifdef DEBUG_MODE
+                std::cout << "OUTPUT: vel: " << n_hydro << " x " << DIMENSION << std::endl;
+                #endif
+            }
+            H5Sclose(dataspace);
+        }
+
+        // write Energy
+        if (primvar && primvar->E) {
+            hsize_t dims_1d[1] = {(hsize_t)n_hydro};
+            hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+            hid_t dataset_id = H5Dcreate(hydro_group, "Energy", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            if (dataset_id >= 0) {
+                H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, primvar->E);
+                H5Dclose(dataset_id);
+                #ifdef DEBUG_MODE
+                std::cout << "OUTPUT: Energy: " << n_hydro << " values" << std::endl;
+                #endif
+            }
+            H5Sclose(dataspace_1d);
+        }
+
+        H5Gclose(hydro_group);
+    }
+
     H5Fclose(file_id);
     #ifdef DEBUG_MODE
     std::cout << "OUTPUT: Mesh file written successfully to: " << fullPath << std::endl;

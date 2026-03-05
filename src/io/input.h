@@ -16,7 +16,12 @@ struct ICHeader {
 struct ICData {
     std::vector<double> seedpos;  // dimension * numSeeds
     std::vector<hsize_t> seedpos_dims;  // [numSeeds, dimension]
-    // other fields might be added later (e.g. hydro quantities)
+    
+    // hydro quantities
+    std::vector<double> rho;  // numSeeds
+    std::vector<double> vel;  // dimension * numSeeds
+    std::vector<double> Energy;  // numSeeds
+    
     ICHeader header;
 };
 #endif

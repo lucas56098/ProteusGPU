@@ -4,17 +4,19 @@
 #include <vector>
 #include <cmath>
 #include <climits>
-#include "global/allvars.h"
-#include "io/input.h"
-#include "io/output.h"
-#include "knn/knn.h"
-#include "begrun/begrun.h"
-#include "voronoi/voronoi.h"
+#include "../global/allvars.h"
+#include "../io/input.h"
+#include "../io/output.h"
+#include "../knn/knn.h"
+#include "../begrun/begrun.h"
+#include "../voronoi/voronoi.h"
 
 namespace voronoi {
 
 inline bool is_in(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za, double zb) {
     #ifdef dim_2D
+    (void)za;
+    (void)zb;
     return (pt.x > xa && pt.x < xb) && (pt.y > ya && pt.y < yb);
     #else
     return (pt.x > xa && pt.x < xb) && (pt.y > ya && pt.y < yb) && (pt.z > za && pt.z < zb);

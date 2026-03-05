@@ -6,12 +6,12 @@
 #include <vector>
 #include <cmath>
 #include <climits>
-#include "global/allvars.h"
-#include "io/input.h"
-#include "io/output.h"
-#include "knn/knn.h"
-#include "begrun/begrun.h"
-#include "voronoi/voronoi.h"
+#include "../global/allvars.h"
+#include "../io/input.h"
+#include "../io/output.h"
+#include "../knn/knn.h"
+#include "../begrun/begrun.h"
+#include "../voronoi/voronoi.h"
 
 namespace voronoi {
 

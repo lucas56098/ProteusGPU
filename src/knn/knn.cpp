@@ -241,10 +241,11 @@ void cpu_knearest(int blocksPerGrid, int threadsPerBlock, int N_grid, int len_pt
     double knearest_dists[_K_ * _KNN_BLOCK_SIZE_];
 
     for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
+        #pragma omp parallel for
         for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
             int point_in = threadId + blockId * threadsPerBlock;
-            if (point_in >= len_pts) return;
-            if (point_in % 1000000 == 0 || point_in == len_pts - 1) {
+            if (point_in >= len_pts) continue;// return;
+            if (point_in % 10000 == 0 || point_in == len_pts - 1) {
                 std::cout << "\rKNN: processing point " << point_in+1 << " / " << len_pts << std::flush;
             }
             // point considered by this thread
