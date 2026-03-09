@@ -4,6 +4,7 @@ MAKEFLAGS += -j
 # load Config.sh options and convert them to -D flags FIRST (before compiler setup)
 SHELL := /bin/bash
 CONFIG_DEFINES := $(shell grep -v "^\#" Config.sh | grep -v "^$$" | grep -v "^!" | awk 'NF {print "-D" $$1}')
+DEFINES := 
 
 # system-specific includes
 SYSTYPE ?= $(shell uname -s)
@@ -123,7 +124,7 @@ ifneq (,$(findstring USE_HDF5,$(CONFIG_DEFINES)))
 endif
 
 # add config defines to compilation flags
-CXXFLAGS += $(CONFIG_DEFINES)
+CXXFLAGS += $(CONFIG_DEFINES) $(DEFINES)
 
 # default target
 all: $(TARGET)

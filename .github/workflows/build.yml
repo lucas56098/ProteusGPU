@@ -23,7 +23,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}
           make clean
-          make SYSTYPE=Ubuntu
+          make SYSTYPE=Ubuntu DEFINES="-DDRY_RUN"
 
       - name: Run executable (dry-run mode)
         run: |

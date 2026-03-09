@@ -26,10 +26,6 @@ USE_HDF5
 # Verification (bruteforce KNN check)
 #VERIFY
 
-# Dry-run mode for CI/CD (exits after printing welcome banner)
-# NOTE: turning this off requires a correct IC.hdf5 file...
-DRY_RUN
-
 # Compile-time constants for KNN and Voronoi
 _K_=190                  # number of nearest neighbors
 _KNN_BLOCK_SIZE_=64     # number of threads per block for KNN

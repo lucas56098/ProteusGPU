@@ -1,10 +1,10 @@
-/build/
-/libs/
-/output/
-create_test_ic.py
+build/
+libs/
+output
+run/
 *.hdf5
 ProteusGPU
-/visualize/
+visualize/
 .DS_Store
 .vscode/
-/__pycache__/
+__pycache__/
