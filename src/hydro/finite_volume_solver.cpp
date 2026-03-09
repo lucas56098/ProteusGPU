@@ -76,7 +76,13 @@ namespace hydro {
                 prim state_j = get_state_j(i, j, mesh, primvar);
 
                 // calc flux using riemann solver
+                #ifdef RIEMANN_HLL
                 prim flux_ij = riemann_hll(i, j, state_i, state_j, mesh);
+                #elif RIEMANN_HLLC
+                prim flux_ij = riemann_hllc(i, j, state_i, state_j, mesh);
+                #else
+                #error "No Riemann solver specified in Config.sh: choose RIEMANN_HLL or RIEMANN_HLLC"
+                #endif
 
                 // get face area/length
                 double face_area = mesh->face_area[mesh->face_ptr[i] + j];

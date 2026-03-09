@@ -20,6 +20,11 @@ USE_HDF5
 # enable OpenMP parallelization for CPU mode (requires g++-15 on macOS)
 USE_OPENMP
 
+# Riemann solver
+#RIEMANN_HLL
+RIEMANN_HLLC
+
+
 # Output types
 #WRITE_KNN_OUTPUT
 

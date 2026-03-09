@@ -44,6 +44,53 @@ namespace hydro {
         return flux;
     }
 
+
+
+    prim riemann_hllc(hsize_t i, hsize_t j, prim st_l, prim st_r, const VMesh* mesh) {
+
+        // rotate state_j and state_i into frame
+        double3 normal = mesh->face_normal[mesh->face_ptr[i] + j];
+        geom g = compute_geom(normal);
+        rotate_to_face(&st_l, &g);
+        rotate_to_face(&st_r, &g);
+    
+        // calc f_l and f_r
+        prim f_l = get_flux(&st_l);
+        prim f_r = get_flux(&st_r);
+
+        // wave speeds
+        double SL = std::min(st_l.v.x - sqrt((_gamma_ * get_P_ideal_gas(&st_l))/st_l.rho), st_r.v.x - sqrt((_gamma_ * get_P_ideal_gas(&st_r))/st_r.rho));
+        double SR = std::max(st_l.v.x + sqrt((_gamma_ * get_P_ideal_gas(&st_l))/st_l.rho), st_r.v.x + sqrt((_gamma_ * get_P_ideal_gas(&st_r))/st_r.rho));
+
+        // calculate S_star
+        double S_star = (get_P_ideal_gas(&st_r) - get_P_ideal_gas(&st_l) + st_l.rho*st_l.v.x*(SL - st_l.v.x) - st_r.rho*st_r.v.x*(SR - st_r.v.x))/(st_l.rho*(SL - st_l.v.x) - st_r.rho*(SR - st_r.v.x));
+
+        // HLLC solver for F
+        prim flux;
+        if (0 <= SL) {
+            flux = f_l;
+        } else if (SL <= 0 && 0 <= S_star) {
+            flux.rho = (S_star * (SL * st_l.rho - f_l.rho))/(SL - S_star);
+            flux.v.x = (S_star * (SL * st_l.rho * st_l.v.x - f_l.v.x) + SL*(get_P_ideal_gas(&st_l) + st_l.rho*(SL - st_l.v.x)*(S_star - st_l.v.x)))/(SL - S_star);
+            flux.v.y = (S_star * (SL * st_l.rho*st_l.v.y - f_l.v.y))/(SL - S_star);
+            flux.E = (S_star * (SL * st_l.E - f_l.E) + SL*(get_P_ideal_gas(&st_l) + st_l.rho*(SL - st_l.v.x)*(S_star - st_l.v.x))*S_star)/(SL - S_star);
+        } else if (S_star <= 0 && 0 <= SR) {
+            flux.rho = (S_star * (SR * st_r.rho - f_r.rho))/(SR - S_star);
+            flux.v.x = (S_star * (SR * st_r.rho * st_r.v.x - f_r.v.x) + SR*(get_P_ideal_gas(&st_r) + st_r.rho*(SR - st_r.v.x)*(S_star - st_r.v.x)))/(SR - S_star);
+            flux.v.y = (S_star * (SR * st_r.rho*st_r.v.y - f_r.v.y))/(SR - S_star);
+            flux.E = (S_star * (SR * st_r.E - f_r.E) + SR*(get_P_ideal_gas(&st_r) + st_r.rho*(SR - st_r.v.x)*(S_star - st_r.v.x))*S_star)/(SR - S_star);
+        } else if (0 >= SR) {
+            flux = f_r;
+        }
+
+        // rotate flux back to lab frame
+        rotate_from_face(&flux, &g);
+
+        return flux;
+    }
+
+
+
     void rotate_to_face(prim* state, geom* g) {
         double velx = state->v.x;
         double vely = state->v.y;

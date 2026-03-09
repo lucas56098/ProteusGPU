@@ -22,6 +22,7 @@ struct geom {
 namespace hydro {
 
     prim riemann_hll(hsize_t i, hsize_t j, prim state_i, prim state_j, const VMesh* mesh);
+    prim riemann_hllc(hsize_t i, hsize_t j, prim state_i, prim state_j, const VMesh* mesh);
 
     void rotate_to_face(prim* state, geom* g);
     void rotate_from_face(prim* state, geom* g);
