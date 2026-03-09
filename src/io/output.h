@@ -1,9 +1,9 @@
 #ifndef OUTPUT_H
 #define OUTPUT_H
 
+#include "../global/allvars.h"
 #include <string>
 #include <vector>
-#include "../global/allvars.h"
 
 #ifdef USE_HDF5
 #include "hdf5.h"
@@ -12,69 +12,75 @@
 
 // structs to prepare mesh data for writing to HDF5 file
 struct MeshHeader {
-    int dimension = DIMENSION;
+    int    dimension = DIMENSION;
     double extent;
-    int n;
-    int k;
-    int nmax;
-    int seed;
-    #ifdef DEBUG_MODE
+    int    n;
+    int    k;
+    int    nmax;
+    int    seed;
+#ifdef DEBUG_MODE
     bool store_edge_coords = true;
-    #else
+#else
     bool store_edge_coords = false;
-    #endif
+#endif
 };
 
 struct MeshFaceData {
-    std::vector<int> neighbor_cell;
-    std::vector<double> normal;        // numFaces x dimension
-    std::vector<hsize_t> normal_dims;  // [numFaces, dimension]
-    std::vector<double> area;
-    #ifdef DEBUG_MODE
-    std::vector<double> edge_coords;   // all edge coords concatenated
-    std::vector<hsize_t> edge_coords_dims;  // [totalVertices, dimension]
-    std::vector<int> edge_coords_offsets;   // Number of vertices per face
-    #endif
+    std::vector<int>     neighbor_cell;
+    std::vector<double>  normal;      // numFaces x dimension
+    std::vector<hsize_t> normal_dims; // [numFaces, dimension]
+    std::vector<double>  area;
+#ifdef DEBUG_MODE
+    std::vector<double>  edge_coords;         // all edge coords concatenated
+    std::vector<hsize_t> edge_coords_dims;    // [totalVertices, dimension]
+    std::vector<int>     edge_coords_offsets; // Number of vertices per face
+#endif
 };
 
 struct MeshCellData {
-    MeshHeader header;
-    std::vector<int> cell_ids;
-    std::vector<double> seeds;         // numCells x dimension
-    std::vector<hsize_t> seeds_dims;   // [numCells, dimension]
-    std::vector<double> volumes;
-    std::vector<int> face_counts;      // number of faces per cell
-    MeshFaceData faces;
+    MeshHeader           header;
+    std::vector<int>     cell_ids;
+    std::vector<double>  seeds;      // numCells x dimension
+    std::vector<hsize_t> seeds_dims; // [numCells, dimension]
+    std::vector<double>  volumes;
+    std::vector<int>     face_counts; // number of faces per cell
+    MeshFaceData         faces;
 };
 
 struct KNNData {
-    int num_points;
-    int k;
-    std::vector<double> points;              // num_points x 3 (x,y,z)
-    std::vector<hsize_t> points_dims;        // [num_points, 3]
-    std::vector<unsigned int> nearest;       // num_points x k
-    std::vector<hsize_t> nearest_dims;       // [num_points, k]
-    std::vector<unsigned int> permutation;   // num_points
+    int                       num_points;
+    int                       k;
+    std::vector<double>       points;       // num_points x 3 (x,y,z)
+    std::vector<hsize_t>      points_dims;  // [num_points, 3]
+    std::vector<unsigned int> nearest;      // num_points x k
+    std::vector<hsize_t>      nearest_dims; // [num_points, k]
+    std::vector<unsigned int> permutation;  // num_points
 };
 #endif
 
 // output handler class for writing mesh files
 class OutputHandler {
-private:
+  private:
     std::string outputDirectory;
 
-public:
+  public:
     OutputHandler(const std::string& outputDir = "./output/");
 
-    bool initialize(); // initalize output directory
+    bool        initialize(); // initalize output directory
     std::string getOutputDirectory() const { return outputDirectory; }
 
 #ifdef USE_HDF5
     // write snapshot (mesh and hydro data) to HDF5 file
-    bool writeSnapshot(const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim);
-    
+    bool writeSnapshot(
+        const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim);
+
     // write KNN data to HDF5 file
-    bool writeKNNFile(const std::string& filename, POINT_TYPE* knn_pts, unsigned int* knn_nearest, unsigned int* knn_permutation, int num_points, int k);
+    bool writeKNNFile(const std::string& filename,
+                      POINT_TYPE*        knn_pts,
+                      unsigned int*      knn_nearest,
+                      unsigned int*      knn_permutation,
+                      int                num_points,
+                      int                k);
 #endif
 };
 

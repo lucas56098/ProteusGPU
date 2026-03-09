@@ -1,28 +1,28 @@
-#include <iostream>
-#include <iomanip>
-#include <stdio.h>
-#include <vector>
-#include <cmath>
-#include <climits>
+#include "begrun/begrun.h"
 #include "global/allvars.h"
+#include "hydro/finite_volume_solver.h"
+#include "hydro/riemann.h"
 #include "io/input.h"
 #include "io/output.h"
 #include "knn/knn.h"
-#include "begrun/begrun.h"
-#include "voronoi/voronoi.h"
-#include "voronoi/periodic_mesh.h"
-#include "hydro/finite_volume_solver.h"
-#include "hydro/riemann.h"
 #include "profiler/profiler.h"
+#include "voronoi/periodic_mesh.h"
+#include "voronoi/voronoi.h"
+#include <climits>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <stdio.h>
+#include <vector>
 
 /*========================================================================
-          _____           _                    _____ _____  _    _ 
+          _____           _                    _____ _____  _    _
          |  __ \         | |                  / ____|  __ \| |  | |
          | |__) | __ ___ | |_ ___ _   _ ___  | |  __| |__) | |  | |
          |  ___/ '__/ _ \| __/ _ \ | | / __| | | |_ |  ___/| |  | |
          | |   | | | (_) | ||  __/ |_| \__ \ | |__| | |    | |__| |
-         |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/ 
-  
+         |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/
+
 ==========================================================================
 A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics
 ==========================================================================
@@ -41,26 +41,26 @@ int main(int argc, char* argv[]) {
     primvars* primvar = hydro::init(icData.seedpos_dims[0]);
 
     // compute voronoi mesh
-    VMesh* mesh = voronoi::compute_periodic_mesh((POINT_TYPE*) icData.seedpos.data(), icData.seedpos_dims[0]);
+    VMesh* mesh = voronoi::compute_periodic_mesh((POINT_TYPE*)icData.seedpos.data(), icData.seedpos_dims[0]);
 
     // start timestep loop
     std::cout << "Hydro started" << std::endl;
 
     double t_sim = 0.0;
     double t_end = std::stof(input.getParameter("time_end"));
-    double CFL = 0.4;
-    int step = 0;
+    double CFL   = 0.4;
+    int    step  = 0;
 
-    double output_dt = std::stof(input.getParameter("output_dt"));
+    double output_dt    = std::stof(input.getParameter("output_dt"));
     double t_nextoutput = t_sim + output_dt;
-    int snap_num = 0;
+    int    snap_num     = 0;
 
     PROFILE_START("HYDRO_MAIN");
     while (t_sim < t_end) {
         double dt = hydro::dt_CFL(CFL, mesh, primvar);
 
-	    // go at most to next output time
-	    if (t_sim + dt > t_nextoutput) { dt = t_nextoutput - t_sim; }
+        // go at most to next output time
+        if (t_sim + dt > t_nextoutput) { dt = t_nextoutput - t_sim; }
 
         // make sure we exactly hit t_end
         if (t_sim + dt > t_end) { dt = t_end - t_sim; }
@@ -69,24 +69,24 @@ int main(int argc, char* argv[]) {
         t_sim += dt;
         step++;
 
-        if (step % 10 == 0) {
-            std::cout << "Step " << step << "  t = " << t_sim << "  dt = " << dt << std::endl;
-        }
+        if (step % 10 == 0) { std::cout << "Step " << step << "  t = " << t_sim << "  dt = " << dt << std::endl; }
 
-	    // write output
-        #ifdef USE_HDF5
+// write output
+#ifdef USE_HDF5
         if (t_sim >= t_nextoutput || t_sim == t_end) {
             PROFILE_START("SNAPSHOTS");
             MeshCellData meshData;
             voronoi::vmesh_to_meshdata(mesh, meshData);
 
             std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
-            if (!output.writeSnapshot(output_file, meshData, primvar, icData.seedpos_dims[0], t_sim)) { exit(EXIT_FAILURE); }
+            if (!output.writeSnapshot(output_file, meshData, primvar, icData.seedpos_dims[0], t_sim)) {
+                exit(EXIT_FAILURE);
+            }
             t_nextoutput += output_dt;
             snap_num += 1;
             PROFILE_END("SNAPSHOTS");
         }
-        #endif
+#endif
     }
     PROFILE_END("HYDRO_MAIN");
 

@@ -1,12 +1,11 @@
 #include "input.h"
 #include "../global/allvars.h"
-#include <iostream>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
+#include <fstream>
+#include <iostream>
+#include <sstream>
 
 InputHandler::InputHandler(const std::string& filename) : paramFilePath(filename) {}
-
 
 // helper function to trim whitespace from a string
 std::string InputHandler::trim(const std::string& str) {
@@ -16,12 +15,11 @@ std::string InputHandler::trim(const std::string& str) {
     return str.substr(first, (last - first + 1));
 }
 
-
 // load parameters from parameter file
 bool InputHandler::loadParameters() {
-    
+
     std::ifstream file(paramFilePath);
-    
+
     // check if file opened successfully
     if (!file.is_open()) {
         std::cerr << "INPUT: Error! Could not open parameter file: " << paramFilePath << std::endl;
@@ -32,26 +30,22 @@ bool InputHandler::loadParameters() {
     std::string line;
     while (std::getline(file, line)) {
         line = trim(line);
-        
+
         // skip empty lines and comments
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
+        if (line.empty() || line[0] == '#') { continue; }
 
         // parse key = value pairs
         size_t pos = line.find('=');
         if (pos != std::string::npos) {
-            std::string key = trim(line.substr(0, pos));
+            std::string key   = trim(line.substr(0, pos));
             std::string value = trim(line.substr(pos + 1));
-            
+
             // remove inline comments
             size_t commentPos = value.find('#');
-            if (commentPos != std::string::npos) {
-                value = trim(value.substr(0, commentPos));
-            }
-            
+            if (commentPos != std::string::npos) { value = trim(value.substr(0, commentPos)); }
+
             parameters[key] = value;
-            
+
 #ifdef DEBUG_MODE
             std::cout << "DEBUG: Loaded parameter: " << key << " = " << value << std::endl;
 #endif
@@ -63,13 +57,10 @@ bool InputHandler::loadParameters() {
     return true;
 }
 
-
 // access parameters
 std::string InputHandler::getParameter(const std::string& key) const {
     auto it = parameters.find(key);
-    if (it != parameters.end()) {
-        return it->second;
-    }
+    if (it != parameters.end()) { return it->second; }
     throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
 }
 
@@ -82,7 +73,8 @@ int InputHandler::getParameterInt(const std::string& key) const {
     try {
         return std::stoi(it->second);
     } catch (const std::exception& e) {
-        throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second + "' to int");
+        throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second +
+                                 "' to int");
     }
 }
 
@@ -95,7 +87,8 @@ double InputHandler::getParameterDouble(const std::string& key) const {
     try {
         return std::stod(it->second);
     } catch (const std::exception& e) {
-        throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second + "' to double");
+        throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second +
+                                 "' to double");
     }
 }
 
@@ -112,18 +105,19 @@ bool InputHandler::getParameterBool(const std::string& key) const {
     } else if (value == "false" || value == "0" || value == "no" || value == "off") {
         return false;
     }
-    throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second + "' to bool (expected: true/false/1/0/yes/no/on/off)");
+    throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second +
+                             "' to bool (expected: true/false/1/0/yes/no/on/off)");
 }
 
 #ifdef USE_HDF5
 // opens IC.hdf5 file and reads initial conditions into ICData struct
 // will get extended if additional fields get added to IC file ...
 bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
-   
+
     // check that file exists
     std::ifstream f(filename);
     if (!f.good()) {
-	std::cerr << "INPUT: Error! IC file [" << filename << "] does not exist!" << std::endl;
+        std::cerr << "INPUT: Error! IC file [" << filename << "] does not exist!" << std::endl;
         return false;
     }
 
@@ -154,12 +148,12 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
         return false;
     }
 
-    // check that IC file dimension matches compiled code dimension
-    #ifdef dim_2D
+// check that IC file dimension matches compiled code dimension
+#ifdef dim_2D
     if (icData.header.dimension != 2)
-    #else
+#else
     if (icData.header.dimension != 3)
-    #endif
+#endif
     {
         std::cerr << "INPUT: Error! IC file dimension mismatch!" << std::endl;
         std::cerr << "  IC file dimension: " << icData.header.dimension << "D" << std::endl;
@@ -182,8 +176,8 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
 
     // get dataspace and dimensions
     hid_t dataspace_id = H5Dget_space(dataset_id);
-    int rank = H5Sget_simple_extent_ndims(dataspace_id);
-    
+    int   rank         = H5Sget_simple_extent_ndims(dataspace_id);
+
     if (rank != 2) {
         std::cerr << "INPUT: Error! seedpos dataset must be of shape N x DIM" << std::endl;
         H5Sclose(dataspace_id);
@@ -197,8 +191,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     // read the data
     hsize_t totalElements = icData.seedpos_dims[0] * icData.seedpos_dims[1];
     icData.seedpos.resize(totalElements);
-    herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
-                            H5P_DEFAULT, icData.seedpos.data());
+    herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.seedpos.data());
 
     if (status < 0) {
         std::cerr << "INPUT: Error! Could not read seedpos data" << std::endl;
@@ -218,15 +211,14 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
         H5Fclose(file_id);
         return false;
     }
-    
+
     dataspace_id = H5Dget_space(dataset_id);
     hsize_t rho_dims[1];
     H5Sget_simple_extent_dims(dataspace_id, rho_dims, NULL);
     icData.rho.resize(rho_dims[0]);
-    
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
-                     H5P_DEFAULT, icData.rho.data());
-    
+
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.rho.data());
+
     if (status < 0) {
         std::cerr << "INPUT: Error! Could not read rho data" << std::endl;
         H5Sclose(dataspace_id);
@@ -234,7 +226,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
         H5Fclose(file_id);
         return false;
     }
-    
+
     H5Sclose(dataspace_id);
     H5Dclose(dataset_id);
 
@@ -245,10 +237,10 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
         H5Fclose(file_id);
         return false;
     }
-    
+
     dataspace_id = H5Dget_space(dataset_id);
-    rank = H5Sget_simple_extent_ndims(dataspace_id);
-    
+    rank         = H5Sget_simple_extent_ndims(dataspace_id);
+
     if (rank != 2) {
         std::cerr << "INPUT: Error! vel dataset must be of shape N x DIM" << std::endl;
         H5Sclose(dataspace_id);
@@ -256,15 +248,14 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
         H5Fclose(file_id);
         return false;
     }
-    
+
     hsize_t vel_dims[2];
     H5Sget_simple_extent_dims(dataspace_id, vel_dims, NULL);
     totalElements = vel_dims[0] * vel_dims[1];
     icData.vel.resize(totalElements);
-    
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
-                     H5P_DEFAULT, icData.vel.data());
-    
+
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.vel.data());
+
     if (status < 0) {
         std::cerr << "INPUT: Error! Could not read vel data" << std::endl;
         H5Sclose(dataspace_id);
@@ -272,7 +263,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
         H5Fclose(file_id);
         return false;
     }
-    
+
     H5Sclose(dataspace_id);
     H5Dclose(dataset_id);
 
@@ -283,15 +274,14 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
         H5Fclose(file_id);
         return false;
     }
-    
+
     dataspace_id = H5Dget_space(dataset_id);
     hsize_t Energy_dims[1];
     H5Sget_simple_extent_dims(dataspace_id, Energy_dims, NULL);
     icData.Energy.resize(Energy_dims[0]);
-    
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
-                     H5P_DEFAULT, icData.Energy.data());
-    
+
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.Energy.data());
+
     if (status < 0) {
         std::cerr << "INPUT: Error! Could not read Energy data" << std::endl;
         H5Sclose(dataspace_id);
@@ -299,11 +289,11 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
         H5Fclose(file_id);
         return false;
     }
-    
+
     H5Sclose(dataspace_id);
     H5Dclose(dataset_id);
     H5Fclose(file_id);
-    
+
     std::cout << "INPUT: IC file loaded successfully!" << std::endl;
     return true;
 }

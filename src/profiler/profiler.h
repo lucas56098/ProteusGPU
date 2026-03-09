@@ -1,10 +1,10 @@
 #ifndef PROFILER_H
 #define PROFILER_H
 
-#include <iostream>
 #include <chrono>
-#include <unordered_map>
+#include <iostream>
 #include <string>
+#include <unordered_map>
 using namespace std;
 
 #ifdef ENABLE_PROFILING
@@ -18,14 +18,14 @@ using namespace std;
 #endif
 
 class Profiler {
-public:
+  public:
     static void StartTimer(const string& name);
     static void EndTimer(const string& name);
     static void PrintResults();
 
-private:
+  private:
     static unordered_map<string, chrono::high_resolution_clock::time_point> m_StartTimes;
-    static unordered_map<string, long long> m_Timings;
+    static unordered_map<string, long long>                                 m_Timings;
 };
 
 #endif // PROFILER_H

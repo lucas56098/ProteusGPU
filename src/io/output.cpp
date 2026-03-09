@@ -1,13 +1,12 @@
 #include "output.h"
+#include "../hydro/finite_volume_solver.h"
 #include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include "../hydro/finite_volume_solver.h"
 
 // has to be improved once we are at a point that there actually is something to store...
 
-OutputHandler::OutputHandler(const std::string& outputDir) : outputDirectory(outputDir) {
-}
+OutputHandler::OutputHandler(const std::string& outputDir) : outputDirectory(outputDir) {}
 
 bool OutputHandler::initialize() {
     // create output directory if it doesn't exist
@@ -25,11 +24,12 @@ bool OutputHandler::initialize() {
 }
 
 #ifdef USE_HDF5
-bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim) {
+bool OutputHandler::writeSnapshot(
+    const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim) {
     std::string fullPath = outputDirectory + filename;
-    
+
     std::cout << "OUTPUT: Writing mesh to: " << fullPath << std::endl;
-    
+
     // create HDF5 file
     hid_t file_id = H5Fcreate(fullPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
     if (file_id < 0) {
@@ -49,7 +49,7 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
 
     // write header attributes
     hid_t scalar_space = H5Screate(H5S_SCALAR);
-    
+
     hid_t attr_dim = H5Acreate(header_group, "dimension", H5T_NATIVE_INT, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
     H5Awrite(attr_dim, H5T_NATIVE_INT, &meshData.header.dimension);
     H5Aclose(attr_dim);
@@ -74,7 +74,8 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
     H5Awrite(attr_seed, H5T_NATIVE_INT, &meshData.header.seed);
     H5Aclose(attr_seed);
 
-    hid_t attr_store = H5Acreate(header_group, "store_edge_coords", H5T_NATIVE_HBOOL, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
+    hid_t attr_store =
+        H5Acreate(header_group, "store_edge_coords", H5T_NATIVE_HBOOL, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
     hbool_t store_bool = meshData.header.store_edge_coords ? 1 : 0;
     H5Awrite(attr_store, H5T_NATIVE_HBOOL, &store_bool);
     H5Aclose(attr_store);
@@ -96,15 +97,16 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
 
     // write cell_ids
     if (!meshData.cell_ids.empty()) {
-        hsize_t dims_1d[1] = {meshData.cell_ids.size()};
-        hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t dataset_id = H5Dcreate(cells_group, "cell_ids", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hsize_t dims_1d[1]   = {meshData.cell_ids.size()};
+        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+        hid_t   dataset_id =
+            H5Dcreate(cells_group, "cell_ids", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.cell_ids.data());
             H5Dclose(dataset_id);
-            #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
             std::cout << "OUTPUT: cell_ids: " << meshData.cell_ids.size() << " cells" << std::endl;
-            #endif
+#endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -112,43 +114,46 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
     // write seeds
     if (!meshData.seeds.empty() && meshData.seeds_dims.size() == 2) {
         hid_t dataspace = H5Screate_simple(2, meshData.seeds_dims.data(), NULL);
-        hid_t dataset_id = H5Dcreate(cells_group, "seeds", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hid_t dataset_id =
+            H5Dcreate(cells_group, "seeds", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.seeds.data());
             H5Dclose(dataset_id);
-            #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
             std::cout << "OUTPUT: seeds: " << meshData.seeds_dims[0] << " x " << meshData.seeds_dims[1] << std::endl;
-            #endif
+#endif
         }
         H5Sclose(dataspace);
     }
 
     // write volumes
     if (!meshData.volumes.empty()) {
-        hsize_t dims_1d[1] = {meshData.volumes.size()};
-        hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t dataset_id = H5Dcreate(cells_group, "volumes", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hsize_t dims_1d[1]   = {meshData.volumes.size()};
+        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+        hid_t   dataset_id =
+            H5Dcreate(cells_group, "volumes", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.volumes.data());
             H5Dclose(dataset_id);
-            #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
             std::cout << "OUTPUT: volumes: " << meshData.volumes.size() << " volumes" << std::endl;
-            #endif
+#endif
         }
         H5Sclose(dataspace_1d);
     }
 
     // write face_counts (number of faces per cell)
     if (!meshData.face_counts.empty()) {
-        hsize_t dims_1d[1] = {meshData.face_counts.size()};
-        hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t dataset_id = H5Dcreate(cells_group, "face_counts", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hsize_t dims_1d[1]   = {meshData.face_counts.size()};
+        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+        hid_t   dataset_id =
+            H5Dcreate(cells_group, "face_counts", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.face_counts.data());
             H5Dclose(dataset_id);
-            #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
             std::cout << "OUTPUT: face_counts: " << meshData.face_counts.size() << " cells" << std::endl;
-            #endif
+#endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -164,15 +169,16 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
 
     // write neighbor_cell
     if (!meshData.faces.neighbor_cell.empty()) {
-        hsize_t dims_1d[1] = {meshData.faces.neighbor_cell.size()};
-        hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t dataset_id = H5Dcreate(faces_group, "neighbor_cell", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hsize_t dims_1d[1]   = {meshData.faces.neighbor_cell.size()};
+        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+        hid_t   dataset_id   = H5Dcreate(
+            faces_group, "neighbor_cell", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.neighbor_cell.data());
             H5Dclose(dataset_id);
-            #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
             std::cout << "OUTPUT: neighbor_cell: " << meshData.faces.neighbor_cell.size() << " faces" << std::endl;
-            #endif
+#endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -180,58 +186,67 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
     // write normal
     if (!meshData.faces.normal.empty() && meshData.faces.normal_dims.size() == 2) {
         hid_t dataspace = H5Screate_simple(2, meshData.faces.normal_dims.data(), NULL);
-        hid_t dataset_id = H5Dcreate(faces_group, "normal", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hid_t dataset_id =
+            H5Dcreate(faces_group, "normal", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.normal.data());
             H5Dclose(dataset_id);
-            #ifdef DEBUG_MODE
-            std::cout << "OUTPUT: normal: " << meshData.faces.normal_dims[0] << " x " << meshData.faces.normal_dims[1] << std::endl;
-            #endif
+#ifdef DEBUG_MODE
+            std::cout << "OUTPUT: normal: " << meshData.faces.normal_dims[0] << " x " << meshData.faces.normal_dims[1]
+                      << std::endl;
+#endif
         }
         H5Sclose(dataspace);
     }
 
     // write area
     if (!meshData.faces.area.empty()) {
-        hsize_t dims_1d[1] = {meshData.faces.area.size()};
-        hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t dataset_id = H5Dcreate(faces_group, "area", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hsize_t dims_1d[1]   = {meshData.faces.area.size()};
+        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+        hid_t   dataset_id =
+            H5Dcreate(faces_group, "area", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.area.data());
             H5Dclose(dataset_id);
-            #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
             std::cout << "OUTPUT: area: " << meshData.faces.area.size() << " areas" << std::endl;
-            #endif
+#endif
         }
         H5Sclose(dataspace_1d);
     }
 
-    // write edge_coords if storing them (DEBUG_MODE only)
-    #ifdef DEBUG_MODE
-    if (meshData.header.store_edge_coords && !meshData.faces.edge_coords.empty() && meshData.faces.edge_coords_dims.size() == 2) {
+// write edge_coords if storing them (DEBUG_MODE only)
+#ifdef DEBUG_MODE
+    if (meshData.header.store_edge_coords && !meshData.faces.edge_coords.empty() &&
+        meshData.faces.edge_coords_dims.size() == 2) {
         hid_t dataspace = H5Screate_simple(2, meshData.faces.edge_coords_dims.data(), NULL);
-        hid_t dataset_id = H5Dcreate(faces_group, "edge_coords", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hid_t dataset_id =
+            H5Dcreate(faces_group, "edge_coords", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.edge_coords.data());
             H5Dclose(dataset_id);
-            std::cout << "OUTPUT: edge_coords: " << meshData.faces.edge_coords_dims[0] << " x " << meshData.faces.edge_coords_dims[1] << std::endl;
+            std::cout << "OUTPUT: edge_coords: " << meshData.faces.edge_coords_dims[0] << " x "
+                      << meshData.faces.edge_coords_dims[1] << std::endl;
         }
         H5Sclose(dataspace);
     }
 
     // write edge_coords_offsets if storing edge coords
     if (meshData.header.store_edge_coords && !meshData.faces.edge_coords_offsets.empty()) {
-        hsize_t dims_1d[1] = {meshData.faces.edge_coords_offsets.size()};
-        hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t dataset_id = H5Dcreate(faces_group, "edge_coords_offsets", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hsize_t dims_1d[1]   = {meshData.faces.edge_coords_offsets.size()};
+        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+        hid_t   dataset_id   = H5Dcreate(
+            faces_group, "edge_coords_offsets", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
-            H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.edge_coords_offsets.data());
+            H5Dwrite(
+                dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.edge_coords_offsets.data());
             H5Dclose(dataset_id);
-            std::cout << "OUTPUT: edge_coords_offsets: " << meshData.faces.edge_coords_offsets.size() << " offsets" << std::endl;
+            std::cout << "OUTPUT: edge_coords_offsets: " << meshData.faces.edge_coords_offsets.size() << " offsets"
+                      << std::endl;
         }
         H5Sclose(dataspace_1d);
     }
-    #endif
+#endif
 
     H5Gclose(faces_group);
     H5Gclose(cells_group);
@@ -244,15 +259,16 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
 
         // write rho (density)
         if (primvar && primvar->rho) {
-            hsize_t dims_1d[1] = {(hsize_t)n_hydro};
-            hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-            hid_t dataset_id = H5Dcreate(hydro_group, "rho", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            hsize_t dims_1d[1]   = {(hsize_t)n_hydro};
+            hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+            hid_t   dataset_id =
+                H5Dcreate(hydro_group, "rho", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
             if (dataset_id >= 0) {
                 H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, primvar->rho);
                 H5Dclose(dataset_id);
-                #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
                 std::cout << "OUTPUT: rho: " << n_hydro << " values" << std::endl;
-                #endif
+#endif
             }
             H5Sclose(dataspace_1d);
         }
@@ -263,35 +279,37 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
             for (int i = 0; i < n_hydro; i++) {
                 vel_flat[i * DIMENSION + 0] = primvar->v[i].x;
                 vel_flat[i * DIMENSION + 1] = primvar->v[i].y;
-                #ifdef dim_3D
+#ifdef dim_3D
                 vel_flat[i * DIMENSION + 2] = primvar->v[i].z;
-                #endif
+#endif
             }
-            
+
             hsize_t dims_2d[2] = {(hsize_t)n_hydro, DIMENSION};
-            hid_t dataspace = H5Screate_simple(2, dims_2d, NULL);
-            hid_t dataset_id = H5Dcreate(hydro_group, "vel", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            hid_t   dataspace  = H5Screate_simple(2, dims_2d, NULL);
+            hid_t   dataset_id =
+                H5Dcreate(hydro_group, "vel", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
             if (dataset_id >= 0) {
                 H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, vel_flat.data());
                 H5Dclose(dataset_id);
-                #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
                 std::cout << "OUTPUT: vel: " << n_hydro << " x " << DIMENSION << std::endl;
-                #endif
+#endif
             }
             H5Sclose(dataspace);
         }
 
         // write Energy
         if (primvar && primvar->E) {
-            hsize_t dims_1d[1] = {(hsize_t)n_hydro};
-            hid_t dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-            hid_t dataset_id = H5Dcreate(hydro_group, "Energy", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            hsize_t dims_1d[1]   = {(hsize_t)n_hydro};
+            hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
+            hid_t   dataset_id   = H5Dcreate(
+                hydro_group, "Energy", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
             if (dataset_id >= 0) {
                 H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, primvar->E);
                 H5Dclose(dataset_id);
-                #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
                 std::cout << "OUTPUT: Energy: " << n_hydro << " values" << std::endl;
-                #endif
+#endif
             }
             H5Sclose(dataspace_1d);
         }
@@ -300,26 +318,31 @@ bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellDat
     }
 
     H5Fclose(file_id);
-    #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
     std::cout << "OUTPUT: Mesh file written successfully to: " << fullPath << std::endl;
-    #endif
+#endif
     return success;
 }
 
 #ifdef WRITE_KNN_OUTPUT
-bool OutputHandler::writeKNNFile(const std::string& filename, POINT_TYPE* knn_pts, unsigned int* knn_nearest, unsigned int* knn_permutation, int num_points, int k) {
+bool OutputHandler::writeKNNFile(const std::string& filename,
+                                 POINT_TYPE*        knn_pts,
+                                 unsigned int*      knn_nearest,
+                                 unsigned int*      knn_permutation,
+                                 int                num_points,
+                                 int                k) {
     std::string fullPath = outputDirectory + filename;
-    
+
     // flatten POINT_TYPE array to flat double array
     std::vector<double> points_flat(num_points * DIMENSION);
     for (int i = 0; i < num_points; i++) {
         points_flat[i * DIMENSION + 0] = knn_pts[i].x;
         points_flat[i * DIMENSION + 1] = knn_pts[i].y;
-        #ifdef dim_3D
+#ifdef dim_3D
         points_flat[i * DIMENSION + 2] = knn_pts[i].z;
-        #endif
+#endif
     }
-    
+
     // create HDF5 file
     hid_t file_id = H5Fcreate(fullPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
     if (file_id < 0) {
@@ -339,13 +362,14 @@ bool OutputHandler::writeKNNFile(const std::string& filename, POINT_TYPE* knn_pt
 
     // write header attributes
     hid_t scalar_space = H5Screate(H5S_SCALAR);
-    
-    int dimension = DIMENSION;
+
+    int   dimension      = DIMENSION;
     hid_t attr_dimension = H5Acreate(header_group, "dimension", H5T_NATIVE_INT, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
     H5Awrite(attr_dimension, H5T_NATIVE_INT, &dimension);
     H5Aclose(attr_dimension);
 
-    hid_t attr_num_points = H5Acreate(header_group, "num_points", H5T_NATIVE_INT, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
+    hid_t attr_num_points =
+        H5Acreate(header_group, "num_points", H5T_NATIVE_INT, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
     H5Awrite(attr_num_points, H5T_NATIVE_INT, &num_points);
     H5Aclose(attr_num_points);
 
@@ -365,9 +389,10 @@ bool OutputHandler::writeKNNFile(const std::string& filename, POINT_TYPE* knn_pt
     }
 
     // write points (sorted)
-    hsize_t points_dims[2] = {(hsize_t)num_points, DIMENSION};
-    hid_t dataspace_points = H5Screate_simple(2, points_dims, NULL);
-    hid_t dataset_points = H5Dcreate(knn_group, "points", H5T_NATIVE_DOUBLE, dataspace_points, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    hsize_t points_dims[2]   = {(hsize_t)num_points, DIMENSION};
+    hid_t   dataspace_points = H5Screate_simple(2, points_dims, NULL);
+    hid_t   dataset_points =
+        H5Dcreate(knn_group, "points", H5T_NATIVE_DOUBLE, dataspace_points, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     if (dataset_points >= 0) {
         H5Dwrite(dataset_points, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, points_flat.data());
         H5Dclose(dataset_points);
@@ -378,9 +403,10 @@ bool OutputHandler::writeKNNFile(const std::string& filename, POINT_TYPE* knn_pt
     H5Sclose(dataspace_points);
 
     // write nearest neighbors
-    hsize_t nearest_dims[2] = {(hsize_t)num_points, (hsize_t)k};
-    hid_t dataspace_nearest = H5Screate_simple(2, nearest_dims, NULL);
-    hid_t dataset_nearest = H5Dcreate(knn_group, "nearest", H5T_NATIVE_UINT, dataspace_nearest, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    hsize_t nearest_dims[2]   = {(hsize_t)num_points, (hsize_t)k};
+    hid_t   dataspace_nearest = H5Screate_simple(2, nearest_dims, NULL);
+    hid_t   dataset_nearest =
+        H5Dcreate(knn_group, "nearest", H5T_NATIVE_UINT, dataspace_nearest, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     if (dataset_nearest >= 0) {
         H5Dwrite(dataset_nearest, H5T_NATIVE_UINT, H5S_ALL, H5S_ALL, H5P_DEFAULT, knn_nearest);
         H5Dclose(dataset_nearest);
@@ -391,9 +417,10 @@ bool OutputHandler::writeKNNFile(const std::string& filename, POINT_TYPE* knn_pt
     H5Sclose(dataspace_nearest);
 
     // write permutation
-    hsize_t perm_dims[1] = {(hsize_t)num_points};
-    hid_t dataspace_perm = H5Screate_simple(1, perm_dims, NULL);
-    hid_t dataset_perm = H5Dcreate(knn_group, "permutation", H5T_NATIVE_UINT, dataspace_perm, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    hsize_t perm_dims[1]   = {(hsize_t)num_points};
+    hid_t   dataspace_perm = H5Screate_simple(1, perm_dims, NULL);
+    hid_t   dataset_perm =
+        H5Dcreate(knn_group, "permutation", H5T_NATIVE_UINT, dataspace_perm, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     if (dataset_perm >= 0) {
         H5Dwrite(dataset_perm, H5T_NATIVE_UINT, H5S_ALL, H5S_ALL, H5P_DEFAULT, knn_permutation);
         H5Dclose(dataset_perm);
@@ -406,11 +433,8 @@ bool OutputHandler::writeKNNFile(const std::string& filename, POINT_TYPE* knn_pt
     H5Gclose(knn_group);
     H5Fclose(file_id);
 
-    if (success) {
-        std::cout << "OUTPUT: KNN file written successfully to: " << fullPath << std::endl;
-    }
+    if (success) { std::cout << "OUTPUT: KNN file written successfully to: " << fullPath << std::endl; }
     return success;
 }
 #endif
 #endif
-

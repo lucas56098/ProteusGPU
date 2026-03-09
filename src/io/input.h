@@ -1,8 +1,8 @@
 #ifndef INPUT_H
 #define INPUT_H
 
-#include <string>
 #include <map>
+#include <string>
 #include <vector>
 
 #ifdef USE_HDF5
@@ -14,28 +14,28 @@ struct ICHeader {
 };
 
 struct ICData {
-    std::vector<double> seedpos;  // dimension * numSeeds
-    std::vector<hsize_t> seedpos_dims;  // [numSeeds, dimension]
-    
+    std::vector<double>  seedpos;      // dimension * numSeeds
+    std::vector<hsize_t> seedpos_dims; // [numSeeds, dimension]
+
     // hydro quantities
-    std::vector<double> rho;  // numSeeds
-    std::vector<double> vel;  // dimension * numSeeds
-    std::vector<double> Energy;  // numSeeds
-    
+    std::vector<double> rho;    // numSeeds
+    std::vector<double> vel;    // dimension * numSeeds
+    std::vector<double> Energy; // numSeeds
+
     ICHeader header;
 };
 #endif
 
 // Input handler class for reading parameters and initial conditions
 class InputHandler {
-private:
+  private:
     std::map<std::string, std::string> parameters;
-    std::string paramFilePath;
+    std::string                        paramFilePath;
 
     // helper functions
     std::string trim(const std::string& str);
 
-public:
+  public:
     InputHandler(const std::string& filename = "/ics/param.txt");
 
     // load parameters from parameter file
@@ -43,9 +43,9 @@ public:
 
     // access parameters
     std::string getParameter(const std::string& key) const;
-    int getParameterInt(const std::string& key) const;
-    double getParameterDouble(const std::string& key) const;
-    bool getParameterBool(const std::string& key) const;
+    int         getParameterInt(const std::string& key) const;
+    double      getParameterDouble(const std::string& key) const;
+    bool        getParameterBool(const std::string& key) const;
 
 #ifdef USE_HDF5
     // read initial conditions from a HDF5 file

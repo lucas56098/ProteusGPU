@@ -1,62 +1,62 @@
+#include "begrun.h"
+#include "../global/allvars.h"
+#include "../io/input.h"
+#include "../io/output.h"
+#include "../profiler/profiler.h"
+#include <chrono>
+#include <cmath>
 #include <iostream>
 #include <stdio.h>
 #include <thread>
-#include <chrono>
-#include "begrun.h"
-#include "../io/input.h"
-#include "../io/output.h"
-#include "../global/allvars.h"
-#include "../profiler/profiler.h"
-#include <cmath>
 
 namespace begrun {
 
+    // initalize Proteus
+    void begrun(int argc, char* argv[]) {
 
-// initalize Proteus
-void begrun(int argc, char* argv[]) {
+        PROFILE_START("BEGRUN");
 
-    PROFILE_START("BEGRUN");
+        // welcome message
+        print_banner();
 
-    // welcome message
-    print_banner();
+// print useful information
+#ifdef dim_2D
+        std::cout << "BEGRUN: Running in 2D mode" << std::endl;
+#elif dim_3D
+        std::cout << "BEGRUN: Running in 3D mode" << std::endl;
+#endif
 
-    // print useful information
-    #ifdef dim_2D
-    std::cout << "BEGRUN: Running in 2D mode" << std::endl;
-    #elif dim_3D
-    std::cout << "BEGRUN: Running in 3D mode" << std::endl;
-    #endif
+#ifdef CPU_DEBUG
+        std::cout << "BEGRUN: CPU mode enabled" << std::endl;
+#endif
 
-    #ifdef CPU_DEBUG
-    std::cout << "BEGRUN: CPU mode enabled" << std::endl;
-    #endif
+#ifdef DRY_RUN
+        std::cout << "Dry run for CI test successful, exiting." << std::endl;
+        exit(EXIT_SUCCESS);
+#endif
 
-    #ifdef DRY_RUN
-    std::cout << "Dry run for CI test successful, exiting." << std::endl;
-    exit(EXIT_SUCCESS);
-    #endif
+        // load param.txt
+        input = loadInputFiles(argc, argv);
 
-    // load param.txt
-    input = loadInputFiles(argc, argv);
+        // read IC file
+        if (!input.readICFile(input.getParameter("ic_file"), icData)) { exit(EXIT_FAILURE); }
 
-    // read IC file
-    if(!input.readICFile(input.getParameter("ic_file"), icData)) {exit(EXIT_FAILURE);}
+        // adapt buff for periodic bc to IC resolution (naive, will have to be improved later)
+        buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) *
+               4; // for approx unform grid this would be 4 layers of ghost points...
 
-    // adapt buff for periodic bc to IC resolution (naive, will have to be improved later)
-    buff = (1./pow(icData.seedpos_dims[0], 1./((double)DIMENSION))) * 4; // for approx unform grid this would be 4 layers of ghost points...
+        // init output folder
+        output = OutputHandler(input.getParameter("output_directory"));
+        if (!output.initialize()) { exit(EXIT_FAILURE); }
 
-    // init output folder
-    output = OutputHandler(input.getParameter("output_directory"));
-    if (!output.initialize()) {exit(EXIT_FAILURE);}
+        PROFILE_END("BEGRUN");
+    }
 
-    PROFILE_END("BEGRUN");
-}
-
-
-// prints welcome message
-void print_banner() {
-    std::cout << "==========================================================================" << std::endl;
-    std::cout << R"(                                                                                                                                                       
+    // prints welcome message
+    void print_banner() {
+        std::cout << "==========================================================================" << std::endl;
+        std::cout
+            << R"(                                                                                                                                                       
           _____           _                    _____ _____  _    _ 
          |  __ \         | |                  / ____|  __ \| |  | |
          | |__) | __ ___ | |_ ___ _   _ ___  | |  __| |__) | |  | |
@@ -65,34 +65,31 @@ void print_banner() {
          |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/ 
 
     )" << std::endl;
-    std::cout << "==========================================================================" << std::endl;
-    std::cout << "A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics" << std::endl;
-    std::cout << "==========================================================================" << std::endl;
-    std::cout << "Version: 0.2" << std::endl;
-    std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
-    std::cout << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
-    std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
-    std::cout << "==========================================================================" << std::endl;
-}
-
-
-// loads input parameters from param.txt into InputHandler
-InputHandler loadInputFiles(int argc, char* argv[]) {
-
-    // default is param.txt, otherwise ./ProteusGPU <param_file>
-    std::string paramFile = "./ics/param.txt";
-    if (argc > 1) {
-        paramFile = argv[1];
+        std::cout << "==========================================================================" << std::endl;
+        std::cout << "A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics" << std::endl;
+        std::cout << "==========================================================================" << std::endl;
+        std::cout << "Version: 0.2" << std::endl;
+        std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
+        std::cout << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
+        std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
+        std::cout << "==========================================================================" << std::endl;
     }
 
-    // load parameters into InputHandler
-    InputHandler input(paramFile);
-    if (!input.loadParameters()) {
-        std::cerr << "BEGRUN: Failed to load parameters. Exiting." << std::endl;
-        exit(EXIT_FAILURE);
-    }
+    // loads input parameters from param.txt into InputHandler
+    InputHandler loadInputFiles(int argc, char* argv[]) {
 
-    return input;
-}
+        // default is param.txt, otherwise ./ProteusGPU <param_file>
+        std::string paramFile = "./ics/param.txt";
+        if (argc > 1) { paramFile = argv[1]; }
+
+        // load parameters into InputHandler
+        InputHandler input(paramFile);
+        if (!input.loadParameters()) {
+            std::cerr << "BEGRUN: Failed to load parameters. Exiting." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
+        return input;
+    }
 
 } // namespace begrun

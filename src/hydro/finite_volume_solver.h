@@ -1,24 +1,24 @@
 #ifndef FINITE_VOLUME_SOLVER_H
 #define FINITE_VOLUME_SOLVER_H
 
-#include <iostream>
-#include <stdio.h>
-#include <vector>
-#include <cmath>
-#include <climits>
+#include "../begrun/begrun.h"
 #include "../global/allvars.h"
 #include "../io/input.h"
 #include "../io/output.h"
 #include "../knn/knn.h"
-#include "../begrun/begrun.h"
 #include "../voronoi/voronoi.h"
 #include "riemann.h"
+#include <climits>
+#include <cmath>
+#include <iostream>
+#include <stdio.h>
+#include <vector>
 
 namespace hydro {
 
     // init hydrostruct from IC data
     primvars* init(int n_hydro);
-    void free_prim(primvars** primvar);
+    void      free_prim(primvars** primvar);
 
     void hydro_step(double dt, const VMesh* mesh, primvars* primvar);
 
@@ -26,6 +26,6 @@ namespace hydro {
 
     double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar);
 
-}
+} // namespace hydro
 
 #endif // FINITE_VOLUME_SOLVER

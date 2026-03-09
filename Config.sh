@@ -22,7 +22,7 @@ USE_OPENMP
 
 # Riemann solver
 #RIEMANN_HLL
-RIEMANN_HLLC
+RIEMANN_HLLC # 3D is still missing!!
 
 
 # Output types
