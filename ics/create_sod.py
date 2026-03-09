@@ -80,7 +80,8 @@ def create_sod_shock_tube(filename="IC.hdf5", num_seeds=100, extent=1.0, dimensi
     print(f"  Gamma: {gamma}")
     
     # Create random seedpoints
-    seedpos = np.random.uniform(0, extent, size=(num_seeds, dimension)).astype(np.float64)
+    rng = np.random.default_rng(424242)
+    seedpos = rng.uniform(0, extent, size=(num_seeds, dimension)).astype(np.float64)
     
     # Apply Lloyd regularization for uniform distribution
     #seedpos = lloyd_regularization(seedpos, extent, num_iterations=5)
@@ -152,7 +153,7 @@ def create_sod_shock_tube(filename="IC.hdf5", num_seeds=100, extent=1.0, dimensi
 
 if __name__ == "__main__":
     # Create 2D Sod shock tube
-    create_sod_shock_tube("IC_sod_2D.hdf5", num_seeds=150**2, extent=1.0, dimension=2)
+    #create_sod_shock_tube("IC_sod_2D.hdf5", num_seeds=150**2, extent=1.0, dimension=2)
     
     # Uncomment for 3D shock tube
-    # create_sod_shock_tube("IC_sod_3D.hdf5", num_seeds=150**3, extent=1.0, dimension=3)
+    create_sod_shock_tube("IC_sod_3D.hdf5", num_seeds=150**3, extent=1.0, dimension=3)

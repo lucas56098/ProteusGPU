@@ -26,7 +26,8 @@ def create_test_ic(filename="IC.hdf5", num_seeds=100, extent=1.0, dimension=3):
         print(f"  Created header group with attributes")
         
         # Create seedpos dataset (num_seeds x dimension)
-        seedpos = np.random.uniform(0, extent, size=(num_seeds, dimension)).astype(np.float64)
+        rng = np.random.default_rng(424242)
+        seedpos = rng.uniform(0, extent, size=(num_seeds, dimension)).astype(np.float64)
         f.create_dataset("seedpos", data=seedpos)
         
         print(f"  Created seedpos dataset: {seedpos.shape}")
