@@ -7,6 +7,7 @@
 #include "../io/output.h"
 #include "../global/allvars.h"
 #include "../profiler/profiler.h"
+#include <cmath>
 
 namespace begrun {
 
@@ -40,6 +41,9 @@ void begrun(int argc, char* argv[]) {
 
     // read IC file
     if(!input.readICFile(input.getParameter("ic_file"), icData)) {exit(EXIT_FAILURE);}
+
+    // adapt buff for periodic bc to IC resolution (naive, will have to be improved later)
+    buff = (1./pow(icData.seedpos_dims[0], 1./((double)DIMENSION))) * 4; // for approx unform grid this would be 4 layers of ghost points...
 
     // init output folder
     output = OutputHandler(input.getParameter("output_directory"));
