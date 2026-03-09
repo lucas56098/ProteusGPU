@@ -76,7 +76,7 @@ void print_banner() {
 InputHandler loadInputFiles(int argc, char* argv[]) {
 
     // default is param.txt, otherwise ./ProteusGPU <param_file>
-    std::string paramFile = "param.txt";
+    std::string paramFile = "./ics/param.txt";
     if (argc > 1) {
         paramFile = argv[1];
     }

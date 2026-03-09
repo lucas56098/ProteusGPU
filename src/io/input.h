@@ -36,7 +36,7 @@ private:
     std::string trim(const std::string& str);
 
 public:
-    InputHandler(const std::string& filename = "param.txt");
+    InputHandler(const std::string& filename = "/ics/param.txt");
 
     // load parameters from parameter file
     bool loadParameters();
