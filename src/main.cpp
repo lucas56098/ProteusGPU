@@ -59,8 +59,8 @@ int main(int argc, char* argv[]) {
     while (t_sim < t_end) {
         double dt = hydro::dt_CFL(CFL, mesh, primvar);
 
-	// go at most to next output time
-	if (t_sim + dt > t_nextoutput) { dt = t_nextoutput - t_sim; }
+	    // go at most to next output time
+	    if (t_sim + dt > t_nextoutput) { dt = t_nextoutput - t_sim; }
 
         // make sure we exactly hit t_end
         if (t_sim + dt > t_end) { dt = t_end - t_sim; }
@@ -69,9 +69,13 @@ int main(int argc, char* argv[]) {
         t_sim += dt;
         step++;
 
-	// write output
+        if (step % 10 == 0) {
+            std::cout << "Step " << step << "  t = " << t_sim << "  dt = " << dt << std::endl;
+        }
+
+	    // write output
         #ifdef USE_HDF5
-        if (t_sim >= t_nextoutput) {
+        if (t_sim >= t_nextoutput || t_sim == t_end) {
             PROFILE_START("SNAPSHOTS");
             MeshCellData meshData;
             voronoi::vmesh_to_meshdata(mesh, meshData);
@@ -83,26 +87,11 @@ int main(int argc, char* argv[]) {
             PROFILE_END("SNAPSHOTS");
         }
         #endif
-
-        if (step % 10 == 0) {
-            std::cout << "Step " << step << "  t = " << t_sim << "  dt = " << dt << std::endl;
-        }
     }
     PROFILE_END("HYDRO_MAIN");
 
     std::cout << "Finished after " << step << " steps at t = " << t_sim << std::endl;
     std::cout << "Hydro finished" << std::endl;
-
-    // convert VMesh to MeshCellData and write to HDF5 file
-    PROFILE_START("SNAPSHOTS");
-    #ifdef USE_HDF5
-    MeshCellData meshData;
-    voronoi::vmesh_to_meshdata(mesh, meshData);
-
-    std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
-    if (!output.writeSnapshot(output_file, meshData, primvar, icData.seedpos_dims[0], t_sim)) { exit(EXIT_FAILURE); }
-    #endif
-    PROFILE_END("SNAPSHOTS");
 
     // delete mesh & hydro
     voronoi::free_vmesh(mesh);
