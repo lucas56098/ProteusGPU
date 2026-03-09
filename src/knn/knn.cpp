@@ -241,7 +241,9 @@ void cpu_knearest(int blocksPerGrid, int threadsPerBlock, int N_grid, int len_pt
     double knearest_dists[_K_ * _KNN_BLOCK_SIZE_];
 
     for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
+        #ifdef USE_OPENMP
         #pragma omp parallel for
+        #endif
         for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
             int point_in = threadId + blockId * threadsPerBlock;
             if (point_in >= len_pts) continue;// return;
@@ -364,6 +366,10 @@ bool verify(knn_problem* knn, double tol, int max_report) {
     }
 
     int mismatches = 0;
+
+    #ifdef USE_OPENMP
+    #pragma omp parallel for num_threads(_KNN_BLOCK_SIZE_) schedule(static)
+    #endif
     for (int i = 0; i < n; i++) {
         std::vector<double> best_dist(k, DBL_MAX);
         std::vector<unsigned int> best_idx(k, UINT_MAX);

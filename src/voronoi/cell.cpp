@@ -15,6 +15,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#if defined(USE_OPENMP)
+#include <omp.h>
+#endif
+
 namespace voronoi {
 
     static const uchar END_OF_LIST = 255;
@@ -25,9 +29,16 @@ namespace voronoi {
     static double4 half_plane_data[_VORO_BLOCK_SIZE_ * _MAX_P_];
 
     // helper functions to access memory pools
-    static inline VERT_TYPE& triangle(int t) { return triangle_data[threadId.x * _MAX_T_ + t]; }
-    static inline uchar& boundary_next(int v) { return boundary_next_data[threadId.x * _MAX_P_ + v]; }
-    static inline double4& half_plane(int v) { return half_plane_data[threadId.x * _MAX_P_ + v]; }
+    #if defined(CPU_DEBUG) && !defined(USE_OPENMP)
+    static inline VERT_TYPE& triangle(int t) { return triangle_data[threadId * _MAX_T_ + t]; }
+    static inline uchar& boundary_next(int v) { return boundary_next_data[threadId * _MAX_P_ + v]; }
+    static inline double4& half_plane(int v) { return half_plane_data[threadId * _MAX_P_ + v]; }
+    #elif defined(CPU_DEBUG) && defined(USE_OPENMP)
+    static inline VERT_TYPE& triangle(int t) { return triangle_data[omp_get_thread_num() * _MAX_T_ + t]; }
+    static inline uchar& boundary_next(int v) { return boundary_next_data[omp_get_thread_num() * _MAX_P_ + v]; }
+    static inline double4& half_plane(int v) { return half_plane_data[omp_get_thread_num() * _MAX_P_ + v]; }
+    #endif
+
     inline  uchar& ith_plane(uchar t, int i) {return reinterpret_cast<uchar *>(&(triangle(t)))[i];}
 
     // returns true if vertex at index t_idx references plane p

@@ -71,9 +71,8 @@ typedef double3 POINT_TYPE;
 typedef uchar3 VERT_TYPE;
 #endif
 
-#ifdef CPU_DEBUG
-extern int3 blockId;
-extern int3 threadId;
+#if defined(CPU_DEBUG) && !defined(USE_OPENMP)
+extern int threadId;
 #endif
 
 // structs for input, output and IC handling

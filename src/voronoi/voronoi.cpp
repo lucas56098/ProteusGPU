@@ -120,13 +120,19 @@ namespace voronoi {
     void cpu_compute_cell(int blocksPerGrid, int threadsPerBlock, int N_seedpts, double* d_stored_points, unsigned int* d_knearests, Status* gpu_stat, VMesh* mesh, hsize_t& face_capacity) {
 
         // emulate kernel
-        for (blockId.x = 0; blockId.x < blocksPerGrid; blockId.x++) {
-            for (threadId.x = 0; threadId.x < threadsPerBlock; threadId.x++) {
+        for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
+            #ifdef USE_OPENMP
+            #pragma omp parallel for num_threads(_VORO_BLOCK_SIZE_) schedule(static)
+            #endif
+            for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
 
                 // global seed_id
-                int seed_id = threadsPerBlock * blockId.x + threadId.x;
-                if (seed_id >= N_seedpts) {break;}
+                int seed_id = threadsPerBlock * blockId + threadId;
+                if (seed_id >= N_seedpts) {continue;}
                 if (seed_id % 10000 == 0 || seed_id == N_seedpts - 1) {
+                    #ifdef USE_OPENMP
+                    #pragma omp critical(voro_progress_print)
+                    #endif
                     std::cout << "\rVORONOI: processing cell " << seed_id+1 << " / " << N_seedpts << std::flush;
                 }
 
@@ -153,6 +159,9 @@ namespace voronoi {
 
                 // store cell in Vmesh if successful
                 if (gpu_stat[seed_id] == success) {
+                    #ifdef USE_OPENMP
+                    #pragma omp critical(voro_mesh_write)
+                    #endif
                     extract_cell_to_vmesh(cell, mesh, (hsize_t)seed_id, face_capacity);
                 }
             }

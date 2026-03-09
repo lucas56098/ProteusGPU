@@ -52,7 +52,9 @@ namespace hydro {
         PROFILE_START("HYDRO_STEP (par)");
 
         // loop over all active cells to calc new primvars
-        #pragma omp parallel for
+        #ifdef USE_OPENMP
+        #pragma omp parallel for num_threads(_OMP_HYDRO_THREADS_)
+        #endif
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
 
             // get state of cell i
@@ -107,7 +109,9 @@ namespace hydro {
             new_prim.E[i] = state_i.E - frac * total_flux.E;
         }
 
-        #pragma omp parallel for
+        #ifdef USE_OPENMP
+        #pragma omp parallel for num_threads(_OMP_HYDRO_THREADS_)
+        #endif
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
             primvar->rho[i] = new_prim.rho[i];
             primvar->v[i].x = new_prim.v[i].x;
@@ -157,7 +161,9 @@ namespace hydro {
 
         double min_dt = 1e100;
 
+        #ifdef USE_OPENMP
         #pragma omp parallel for reduction(min : min_dt)
+        #endif
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
             // build prim state for cell i to get pressure
             prim state_i;
