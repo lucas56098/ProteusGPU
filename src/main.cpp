@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <stdio.h>
 #include <vector>
 #include <cmath>
@@ -40,15 +41,23 @@ int main(int argc, char* argv[]) {
     // compute voronoi mesh
     VMesh* mesh = voronoi::compute_periodic_mesh((POINT_TYPE*) icData.seedpos.data(), icData.seedpos_dims[0]);
 
+    // start timestep loop
     std::cout << "Hydro started" << std::endl;
 
     double t_sim = 0.0;
-    double t_end = 0.1;
+    double t_end = std::stof(input.getParameter("time_end"));
     double CFL = 0.4;
     int step = 0;
 
+    double output_dt = std::stof(input.getParameter("output_dt"));
+    double t_nextoutput = t_sim + output_dt;
+    int snap_num = 0;
+
     while (t_sim < t_end) {
         double dt = hydro::dt_CFL(CFL, mesh, primvar);
+
+	// go at most to next output time
+	if (t_sim + dt > t_nextoutput) { dt = t_nextoutput - t_sim; }
 
         // make sure we exactly hit t_end
         if (t_sim + dt > t_end) { dt = t_end - t_sim; }
@@ -56,6 +65,19 @@ int main(int argc, char* argv[]) {
         hydro::hydro_step(dt, mesh, primvar);
         t_sim += dt;
         step++;
+
+	// write output
+        #ifdef USE_HDF5
+        if (t_sim >= t_nextoutput) {
+            MeshCellData meshData;
+            voronoi::vmesh_to_meshdata(mesh, meshData);
+
+            std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
+            if (!output.writeSnapshot(output_file, meshData, primvar, icData.seedpos_dims[0], t_sim)) { exit(EXIT_FAILURE); }
+            t_nextoutput += output_dt;
+            snap_num += 1;
+        }
+        #endif
 
         if (step % 3 == 0) {
             std::cout << "Step " << step << "  t = " << t_sim << "  dt = " << dt << std::endl;
@@ -71,8 +93,8 @@ int main(int argc, char* argv[]) {
     MeshCellData meshData;
     voronoi::vmesh_to_meshdata(mesh, meshData);
 
-    std::string mesh_output_file = input.getParameter("output_mesh_file");
-    if (!output.writeMeshFile(mesh_output_file, meshData, primvar, icData.seedpos_dims[0])) { exit(EXIT_FAILURE); }
+    std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
+    if (!output.writeSnapshot(output_file, meshData, primvar, icData.seedpos_dims[0], t_sim)) { exit(EXIT_FAILURE); }
     #endif
 
     // delete mesh & hydro

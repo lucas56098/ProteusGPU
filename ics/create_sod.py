@@ -152,7 +152,7 @@ def create_sod_shock_tube(filename="IC.hdf5", num_seeds=100, extent=1.0, dimensi
 
 if __name__ == "__main__":
     # Create 2D Sod shock tube
-    create_sod_shock_tube("IC.hdf5", num_seeds=150**3, extent=1.0, dimension=3)
+    create_sod_shock_tube("IC_sod_2D.hdf5", num_seeds=150**2, extent=1.0, dimension=2)
     
     # Uncomment for 3D shock tube
-    # create_sod_shock_tube("IC.hdf5", num_seeds=8000, extent=1.0, dimension=3)
+    # create_sod_shock_tube("IC_sod_3D.hdf5", num_seeds=150**3, extent=1.0, dimension=3)

@@ -25,7 +25,7 @@ bool OutputHandler::initialize() {
 }
 
 #ifdef USE_HDF5
-bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro) {
+bool OutputHandler::writeSnapshot(const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim) {
     std::string fullPath = outputDirectory + filename;
     
     std::cout << "OUTPUT: Writing mesh to: " << fullPath << std::endl;
@@ -78,6 +78,10 @@ bool OutputHandler::writeMeshFile(const std::string& filename, const MeshCellDat
     hbool_t store_bool = meshData.header.store_edge_coords ? 1 : 0;
     H5Awrite(attr_store, H5T_NATIVE_HBOOL, &store_bool);
     H5Aclose(attr_store);
+
+    hid_t attr_time = H5Acreate(header_group, "time", H5T_NATIVE_DOUBLE, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(attr_time, H5T_NATIVE_DOUBLE, &t_sim);
+    H5Aclose(attr_time);
 
     H5Sclose(scalar_space);
     H5Gclose(header_group);

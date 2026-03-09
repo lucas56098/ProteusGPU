@@ -4,3 +4,7 @@ output_directory = ./output/
 output_mesh_file = mesh_output.hdf5
 output_knn_file = knn_output.hdf5
 
+# Time
+time_end = 0.1
+output_dt = 0.01
+

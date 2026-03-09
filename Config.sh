@@ -16,9 +16,8 @@ USE_HDF5
 # Debug
 #DEBUG_MODE # also enables writing voronoi edges...
 
-# OpenMP parallelization (requires g++-15 on macOS)
-# Uncomment to enable OpenMP for parallelizing loops (still work in progrss)
-#USE_OPENMP
+# enable OpenMP parallelization for CPU mode (requires g++-15 on macOS)
+USE_OPENMP
 
 # Output types
 #WRITE_KNN_OUTPUT
