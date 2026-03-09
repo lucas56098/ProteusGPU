@@ -1,6 +1,7 @@
 #include "finite_volume_solver.h"
 #include "../global/allvars.h"
 #include "riemann.h"
+#include "../profiler/profiler.h"
 
 namespace hydro {
 
@@ -48,6 +49,7 @@ namespace hydro {
         new_prim.v = (POINT_TYPE*)malloc(mesh->n_hydro*sizeof(POINT_TYPE));
         new_prim.E = (double*)malloc(mesh->n_hydro*sizeof(double));
 
+        PROFILE_START("HYDRO_STEP (par)");
 
         // loop over all active cells to calc new primvars
         #pragma omp parallel for
@@ -116,6 +118,8 @@ namespace hydro {
             primvar->E[i] = new_prim.E[i];
         }
 
+        PROFILE_END("HYDRO_STEP (par)");
+
         // free new primvars
         free(new_prim.rho);
         free(new_prim.v);
@@ -149,6 +153,7 @@ namespace hydro {
 
     // calc timestep using CFL condition for euler equations
     double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar) {
+        PROFILE_START("CFL (par)");
 
         double min_dt = 1e100;
 
@@ -182,6 +187,7 @@ namespace hydro {
             }
         }
 
+        PROFILE_END("CFL (par)");
         return min_dt;
     }
 

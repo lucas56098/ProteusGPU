@@ -10,6 +10,7 @@
 #include "../knn/knn.h"
 #include "../begrun/begrun.h"
 #include "../voronoi/voronoi.h"
+#include "../profiler/profiler.h"
 
 namespace voronoi {
 
@@ -43,6 +44,8 @@ inline void add_ghost(POINT_TYPE* pts, hsize_t index, hsize_t* n_ghosts,  const 
 // for now only 2D
 VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points) {
 
+    PROFILE_START("MESH_TOTAL");
+        
     std::cout << "VORONOI: set up periodic mesh" << std::endl;
 
     // allocate new pts (that include ghosts)
@@ -178,6 +181,8 @@ VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points) {
     #ifdef DEBUG_MODE
     std::cout << "VORONOI: periodic mesh should be created" << std::endl;
     #endif
+
+    PROFILE_END("MESH_TOTAL");
 
     // return that mesh :D
     return mesh;

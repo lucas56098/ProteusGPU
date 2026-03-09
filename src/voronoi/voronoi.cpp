@@ -8,6 +8,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include "../profiler/profiler.h"
 
 namespace voronoi {
 
@@ -18,6 +19,7 @@ namespace voronoi {
         std::cout << "VORONOI: Computing Voronoi mesh..." << std::endl;
 
         // -------- KNN PROBLEM --------
+        PROFILE_START("KNN (par)");
         // define knn problem
         knn_problem *knn = NULL;
 
@@ -43,8 +45,10 @@ namespace voronoi {
         knn::write_knn_output(knn);
         #endif
 
+        PROFILE_END("KNN (par)");
         // -------- VORONOI MESH GENERATION --------
-        
+        PROFILE_START("VORONOI (par)");
+
         // allocate Vmesh struct
         std::vector<Status> stat(n_pts, security_radius_not_reached);
         hsize_t initial_face_capacity = (hsize_t)n_pts * 16;
@@ -58,9 +62,10 @@ namespace voronoi {
         unpermute_vmesh(mesh, knn_permutation);
         free(knn_permutation);
 
+        PROFILE_END("VORONOI (par)");        
+
         // free KNN resources
         knn::knn_free(&knn);
-
         return mesh;
     }
 

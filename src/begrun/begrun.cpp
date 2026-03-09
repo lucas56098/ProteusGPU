@@ -6,12 +6,15 @@
 #include "../io/input.h"
 #include "../io/output.h"
 #include "../global/allvars.h"
+#include "../profiler/profiler.h"
 
 namespace begrun {
 
 
 // initalize Proteus
 void begrun(int argc, char* argv[]) {
+
+    PROFILE_START("BEGRUN");
 
     // welcome message
     print_banner();
@@ -42,6 +45,7 @@ void begrun(int argc, char* argv[]) {
     output = OutputHandler(input.getParameter("output_directory"));
     if (!output.initialize()) {exit(EXIT_FAILURE);}
 
+    PROFILE_END("BEGRUN");
 }
 
 

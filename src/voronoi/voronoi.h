@@ -36,7 +36,7 @@ struct VMesh {
     hsize_t num_edge_coord_verts; // total number of edge coord vertices
     #endif
 
-    hsize_t n_hydro; // number of active cells (n_ghost = n_seeds - n_hydro)
+    hsize_t n_hydro; // number of hydro cells (n_ghost = n_seeds - n_hydro)
     hsize_t* ghost_ids; // ids of the corresponding original cell (i.e. the ghost cell with id cell_ids[(n_hydro-1) + 4] has ghost_ids[4])
 };
 

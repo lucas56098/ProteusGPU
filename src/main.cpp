@@ -13,6 +13,7 @@
 #include "voronoi/periodic_mesh.h"
 #include "hydro/finite_volume_solver.h"
 #include "hydro/riemann.h"
+#include "profiler/profiler.h"
 
 /*========================================================================
           _____           _                    _____ _____  _    _ 
@@ -31,6 +32,7 @@ Institution: Institute of Theoretical Astrophysics, Heidelberg University
 ========================================================================*/
 
 int main(int argc, char* argv[]) {
+    PROFILE_START("TOTAL_RUNTIME");
 
     // say hi and fill/prepare structs
     begrun::begrun(argc, argv);
@@ -53,6 +55,7 @@ int main(int argc, char* argv[]) {
     double t_nextoutput = t_sim + output_dt;
     int snap_num = 0;
 
+    PROFILE_START("HYDRO_MAIN");
     while (t_sim < t_end) {
         double dt = hydro::dt_CFL(CFL, mesh, primvar);
 
@@ -69,6 +72,7 @@ int main(int argc, char* argv[]) {
 	// write output
         #ifdef USE_HDF5
         if (t_sim >= t_nextoutput) {
+            PROFILE_START("SNAPSHOTS");
             MeshCellData meshData;
             voronoi::vmesh_to_meshdata(mesh, meshData);
 
@@ -76,19 +80,21 @@ int main(int argc, char* argv[]) {
             if (!output.writeSnapshot(output_file, meshData, primvar, icData.seedpos_dims[0], t_sim)) { exit(EXIT_FAILURE); }
             t_nextoutput += output_dt;
             snap_num += 1;
+            PROFILE_END("SNAPSHOTS");
         }
         #endif
 
-        if (step % 3 == 0) {
+        if (step % 10 == 0) {
             std::cout << "Step " << step << "  t = " << t_sim << "  dt = " << dt << std::endl;
         }
     }
+    PROFILE_END("HYDRO_MAIN");
 
     std::cout << "Finished after " << step << " steps at t = " << t_sim << std::endl;
-
     std::cout << "Hydro finished" << std::endl;
 
     // convert VMesh to MeshCellData and write to HDF5 file
+    PROFILE_START("SNAPSHOTS");
     #ifdef USE_HDF5
     MeshCellData meshData;
     voronoi::vmesh_to_meshdata(mesh, meshData);
@@ -96,11 +102,16 @@ int main(int argc, char* argv[]) {
     std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
     if (!output.writeSnapshot(output_file, meshData, primvar, icData.seedpos_dims[0], t_sim)) { exit(EXIT_FAILURE); }
     #endif
+    PROFILE_END("SNAPSHOTS");
 
     // delete mesh & hydro
     voronoi::free_vmesh(mesh);
     hydro::free_prim(&primvar);
 
     std::cout << "MAIN: Done." << std::endl;
+
+    PROFILE_END("TOTAL_RUNTIME");
+    PROFILE_PRINT_RESULTS();
+
     return 0;
 }
