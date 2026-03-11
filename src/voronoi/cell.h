@@ -27,6 +27,10 @@ namespace voronoi {
         uchar   nb_r;
         int     plane_vid[_MAX_P_]; // maps plane index to global point id (-1 for boundary planes)
 
+        VERT_TYPE triangle[_MAX_T_];
+        uchar     boundary_next[_MAX_P_];
+        double4   half_plane[_MAX_P_];
+
         // clipping functions
         void clip_by_plane(int vid);
         int  new_halfplane(int vid);
@@ -48,7 +52,7 @@ namespace voronoi {
                                   int                         p,
                                   const std::vector<double4>& vertices,
                                   std::vector<double4>&       face_verts);
-    double3 compute_face_normal(int p);
+    double3 compute_face_normal(ConvexCell& cell, int p);
     double  compute_face_measure(std::vector<double4>& face_verts, double4 seed, double* cell_volume);
     void    store_face_data(
         VMesh* mesh, const std::vector<double4>& face_verts, int neighbor_id, double3 normal, double face_measure);

@@ -22,42 +22,14 @@ namespace voronoi {
 
     static const uchar END_OF_LIST = 255;
 
-    // memory pools for voronoi mesh generation
-    static VERT_TYPE triangle_data[_VORO_BLOCK_SIZE_ * _MAX_T_];
-    static uchar     boundary_next_data[_VORO_BLOCK_SIZE_ * _MAX_P_];
-    static double4   half_plane_data[_VORO_BLOCK_SIZE_ * _MAX_P_];
-
-// helper functions to access memory pools
-#if defined(CPU_DEBUG) && !defined(USE_OPENMP)
-    static inline VERT_TYPE& triangle(int t) {
-        return triangle_data[threadId * _MAX_T_ + t];
-    }
-    static inline uchar& boundary_next(int v) {
-        return boundary_next_data[threadId * _MAX_P_ + v];
-    }
-    static inline double4& half_plane(int v) {
-        return half_plane_data[threadId * _MAX_P_ + v];
-    }
-#elif defined(CPU_DEBUG) && defined(USE_OPENMP)
-    static inline VERT_TYPE& triangle(int t) {
-        return triangle_data[omp_get_thread_num() * _MAX_T_ + t];
-    }
-    static inline uchar& boundary_next(int v) {
-        return boundary_next_data[omp_get_thread_num() * _MAX_P_ + v];
-    }
-    static inline double4& half_plane(int v) {
-        return half_plane_data[omp_get_thread_num() * _MAX_P_ + v];
-    }
-#endif
-
-    inline uchar& ith_plane(uchar t, int i) {
-        return reinterpret_cast<uchar*>(&(triangle(t)))[i];
+    inline uchar& ith_plane(VERT_TYPE* triangles, uchar t, int i) {
+        return reinterpret_cast<uchar*>(&(triangles[t]))[i];
     }
 
     // returns true if vertex at index t_idx references plane p
-    static inline bool vert_references_plane(int t_idx, uchar p) {
+    static inline bool vert_references_plane(VERT_TYPE* triangles, int t_idx, uchar p) {
         for (int d = 0; d < DIMENSION; d++) {
-            if (ith_plane((uchar)t_idx, d) == p) return true;
+            if (ith_plane(triangles, (uchar)t_idx, d) == p) return true;
         }
         return false;
     }
@@ -82,7 +54,7 @@ namespace voronoi {
         // set boundaries to END_OF_LIST
         first_boundary = END_OF_LIST;
         for (int i = 0; i < _MAX_P_; i++) {
-            boundary_next(i) = END_OF_LIST;
+            boundary_next[i] = END_OF_LIST;
         }
 
         // initialize plane_vid: boundary planes (-1), rest unset
@@ -100,32 +72,32 @@ namespace voronoi {
         voro_seed = point_from_ptr(pts + DIMENSION * voro_id);
 
         // create 6/4 bounding planes for the initial bounding box
-        half_plane(0) = make_double4(1.0, 0.0, 0.0, -xmin); // x >= xmin (left face)
-        half_plane(1) = make_double4(-1.0, 0.0, 0.0, xmax); // x <= xmax (right face)
-        half_plane(2) = make_double4(0.0, 1.0, 0.0, -ymin); // y >= ymin (front face)
-        half_plane(3) = make_double4(0.0, -1.0, 0.0, ymax); // y <= ymax (back face)
+        half_plane[0] = make_double4(1.0, 0.0, 0.0, -xmin); // x >= xmin (left face)
+        half_plane[1] = make_double4(-1.0, 0.0, 0.0, xmax); // x <= xmax (right face)
+        half_plane[2] = make_double4(0.0, 1.0, 0.0, -ymin); // y >= ymin (front face)
+        half_plane[3] = make_double4(0.0, -1.0, 0.0, ymax); // y <= ymax (back face)
 #ifdef dim_3D
-        half_plane(4) = make_double4(0.0, 0.0, 1.0, -zmin); // z >= zmin (bottom face)
-        half_plane(5) = make_double4(0.0, 0.0, -1.0, zmax); // z <= zmax (top face)
+        half_plane[4] = make_double4(0.0, 0.0, 1.0, -zmin); // z >= zmin (bottom face)
+        half_plane[5] = make_double4(0.0, 0.0, -1.0, zmax); // z <= zmax (top face)
 #endif
 
         // store initaial planes delunay triangles
 #ifdef dim_2D
-        triangle(0) = make_uchar2(2, 0); // bottom-left
-        triangle(1) = make_uchar2(1, 2); // bottom-right
-        triangle(2) = make_uchar2(3, 1); // top-right
-        triangle(3) = make_uchar2(0, 3); // top-left
+        triangle[0] = make_uchar2(2, 0); // bottom-left
+        triangle[1] = make_uchar2(1, 2); // bottom-right
+        triangle[2] = make_uchar2(3, 1); // top-right
+        triangle[3] = make_uchar2(0, 3); // top-left
         nb_v        = 4;                 // 4 initial planes
         nb_t        = 4;                 // 4 initial triangles
 #else
-        triangle(0) = make_uchar3(2, 5, 0); // (top front left)
-        triangle(1) = make_uchar3(5, 3, 0); // (top back left)
-        triangle(2) = make_uchar3(1, 5, 2); // (top front right)
-        triangle(3) = make_uchar3(5, 1, 3); // (top back right)
-        triangle(4) = make_uchar3(4, 2, 0); // (bottom front left)
-        triangle(5) = make_uchar3(4, 0, 3); // (bottom back left)
-        triangle(6) = make_uchar3(2, 4, 1); // (bottom front right)
-        triangle(7) = make_uchar3(4, 3, 1); // (bottom back right)
+        triangle[0] = make_uchar3(2, 5, 0); // (top front left)
+        triangle[1] = make_uchar3(5, 3, 0); // (top back left)
+        triangle[2] = make_uchar3(1, 5, 2); // (top front right)
+        triangle[3] = make_uchar3(5, 1, 3); // (top back right)
+        triangle[4] = make_uchar3(4, 2, 0); // (bottom front left)
+        triangle[5] = make_uchar3(4, 0, 3); // (bottom back left)
+        triangle[6] = make_uchar3(2, 4, 1); // (bottom front right)
+        triangle[7] = make_uchar3(4, 3, 1); // (bottom back right)
         nb_v        = 6;                    // 6 initial planes
         nb_t        = 8;                    // 8 initial triangles
 #endif
@@ -142,14 +114,14 @@ namespace voronoi {
         if (*status == vertex_overflow) { return; }
 
         // get that half plane
-        double4 eqn = half_plane(cur_v);
+        double4 eqn = half_plane[cur_v];
         nb_r        = 0;
 
         int i = 0;
         while (i < nb_t) { // for all vertices of the cell
-            if (vert_is_in_conflict(triangle(i), eqn)) {
+            if (vert_is_in_conflict(triangle[i], eqn)) {
                 nb_t--;
-                std::swap(triangle(i), triangle(nb_t));
+                std::swap(triangle[i], triangle[nb_t]);
                 nb_r++;
             } else {
                 i++;
@@ -174,10 +146,10 @@ namespace voronoi {
 #ifdef dim_2D
             new_vertex(cur_v, cir);
 #else
-            new_vertex(cur_v, cir, boundary_next(cir));
+            new_vertex(cur_v, cir, boundary_next[cir]);
 #endif
             if (*status != success) return;
-            cir = boundary_next(cir);
+            cir = boundary_next[cir];
         } while (cir != first_boundary);
     }
 
@@ -193,7 +165,7 @@ namespace voronoi {
         double4 dir      = minus4(voro_seed, B);
         double4 ave2     = plus4(voro_seed, B);
         double  dot      = dot3(ave2, dir); // works for 2D since z=0
-        half_plane(nb_v) = make_double4(dir.x, dir.y, dir.z, -dot / 2.0);
+        half_plane[nb_v] = make_double4(dir.x, dir.y, dir.z, -dot / 2.0);
         plane_vid[nb_v]  = vid;
         nb_v++;
         return nb_v - 1;
@@ -202,8 +174,8 @@ namespace voronoi {
     // check if vertex is on the wrong side of half plane, i.e. if it needs to be removed
     bool ConvexCell::vert_is_in_conflict(VERT_TYPE v, double4 eqn) const {
 
-        double4 pi1 = half_plane(v.x);
-        double4 pi2 = half_plane(v.y);
+        double4 pi1 = half_plane[v.x];
+        double4 pi2 = half_plane[v.y];
 
 #ifdef dim_2D
         double det = det3x3(pi1.x, pi2.x, eqn.x, pi1.y, pi2.y, eqn.y, pi1.w, pi2.w, eqn.w);
@@ -217,7 +189,7 @@ namespace voronoi {
         double eps     = 1e-14 * maxx * maxy * maxw;
         eps *= max_max;
 #else
-        double4 pi3 = half_plane(v.z);
+        double4 pi3 = half_plane[v.z];
 
         // 4x4 determinant: rows are (x, y, z, w) of pi1, pi2, pi3, eqn
         double det = det4x4(pi1.x,
@@ -259,7 +231,7 @@ namespace voronoi {
         // 2D boundary computation: find exactly 2 boundary lines
         // A boundary line appears in exactly one removed vertex and one surviving vertex
         for (int i = 0; i < _MAX_P_; i++) {
-            boundary_next(i) = END_OF_LIST;
+            boundary_next[i] = END_OF_LIST;
         }
         first_boundary = END_OF_LIST;
 
@@ -270,7 +242,7 @@ namespace voronoi {
         }
 
         for (int r = 0; r < nb_r; r++) {
-            uchar2 e = triangle(nb_t + r);
+            uchar2 e = triangle[nb_t + r];
             line_count[e.x]++;
             line_count[e.y]++;
         }
@@ -292,14 +264,14 @@ namespace voronoi {
 
         // build circular list: B0 → B1 → B0
         first_boundary                   = boundary_lines[0];
-        boundary_next(boundary_lines[0]) = boundary_lines[1];
-        boundary_next(boundary_lines[1]) = boundary_lines[0];
+        boundary_next[boundary_lines[0]] = boundary_lines[1];
+        boundary_next[boundary_lines[1]] = boundary_lines[0];
 
 #else
         // 3D boundary computation
         // clean circular list of the boundary
         for (int i = 0; i < _MAX_P_; i++) {
-            boundary_next(i) = END_OF_LIST;
+            boundary_next[i] = END_OF_LIST;
         }
         first_boundary = END_OF_LIST;
 
@@ -316,10 +288,10 @@ namespace voronoi {
             bool next_is_opp[3];
 
             for (int e = 0; e < 3; e++) {
-                is_in_border[e] = (boundary_next(ith_plane(t, e)) != END_OF_LIST);
+                is_in_border[e] = (boundary_next[ith_plane(triangle, t, e)] != END_OF_LIST);
             }
             for (int e = 0; e < 3; e++) {
-                next_is_opp[e] = (boundary_next(ith_plane(t, (e + 1) % 3)) == ith_plane(t, e));
+                next_is_opp[e] = (boundary_next[ith_plane(triangle, t, (e + 1) % 3)] == ith_plane(triangle, t, e));
             }
 
             bool new_border_is_simple = true;
@@ -335,9 +307,9 @@ namespace voronoi {
             if (!next_is_opp[0] && !next_is_opp[1] && !next_is_opp[2]) {
                 if (first_boundary == END_OF_LIST) {
                     for (int e = 0; e < 3; e++) {
-                        boundary_next(ith_plane(t, e)) = ith_plane(t, (e + 1) % 3);
+                        boundary_next[ith_plane(triangle, t, e)] = ith_plane(triangle, t, (e + 1) % 3);
                     }
-                    first_boundary = triangle(t).x;
+                    first_boundary = triangle[t].x;
                 } else {
                     new_border_is_simple = false;
                 }
@@ -351,21 +323,21 @@ namespace voronoi {
 
             // link next
             for (int e = 0; e < 3; e++) {
-                if (!next_is_opp[e]) { boundary_next(ith_plane(t, e)) = ith_plane(t, (e + 1) % 3); }
+                if (!next_is_opp[e]) { boundary_next[ith_plane(triangle, t, e)] = ith_plane(triangle, t, (e + 1) % 3); }
             }
 
             // destroy link from removed vertices
             for (int e = 0; e < 3; e++) {
                 if (next_is_opp[e] && next_is_opp[(e + 1) % 3]) {
-                    if (first_boundary == ith_plane(t, (e + 1) % 3)) {
-                        first_boundary = boundary_next(ith_plane(t, (e + 1) % 3));
+                    if (first_boundary == ith_plane(triangle, t, (e + 1) % 3)) {
+                        first_boundary = boundary_next[ith_plane(triangle, t, (e + 1) % 3)];
                     }
-                    boundary_next(ith_plane(t, (e + 1) % 3)) = END_OF_LIST;
+                    boundary_next[ith_plane(triangle, t, (e + 1) % 3)] = END_OF_LIST;
                 }
             }
 
             // remove triangle from R, and restart iterating on R
-            std::swap(triangle(t), triangle(nb_t + nb_r - 1));
+            std::swap(triangle[t], triangle[nb_t + nb_r - 1]);
             t = nb_t;
             nb_r--;
         }
@@ -381,14 +353,14 @@ namespace voronoi {
 #ifdef dim_2D
         (void)k; // unused in 2D
         // ensure consistent orientation: result.w < 0 (same convention as 3D)
-        double rw = det2x2(half_plane(i).x, half_plane(i).y, half_plane(j).x, half_plane(j).y);
+        double rw = det2x2(half_plane[i].x, half_plane[i].y, half_plane[j].x, half_plane[j].y);
         if (rw > 0) {
-            triangle(nb_t) = make_uchar2(j, i);
+            triangle[nb_t] = make_uchar2(j, i);
         } else {
-            triangle(nb_t) = make_uchar2(i, j);
+            triangle[nb_t] = make_uchar2(i, j);
         }
 #else
-        triangle(nb_t) = make_uchar3(i, j, k);
+        triangle[nb_t] = make_uchar3(i, j, k);
 #endif
         nb_t++;
     }
@@ -401,7 +373,7 @@ namespace voronoi {
         double v_dist = 0;
 
         for (int i = 0; i < nb_t; i++) {
-            double4 pc   = compute_vertex_point(triangle(i));
+            double4 pc   = compute_vertex_point(triangle[i]);
             double4 diff = minus4(pc, voro_seed);
             double  d2   = dot3(diff, diff); // works for 2D since z=0
             v_dist       = std::max(d2, v_dist);
@@ -416,8 +388,8 @@ namespace voronoi {
     // -------- helper functions for this --------
     // compute vertex position from intersecting planes
     double4 ConvexCell::compute_vertex_point(VERT_TYPE v, bool persp_divide) const {
-        double4 pi1 = half_plane(v.x);
-        double4 pi2 = half_plane(v.y);
+        double4 pi1 = half_plane[v.x];
+        double4 pi2 = half_plane[v.y];
         double4 result;
 #ifdef dim_2D
         result.x = -det2x2(pi1.w, pi1.y, pi2.w, pi2.y);
@@ -426,7 +398,7 @@ namespace voronoi {
         result.w = det2x2(pi1.x, pi1.y, pi2.x, pi2.y);
         if (persp_divide) { return make_double4(result.x / result.w, result.y / result.w, 0, 1); }
 #else
-        double4 pi3 = half_plane(v.z);
+        double4 pi3 = half_plane[v.z];
         result.x    = -det3x3(pi1.w, pi1.y, pi1.z, pi2.w, pi2.y, pi2.z, pi3.w, pi3.y, pi3.z);
         result.y    = -det3x3(pi1.x, pi1.w, pi1.z, pi2.x, pi2.w, pi2.z, pi3.x, pi3.w, pi3.z);
         result.z    = -det3x3(pi1.x, pi1.y, pi1.w, pi2.x, pi2.y, pi2.w, pi3.x, pi3.y, pi3.w);
@@ -448,7 +420,7 @@ namespace voronoi {
         // compute all vertex positions
         std::vector<double4> vertices(cell.nb_t);
         for (int i = 0; i < cell.nb_t; i++) {
-            vertices[i] = cell.compute_vertex_point(triangle(i), true);
+            vertices[i] = cell.compute_vertex_point(cell.triangle[i], true);
         }
 
         // compute cell volume/area
@@ -463,7 +435,7 @@ namespace voronoi {
         for (int p = 0; p < cell.nb_v; p++) {
             int cnt = 0;
             for (int i = 0; i < cell.nb_t; i++) {
-                if (vert_references_plane(i, (uchar)p)) cnt++;
+                if (vert_references_plane(cell.triangle, i, (uchar)p)) cnt++;
             }
             if (cnt >= DIMENSION) face_count++;
         }
@@ -477,7 +449,7 @@ namespace voronoi {
             std::vector<double4> face_verts;
             if (!collect_face_vertices(cell, p, vertices, face_verts)) continue;
 
-            double3 normal = compute_face_normal(p);
+            double3 normal = compute_face_normal(cell, p);
 
 #ifdef dim_2D
             double face_measure = compute_face_measure(face_verts, cell.voro_seed, nullptr);
@@ -547,7 +519,7 @@ namespace voronoi {
         // find vertices that reference plane p
         std::vector<int> face_vert_indices;
         for (int i = 0; i < cell.nb_t; i++) {
-            if (vert_references_plane(i, (uchar)p)) { face_vert_indices.push_back(i); }
+            if (vert_references_plane(cell.triangle, i, (uchar)p)) { face_vert_indices.push_back(i); }
         }
         if ((int)face_vert_indices.size() < DIMENSION) return false;
 
@@ -569,7 +541,7 @@ namespace voronoi {
             uchar others_last[DIMENSION - 1];
             int   cnt = 0;
             for (int d = 0; d < DIMENSION; d++) {
-                uchar pl = ith_plane((uchar)last, d);
+                uchar pl = ith_plane(cell.triangle, (uchar)last, d);
                 if (pl != (uchar)p) others_last[cnt++] = pl;
             }
 
@@ -579,7 +551,7 @@ namespace voronoi {
                 int candidate = face_vert_indices[j];
 
                 for (int o = 0; o < DIMENSION - 1; o++) {
-                    if (vert_references_plane(candidate, others_last[o])) {
+                    if (vert_references_plane(cell.triangle, candidate, others_last[o])) {
                         ordered.push_back(candidate);
                         used[j] = true;
                         found   = true;
@@ -601,8 +573,8 @@ namespace voronoi {
     }
 
     // compute face normal from clip plane equation (z=0 in 2D, so dot3 gives ||(a,b)||)
-    double3 compute_face_normal(int p) {
-        double4 plane_eq = half_plane(p);
+    double3 compute_face_normal(ConvexCell& cell, int p) {
+        double4 plane_eq = cell.half_plane[p];
         double  nlen     = std::sqrt(dot3(plane_eq, plane_eq));
         return {plane_eq.x / nlen, plane_eq.y / nlen, plane_eq.z / nlen};
     }
