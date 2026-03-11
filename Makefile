@@ -7,32 +7,15 @@ CONFIG_DEFINES := $(shell grep -v "^\#" Config.sh | grep -v "^$$" | grep -v "^!"
 DEFINES := 
 
 # system-specific includes
-SYSTYPE ?= $(shell uname -s)
--include Makefile.systype
+ifdef SYSTYPE
+        SYSTYPE := $(SYSTYPE)
+else
+        SYSTYPE ?= $(shell uname -s)
+        -include Makefile.systype
+endif
 
 # Check for DEBUG_MODE FIRST (before compiler setup)
 DEBUG_MODE_ENABLED := $(findstring DEBUG_MODE,$(CONFIG_DEFINES))
-
-# Determine compiler based on DEBUG_MODE and platform
-ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
-	# Debug mode: use clang on macOS for better ASan support, g++ elsewhere
-	ifeq ($(SYSTYPE),macOS)
-		CXX = clang++
-		COMPILER_MESSAGE = clang++ (DEBUG mode, macOS)
-	else
-		CXX = g++
-		COMPILER_MESSAGE = g++ (DEBUG mode, Linux/other)
-	endif
-else
-	# Release mode: use platform-specific compiler
-	ifeq ($(SYSTYPE),macOS)
-		CXX = g++-15
-		COMPILER_MESSAGE = g++-15 (macOS)
-	else
-		CXX = g++
-		COMPILER_MESSAGE = g++ (Linux/other)
-	endif
-endif
 
 # Base compiler flags
 CXXFLAGS = -Wall -Wextra -std=c++11
@@ -42,12 +25,12 @@ ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
 	# Debug mode: enable AddressSanitizer
 	CXXFLAGS += -O0 -g -fsanitize=address
 	LDFLAGS = -fsanitize=address
-	BUILD_MODE_MESSAGE = DEBUG mode (AddressSanitizer enabled)
+	BUILD_MODE_MESSAGE = DEBUG (AddressSanitizer enabled)
 else
 	# Release mode: optimize for performance
 	CXXFLAGS += -O3
 	LDFLAGS = 
-	BUILD_MODE_MESSAGE = RELEASE mode (optimized)
+	BUILD_MODE_MESSAGE = RELEASE (optimized)
 endif
 
 # Check if OpenMP is enabled
@@ -100,24 +83,49 @@ OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI
 TARGET = ProteusGPU
 
 ifeq ($(SYSTYPE),Ubuntu)
+	CXX_DEBUG = g++
+	CXX_RELEASE = g++
 	HDF5_CFLAGS ?= -I/usr/include/hdf5/serial
 	HDF5_LIBS ?= -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5
 endif
 
 ifeq ($(SYSTYPE),macOS)
+	CXX_DEBUG = clang++ # better address sanitizer support
+	CXX_RELEASE = g++-15
 	HDF5_CFLAGS ?= -I/opt/homebrew/opt/hdf5/include
 	HDF5_LIBS ?= -L/opt/homebrew/opt/hdf5/lib -lhdf5
 endif
 
 ifeq ($(SYSTYPE),MPCDF)
+	CXX_DEBUG = g++
+	CXX_RELEASE = g++
         HDF5_CFLAGS ?= -I${HDF5_HOME}/include
         HDF5_LIBS ?= -L${HDF5_HOME}/lib -lhdf5
+endif
+
+ifeq ($(SYSTYPE),HorekaGH200)
+	# module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
+	CXX_DEBUG = nvc++
+	CXX_RELEASE = nvc++
+	HDF5_CFLAGS ?= -I/software/easybuild/software/HDF5/1.14.5-gompi-2024a/include
+	HDF5_LIBS ?= -L/software/easybuild/software/HDF5/1.14.5-gompi-2024a/lib -lhdf5
 endif
 
 # ADD YOUR SYSTEM TYPE AND HDF5 PATHS HERE IF NOT SUPPORTED
 # ifeq ($(SYSTYPE),YourSystype)
 # ...
 # endif
+
+# Determine compiler based on DEBUG_MODE and platform
+ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
+        CXX = ${CXX_DEBUG}
+else
+        CXX = ${CXX_RELEASE}
+endif
+
+ifndef CXX
+	$(error SYSTYPE not recognized.)
+endif
 
 # check if HDF5 is enabled in Config.sh
 ifneq (,$(findstring USE_HDF5,$(CONFIG_DEFINES)))
@@ -133,7 +141,8 @@ CXXFLAGS += $(CONFIG_DEFINES) $(DEFINES)
 all: $(TARGET)
 	@echo "=========================================="
 	@echo "Build complete! Executable: $(TARGET)"
-	@echo "Compiler: $(COMPILER_MESSAGE)"
+	@echo "SYSTYPE: $(SYSTYPE)"
+	@echo "Compiler: $(CXX)"
 	@echo "Mode: $(BUILD_MODE_MESSAGE)"
 	@echo "OpenMP: $(OPENMP_MESSAGE)"
 	@echo "=========================================="
