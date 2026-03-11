@@ -95,22 +95,6 @@ bool OutputHandler::writeSnapshot(
         return false;
     }
 
-    // write cell_ids
-    if (!meshData.cell_ids.empty()) {
-        hsize_t dims_1d[1]   = {meshData.cell_ids.size()};
-        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t   dataset_id =
-            H5Dcreate(cells_group, "cell_ids", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (dataset_id >= 0) {
-            H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.cell_ids.data());
-            H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-            std::cout << "OUTPUT: cell_ids: " << meshData.cell_ids.size() << " cells" << std::endl;
-#endif
-        }
-        H5Sclose(dataspace_1d);
-    }
-
     // write seeds
     if (!meshData.seeds.empty() && meshData.seeds_dims.size() == 2) {
         hid_t dataspace = H5Screate_simple(2, meshData.seeds_dims.data(), NULL);
@@ -181,22 +165,6 @@ bool OutputHandler::writeSnapshot(
 #endif
         }
         H5Sclose(dataspace_1d);
-    }
-
-    // write normal
-    if (!meshData.faces.normal.empty() && meshData.faces.normal_dims.size() == 2) {
-        hid_t dataspace = H5Screate_simple(2, meshData.faces.normal_dims.data(), NULL);
-        hid_t dataset_id =
-            H5Dcreate(faces_group, "normal", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (dataset_id >= 0) {
-            H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.normal.data());
-            H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-            std::cout << "OUTPUT: normal: " << meshData.faces.normal_dims[0] << " x " << meshData.faces.normal_dims[1]
-                      << std::endl;
-#endif
-        }
-        H5Sclose(dataspace);
     }
 
     // write area

@@ -62,14 +62,11 @@ namespace voronoi {
             plane_vid[i] = -1;
         }
 
-        // store seed point info
-        voro_id = p_seed;
-
         // status set to success for now
         status  = p_status;
         *status = success;
 
-        voro_seed = point_from_ptr(pts + DIMENSION * voro_id);
+        voro_seed = point_from_ptr(pts + DIMENSION * p_seed);
 
         // create 6/4 bounding planes for the initial bounding box
         half_plane[0] = make_double4(1.0, 0.0, 0.0, -xmin); // x >= xmin (left face)
@@ -413,9 +410,8 @@ namespace voronoi {
     // --------------------------------------------
     void extract_cell_to_vmesh(ConvexCell& cell, VMesh* mesh, hsize_t cell_index, hsize_t& face_capacity) {
         // store cell id and seed position (z=0 in 2D via point_from_ptr)
-        mesh->cell_ids[cell_index] = (hsize_t)cell.voro_id;
-        double3 seed               = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
-        mesh->seeds[cell_index]    = seed;
+        double3 seed            = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
+        mesh->seeds[cell_index] = seed;
 
         // compute all vertex positions
         std::vector<double4> vertices(cell.nb_t);
@@ -449,15 +445,13 @@ namespace voronoi {
             std::vector<double4> face_verts;
             if (!collect_face_vertices(cell, p, vertices, face_verts)) continue;
 
-            double3 normal = compute_face_normal(cell, p);
-
 #ifdef dim_2D
             double face_measure = compute_face_measure(face_verts, cell.voro_seed, nullptr);
 #else
             double face_measure = compute_face_measure(face_verts, cell.voro_seed, &cell_volume);
 #endif
 
-            store_face_data(mesh, face_verts, cell.plane_vid[p], normal, face_measure);
+            store_face_data(mesh, face_verts, cell.plane_vid[p], face_measure);
             actual_count++;
         }
 
@@ -504,7 +498,6 @@ namespace voronoi {
         hsize_t new_capacity = face_capacity * 2;
         if (new_capacity < needed) new_capacity = needed;
         mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, new_capacity * sizeof(int));
-        mesh->face_normal   = (double3*)realloc(mesh->face_normal, new_capacity * sizeof(double3));
         mesh->face_area     = (double*)realloc(mesh->face_area, new_capacity * sizeof(double));
 #ifdef DEBUG_MODE
         mesh->edge_coords_offsets = (hsize_t*)realloc(mesh->edge_coords_offsets, new_capacity * sizeof(hsize_t));
@@ -572,13 +565,6 @@ namespace voronoi {
         return true;
     }
 
-    // compute face normal from clip plane equation (z=0 in 2D, so dot3 gives ||(a,b)||)
-    double3 compute_face_normal(ConvexCell& cell, int p) {
-        double4 plane_eq = cell.half_plane[p];
-        double  nlen     = std::sqrt(dot3(plane_eq, plane_eq));
-        return {plane_eq.x / nlen, plane_eq.y / nlen, plane_eq.z / nlen};
-    }
-
     // compute face measure (length/area)
     double compute_face_measure(std::vector<double4>& face_verts, double4 seed, double* cell_volume) {
         double face_measure = 0.0;
@@ -643,12 +629,10 @@ namespace voronoi {
 #endif
 
     // store face data into VMesh arrays
-    void store_face_data(
-        VMesh* mesh, const std::vector<double4>& face_verts, int neighbor_id, double3 normal, double face_measure) {
+    void store_face_data(VMesh* mesh, const std::vector<double4>& face_verts, int neighbor_id, double face_measure) {
         (void)face_verts; // unused unless DEBUG_MODE is enabled
         hsize_t fi              = mesh->num_faces;
         mesh->neighbor_cell[fi] = neighbor_id;
-        mesh->face_normal[fi]   = normal;
         mesh->face_area[fi]     = face_measure;
 
 #ifdef DEBUG_MODE

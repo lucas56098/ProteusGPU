@@ -26,10 +26,8 @@ struct MeshHeader {
 };
 
 struct MeshFaceData {
-    std::vector<int>     neighbor_cell;
-    std::vector<double>  normal;      // numFaces x dimension
-    std::vector<hsize_t> normal_dims; // [numFaces, dimension]
-    std::vector<double>  area;
+    std::vector<int>    neighbor_cell;
+    std::vector<double> area;
 #ifdef DEBUG_MODE
     std::vector<double>  edge_coords;         // all edge coords concatenated
     std::vector<hsize_t> edge_coords_dims;    // [totalVertices, dimension]
@@ -39,7 +37,6 @@ struct MeshFaceData {
 
 struct MeshCellData {
     MeshHeader           header;
-    std::vector<int>     cell_ids;
     std::vector<double>  seeds;      // numCells x dimension
     std::vector<hsize_t> seeds_dims; // [numCells, dimension]
     std::vector<double>  volumes;

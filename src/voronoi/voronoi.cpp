@@ -104,7 +104,6 @@ namespace voronoi {
         // shrink face arrays to actual size
         if (mesh->num_faces > 0) {
             mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, mesh->num_faces * sizeof(int));
-            mesh->face_normal   = (double3*)realloc(mesh->face_normal, mesh->num_faces * sizeof(double3));
             mesh->face_area     = (double*)realloc(mesh->face_area, mesh->num_faces * sizeof(double));
 #ifdef DEBUG_MODE
             mesh->edge_coords_offsets = (hsize_t*)realloc(mesh->edge_coords_offsets, mesh->num_faces * sizeof(hsize_t));
@@ -195,7 +194,6 @@ namespace voronoi {
         mesh->ghost_ids = NULL;
 
         // per-cell arrays (known size)
-        mesh->cell_ids    = (hsize_t*)calloc(n_seeds, sizeof(hsize_t));
         mesh->seeds       = (double3*)calloc(n_seeds, sizeof(double3));
         mesh->volumes     = (double*)calloc(n_seeds, sizeof(double));
         mesh->face_counts = (hsize_t*)calloc(n_seeds, sizeof(hsize_t));
@@ -203,7 +201,6 @@ namespace voronoi {
 
         // face arrays (initial capacity, grown dynamically during extraction)
         mesh->neighbor_cell = (int*)malloc(initial_face_capacity * sizeof(int));
-        mesh->face_normal   = (double3*)malloc(initial_face_capacity * sizeof(double3));
         mesh->face_area     = (double*)malloc(initial_face_capacity * sizeof(double));
 
 #ifdef DEBUG_MODE
@@ -220,13 +217,11 @@ namespace voronoi {
 
     void free_vmesh(VMesh* mesh) {
         if (!mesh) return;
-        free(mesh->cell_ids);
         free(mesh->seeds);
         free(mesh->volumes);
         free(mesh->face_counts);
         free(mesh->face_ptr);
         free(mesh->neighbor_cell);
-        free(mesh->face_normal);
         free(mesh->face_area);
 #ifdef DEBUG_MODE
         free(mesh->edge_coords);
@@ -252,16 +247,14 @@ namespace voronoi {
         }
 
         // New cell-wise arrays in original input order.
-        hsize_t* new_cell_ids    = (hsize_t*)malloc(n * sizeof(hsize_t));
         double3* new_seeds       = (double3*)malloc(n * sizeof(double3));
         double*  new_volumes     = (double*)malloc(n * sizeof(double));
         hsize_t* new_face_counts = (hsize_t*)malloc(n * sizeof(hsize_t));
         hsize_t* new_face_ptr    = (hsize_t*)malloc(n * sizeof(hsize_t));
 
         // Face arrays are rebuilt as contiguous blocks per (now unpermuted) cell.
-        int*     new_neighbor_cell = (int*)malloc(mesh->num_faces * sizeof(int));
-        double3* new_face_normal   = (double3*)malloc(mesh->num_faces * sizeof(double3));
-        double*  new_face_area     = (double*)malloc(mesh->num_faces * sizeof(double));
+        int*    new_neighbor_cell = (int*)malloc(mesh->num_faces * sizeof(int));
+        double* new_face_area     = (double*)malloc(mesh->num_faces * sizeof(double));
 
 #ifdef DEBUG_MODE
         hsize_t* new_edge_coords_offsets = (hsize_t*)malloc(mesh->num_faces * sizeof(hsize_t));
@@ -285,7 +278,6 @@ namespace voronoi {
             hsize_t start      = mesh->face_ptr[sorted_idx];
 
             // Per-cell scalars move to original slot; faces are appended at face_cursor.
-            new_cell_ids[original]    = original;
             new_seeds[original]       = mesh->seeds[sorted_idx];
             new_volumes[original]     = mesh->volumes[sorted_idx];
             new_face_counts[original] = count;
@@ -303,8 +295,7 @@ namespace voronoi {
                     new_neighbor_cell[new_fi] = sorted_neighbor;
                 }
 
-                new_face_normal[new_fi] = mesh->face_normal[old_fi];
-                new_face_area[new_fi]   = mesh->face_area[old_fi];
+                new_face_area[new_fi] = mesh->face_area[old_fi];
 
 #ifdef DEBUG_MODE
                 hsize_t verts_in_face           = mesh->edge_coords_offsets[old_fi];
@@ -330,13 +321,11 @@ namespace voronoi {
         }
 
         // Swap in rebuilt arrays.
-        free(mesh->cell_ids);
         free(mesh->seeds);
         free(mesh->volumes);
         free(mesh->face_counts);
         free(mesh->face_ptr);
         free(mesh->neighbor_cell);
-        free(mesh->face_normal);
         free(mesh->face_area);
 
 #ifdef DEBUG_MODE
@@ -344,13 +333,11 @@ namespace voronoi {
         free(mesh->edge_coords);
 #endif
 
-        mesh->cell_ids      = new_cell_ids;
         mesh->seeds         = new_seeds;
         mesh->volumes       = new_volumes;
         mesh->face_counts   = new_face_counts;
         mesh->face_ptr      = new_face_ptr;
         mesh->neighbor_cell = new_neighbor_cell;
-        mesh->face_normal   = new_face_normal;
         mesh->face_area     = new_face_area;
 
 #ifdef DEBUG_MODE
@@ -383,12 +370,6 @@ namespace voronoi {
 
         meshData.seeds_dims = {(hsize_t)n_pts, DIMENSION};
 
-        // cell ids
-        meshData.cell_ids.resize(n_pts);
-        for (int i = 0; i < n_pts; i++) {
-            meshData.cell_ids[i] = (int)mesh->cell_ids[i];
-        }
-
         // seeds (flatten double3 to flat double array)
         meshData.seeds.resize(n_pts * DIMENSION);
         for (int i = 0; i < n_pts; i++) {
@@ -411,22 +392,10 @@ namespace voronoi {
             meshData.face_counts[i] = (int)mesh->face_counts[i];
         }
 
-        // face data
-        hsize_t nf = mesh->num_faces;
-        meshData.faces.neighbor_cell.resize(nf);
-        meshData.faces.normal.resize(nf * DIMENSION);
-        meshData.faces.area.resize(nf);
-        meshData.faces.normal_dims = {nf, DIMENSION};
-
-        for (hsize_t f = 0; f < nf; f++) {
-            meshData.faces.neighbor_cell[f]          = mesh->neighbor_cell[f];
-            meshData.faces.normal[f * DIMENSION + 0] = mesh->face_normal[f].x;
-            meshData.faces.normal[f * DIMENSION + 1] = mesh->face_normal[f].y;
-#ifdef dim_3D
-            meshData.faces.normal[f * DIMENSION + 2] = mesh->face_normal[f].z;
-#endif
-            meshData.faces.area[f] = mesh->face_area[f];
-        }
+        // face data\n        hsize_t nf = mesh->num_faces;\n        meshData.faces.neighbor_cell.resize(nf);\n
+        // meshData.faces.area.resize(nf);\n\n        for (hsize_t f = 0; f < nf; f++) {\n
+        // meshData.faces.neighbor_cell[f] = mesh->neighbor_cell[f];\n            meshData.faces.area[f]          =
+        // mesh->face_area[f];\n        }
 
 #ifdef DEBUG_MODE
         // edge coords

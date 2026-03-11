@@ -19,25 +19,29 @@
 
 // voronoi mesh struct used for hydro solver
 struct VMesh {
-    hsize_t* cell_ids;      // cell ids
-    double3* seeds;         // seedpoints
-    hsize_t  n_seeds;       // number of cells
-    double*  volumes;       // area in 2D, volume in 3D
-    hsize_t* face_counts;   // number of faces per cell
-    hsize_t* face_ptr;      // pointer to start of each cell's faces in the face arrays
-    int*     neighbor_cell; // global id of neighboring cell for each face (how will this work with ghost cells and
-                            // periodic??)
-    double3* face_normal;   // normal vector for each face
-    double*  face_area;     // edge length in 2D, face area in 3D
-    hsize_t  num_faces;     // total number of faces in the mesh
+
+    // stored once
+    hsize_t n_seeds;   // number of cells
+    hsize_t n_hydro;   // number of hydro cells (n_ghost = n_seeds - n_hydro)
+    hsize_t num_faces; // total number of faces in the mesh
+
+    // stored for all cells
+    double3* seeds;       // seedpoints
+    double*  volumes;     // area in 2D, volume in 3D
+    hsize_t* face_counts; // number of faces per cell
+    hsize_t* face_ptr;    // pointer to start of each cell's faces in the face arrays
+
+    // stored for all faces
+    int*    neighbor_cell; // global id of neighboring cell for each face
+    double* face_area;     // edge length in 2D, face area in 3D
 #ifdef DEBUG_MODE
     double*  edge_coords;          // flat array of all face vertex coordinates (DIMENSION doubles per vertex)
     hsize_t* edge_coords_offsets;  // number of vertices per face
     hsize_t  num_edge_coord_verts; // total number of edge coord vertices
 #endif
 
-    hsize_t  n_hydro;   // number of hydro cells (n_ghost = n_seeds - n_hydro)
-    hsize_t* ghost_ids; // ids of the corresponding original cell (i.e. the ghost cell with id cell_ids[(n_hydro-1) + 4]
+    // stored for all ghost cells
+    hsize_t* ghost_ids; // ids of the corresponding original cell (i.e. the ghost cell with id (n_hydro-1) + 4
                         // has ghost_ids[4])
 };
 

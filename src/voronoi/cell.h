@@ -18,7 +18,6 @@ namespace voronoi {
         ConvexCell(int p_seed, double* p_pts, Status* p_status);
 
         double* pts;
-        int     voro_id;
         double4 voro_seed;
         uchar   first_boundary;
         Status* status;
@@ -46,16 +45,14 @@ namespace voronoi {
     // put convex cell into VMesh struct
     void extract_cell_to_vmesh(ConvexCell& cell, VMesh* mesh, hsize_t cell_index, hsize_t& face_capacity);
     // helper to compute additional quantities needed in hydro
-    double  compute_cell_area_2d(const std::vector<double4>& vertices, int nb_t);
-    void    ensure_face_capacity(VMesh* mesh, hsize_t& face_capacity, hsize_t needed);
-    bool    collect_face_vertices(ConvexCell&                 cell,
-                                  int                         p,
-                                  const std::vector<double4>& vertices,
-                                  std::vector<double4>&       face_verts);
-    double3 compute_face_normal(ConvexCell& cell, int p);
-    double  compute_face_measure(std::vector<double4>& face_verts, double4 seed, double* cell_volume);
-    void    store_face_data(
-        VMesh* mesh, const std::vector<double4>& face_verts, int neighbor_id, double3 normal, double face_measure);
+    double compute_cell_area_2d(const std::vector<double4>& vertices, int nb_t);
+    void   ensure_face_capacity(VMesh* mesh, hsize_t& face_capacity, hsize_t needed);
+    bool   collect_face_vertices(ConvexCell&                 cell,
+                                 int                         p,
+                                 const std::vector<double4>& vertices,
+                                 std::vector<double4>&       face_verts);
+    double compute_face_measure(std::vector<double4>& face_verts, double4 seed, double* cell_volume);
+    void   store_face_data(VMesh* mesh, const std::vector<double4>& face_verts, int neighbor_id, double face_measure);
 
 } // namespace voronoi
 

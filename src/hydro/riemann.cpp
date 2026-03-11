@@ -3,11 +3,21 @@
 
 namespace hydro {
 
+    // compute face normal from seed positions: n = normalize(seed_j - seed_i)
+    inline double3 compute_face_normal(double3 seed_i, double3 seed_j) {
+        double dx  = seed_j.x - seed_i.x;
+        double dy  = seed_j.y - seed_i.y;
+        double dz  = seed_j.z - seed_i.z;
+        double len = sqrt(dx * dx + dy * dy + dz * dz);
+        return {dx / len, dy / len, dz / len};
+    }
+
     prim riemann_hll(hsize_t i, hsize_t j, prim st_l, prim st_r, const VMesh* mesh) {
 
-        // rotate state_j and state_i into frame
-        double3 normal = mesh->face_normal[mesh->face_ptr[i] + j];
-        geom    g      = compute_geom(normal);
+        // compute normal from seed positions
+        hsize_t neighbor_idx = mesh->neighbor_cell[mesh->face_ptr[i] + j];
+        double3 normal       = compute_face_normal(mesh->seeds[i], mesh->seeds[neighbor_idx]);
+        geom    g            = compute_geom(normal);
         rotate_to_face(&st_l, &g);
         rotate_to_face(&st_r, &g);
 
@@ -49,9 +59,10 @@ namespace hydro {
 
     prim riemann_hllc(hsize_t i, hsize_t j, prim st_l, prim st_r, const VMesh* mesh) {
 
-        // rotate state_j and state_i into frame
-        double3 normal = mesh->face_normal[mesh->face_ptr[i] + j];
-        geom    g      = compute_geom(normal);
+        // compute normal from seed positions
+        hsize_t neighbor_idx = mesh->neighbor_cell[mesh->face_ptr[i] + j];
+        double3 normal       = compute_face_normal(mesh->seeds[i], mesh->seeds[neighbor_idx]);
+        geom    g            = compute_geom(normal);
         rotate_to_face(&st_l, &g);
         rotate_to_face(&st_r, &g);
 
