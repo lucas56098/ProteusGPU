@@ -44,7 +44,7 @@ int main(int argc, char* argv[]) {
     VMesh* mesh = voronoi::compute_periodic_mesh((POINT_TYPE*)icData.seedpos.data(), icData.seedpos_dims[0]);
 
     // start timestep loop
-    std::cout << "Hydro started" << std::endl;
+    std::cout << "HYDRO: started" << std::endl;
 
     double t_sim = 0.0;
     double t_end = std::stof(input.getParameter("time_end"));
@@ -69,7 +69,9 @@ int main(int argc, char* argv[]) {
         t_sim += dt;
         step++;
 
-        if (step % 10 == 0) { std::cout << "Step " << step << "  t = " << t_sim << "  dt = " << dt << std::endl; }
+        if (step % 10 == 0) {
+            std::cout << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt << std::endl;
+        }
 
 // write output
 #ifdef USE_HDF5
@@ -90,8 +92,7 @@ int main(int argc, char* argv[]) {
     }
     PROFILE_END("HYDRO_MAIN");
 
-    std::cout << "Finished after " << step << " steps at t = " << t_sim << std::endl;
-    std::cout << "Hydro finished" << std::endl;
+    std::cout << "HYDRO: Finished after " << step << " steps at t = " << t_sim << std::endl;
 
     // delete mesh & hydro
     voronoi::free_vmesh(mesh);
