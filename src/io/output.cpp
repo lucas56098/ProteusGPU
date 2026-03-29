@@ -80,25 +80,6 @@ void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
     for (int i = 0; i < n_pts; i++) {
         meshData.face_counts[i] = (int)mesh->face_counts[i];
     }
-
-#ifdef DEBUG_MODE
-    // edge coords
-    hsize_t total_verts = mesh->num_edge_coord_verts;
-    meshData.faces.edge_coords.resize(total_verts * DIMENSION);
-    for (hsize_t v = 0; v < total_verts * DIMENSION; v++) {
-        meshData.faces.edge_coords[v] = mesh->edge_coords[v];
-    }
-    meshData.faces.edge_coords_dims = {total_verts, DIMENSION};
-
-    meshData.faces.edge_coords_offsets.resize(nf);
-    for (hsize_t f = 0; f < nf; f++) {
-        meshData.faces.edge_coords_offsets[f] = (int)mesh->edge_coords_offsets[f];
-    }
-#endif
-
-#ifdef DEBUG_MODE
-    std::cout << "VORONOI: converted VMesh to MeshCellData (" << n_pts << " cells, " << nf << " faces)" << std::endl;
-#endif
 }
 
 bool OutputHandler::writeSnapshot(

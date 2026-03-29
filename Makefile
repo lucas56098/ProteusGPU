@@ -54,6 +54,7 @@ KNN_DIR = $(SRC_DIR)/knn
 BEGRUN_DIR = $(SRC_DIR)/begrun
 VORONOI_DIR = $(SRC_DIR)/voronoi
 HYDRO_DIR = $(SRC_DIR)/hydro
+GRADIENTS_DIR = $(SRC_DIR)/gradients
 PROFILER_DIR = $(SRC_DIR)/profiler
 HDF5_LIB_DIR = libs/hdf5/lib
 
@@ -65,8 +66,9 @@ KNN_SRC = $(KNN_DIR)/knn.cpp
 BEGRUN_SRC = $(BEGRUN_DIR)/begrun.cpp
 VORONOI_SRC = $(VORONOI_DIR)/voronoi.cpp $(VORONOI_DIR)/cell.cpp $(VORONOI_DIR)/periodic_mesh.cpp
 HYDRO_SRC = $(HYDRO_DIR)/finite_volume_solver.cpp $(HYDRO_DIR)/riemann.cpp
+GRADIENTS_SRC = $(GRADIENTS_DIR)/gradients.cpp
 PROFILER_SRC = $(PROFILER_DIR)/profiler.cpp
-SOURCES = $(MAIN_SRC) $(GLOBAL_SRC) $(IO_SRC) $(KNN_SRC) $(BEGRUN_SRC) $(VORONOI_SRC) $(HYDRO_SRC) $(PROFILER_SRC)
+SOURCES = $(MAIN_SRC) $(GLOBAL_SRC) $(IO_SRC) $(KNN_SRC) $(BEGRUN_SRC) $(VORONOI_SRC) $(HYDRO_SRC) $(GRADIENTS_SRC) $(PROFILER_SRC)
 
 # object files
 MAIN_OBJ = $(BUILD_DIR)/main.o
@@ -76,8 +78,9 @@ KNN_OBJ = $(BUILD_DIR)/knn.o
 BEGRUN_OBJ = $(BUILD_DIR)/begrun.o
 VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/cell.o $(BUILD_DIR)/periodic_mesh.o
 HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o $(BUILD_DIR)/riemann.o
+GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
 PROFILER_OBJ = $(BUILD_DIR)/profiler.o
-OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(PROFILER_OBJ)
+OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(GRADIENTS_OBJ) $(PROFILER_OBJ)
 
 # name of executable (see: https://en.wikipedia.org/wiki/Proteus :D)
 TARGET = ProteusGPU
@@ -183,6 +186,9 @@ $(BUILD_DIR)/finite_volume_solver.o: $(HYDRO_DIR)/finite_volume_solver.cpp $(HYD
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/riemann.o: $(HYDRO_DIR)/riemann.cpp $(HYDRO_DIR)/riemann.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/gradients.o: $(GRADIENTS_DIR)/gradients.cpp $(GRADIENTS_DIR)/gradients.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cpp $(PROFILER_DIR)/profiler.h | $(BUILD_DIR)

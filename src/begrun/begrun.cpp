@@ -68,7 +68,7 @@ namespace begrun {
         std::cout << "==========================================================================" << std::endl;
         std::cout << "A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics" << std::endl;
         std::cout << "==========================================================================" << std::endl;
-        std::cout << "Version: 0.2" << std::endl;
+        std::cout << "Version: 0.3" << std::endl;
         std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
         std::cout << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
         std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;

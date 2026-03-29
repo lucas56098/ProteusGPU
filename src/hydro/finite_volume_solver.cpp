@@ -1,7 +1,9 @@
 #include "finite_volume_solver.h"
 #include "../global/allvars.h"
+#include "../gradients/gradients.h"
 #include "../profiler/profiler.h"
 #include "riemann.h"
+#include <cstring>
 
 namespace hydro {
 
@@ -43,13 +45,44 @@ namespace hydro {
     // main hydro routine (computes fluxes and updates states)
     void hydro_step(double dt, const VMesh* mesh, primvars* primvar) {
 
-        // new primvars
-        primvars new_prim;
-        new_prim.rho = (double*)malloc(mesh->n_hydro * sizeof(double));
-        new_prim.v   = (POINT_TYPE*)malloc(mesh->n_hydro * sizeof(POINT_TYPE));
-        new_prim.E   = (double*)malloc(mesh->n_hydro * sizeof(double));
+        // allocate primitive accumulator for new state
+        primvars prim_new;
+        allocate_prim_buffer(mesh->n_hydro, &prim_new);
+
+        // initialize new state from old primitive variables
+        std::memcpy(prim_new.rho, primvar->rho, mesh->n_hydro * sizeof(double));
+        std::memcpy(prim_new.v, primvar->v, mesh->n_hydro * sizeof(POINT_TYPE));
+        std::memcpy(prim_new.E, primvar->E, mesh->n_hydro * sizeof(double));
+
+        // compute gradients once from old state
+        PrimGradients* grads = gradients::compute_prim_gradients(mesh, primvar);
+
+        // first half update (no time extrapolation)
+        apply_flux_update(0.5 * dt, 0.0, mesh, primvar, grads, &prim_new);
+
+        // second half update (full dt primitive time extrapolation)
+        apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, &prim_new);
+
+        gradients::free_prim_gradients(grads);
+
+        // final copy: primvar = prim_new
+        std::memcpy(primvar->rho, prim_new.rho, mesh->n_hydro * sizeof(double));
+        std::memcpy(primvar->v, prim_new.v, mesh->n_hydro * sizeof(POINT_TYPE));
+        std::memcpy(primvar->E, prim_new.E, mesh->n_hydro * sizeof(double));
+
+        free_prim_buffer(&prim_new);
+    }
+
+    // apply one part of RK2 flux update (either with dt_extrap = 0 or dt)
+    void apply_flux_update(double               dt_update,
+                           double               dt_extrap,
+                           const VMesh*         mesh,
+                           const primvars*      prim_old,
+                           const PrimGradients* grads,
+                           primvars*            prim_new) {
 
         PROFILE_START("HYDRO_STEP (par)");
+        const bool do_time_extrap = (dt_extrap != 0.0);
 
 // loop over all active cells to calc new primvars
 #ifdef USE_OPENMP
@@ -57,35 +90,53 @@ namespace hydro {
 #endif
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
 
+            const hsize_t face_base = mesh->face_ptr[i];
+
             // get state of cell i
-            prim state_i;
-            state_i.rho = primvar->rho[i];
-            state_i.E   = primvar->E[i];
-            state_i.v.x = primvar->v[i].x;
-            state_i.v.y = primvar->v[i].y;
-#ifdef dim_3D
-            state_i.v.z = primvar->v[i].z;
-#endif
+            prim          state_i = get_state(i, mesh, prim_old);
+            PrimGradients grad_i  = grads[i];
 
             prim total_flux;
 
             // calculate total_flux by summing over edge flux * edge_length
             for (hsize_t j = 0; j < mesh->face_counts[i]; j++) {
 
-                // get value of other cell
-                prim state_j = get_state_j(i, j, mesh, primvar);
+                // get state of cell j
+                int           face_idx = face_base + j;
+                hsize_t       index_j  = mesh->neighbor_cell[face_idx];
+                prim          state_j  = get_state(index_j, mesh, prim_old);
+                PrimGradients grad_j   = grads[hydro_index(index_j, mesh)];
 
-// calc flux using riemann solver
+                // second-order reconstruction at face center
+                prim       state_l;
+                prim       state_r;
+                POINT_TYPE dx = point_diff(mesh->seeds[index_j], mesh->seeds[i]);
+
+                // apply the gradients
+                apply_spatial_extrapolation(state_i, grad_i, point_mul(0.5, dx), &state_l);
+                apply_spatial_extrapolation(state_j, grad_j, point_mul(-0.5, dx), &state_r);
+
+                // only in second half of RK2
+                if (do_time_extrap) {
+                    apply_time_extrapolation(state_i, grad_i, dt_extrap, &state_l);
+                    apply_time_extrapolation(state_j, grad_j, dt_extrap, &state_l);
+                }
+
+                // ensure rho > rho_min, P > P_min
+                keep_state_physical(&state_l);
+                keep_state_physical(&state_r);
+
+                // calc flux using riemann solver
 #ifdef RIEMANN_HLL
-                prim flux_ij = riemann_hll(i, j, state_i, state_j, mesh);
+                prim flux_ij = riemann_hll(i, j, state_l, state_r, mesh);
 #elif RIEMANN_HLLC
-                prim flux_ij = riemann_hllc(i, j, state_i, state_j, mesh);
+                prim flux_ij = riemann_hllc(i, j, state_l, state_r, mesh);
 #else
 #error "No Riemann solver specified in Config.sh: choose RIEMANN_HLL or RIEMANN_HLLC"
 #endif
 
                 // get face area/length
-                double face_area = mesh->face_area[mesh->face_ptr[i] + j];
+                double face_area = mesh->face_area[face_idx];
 
                 // add to total flux * area
                 total_flux.rho += flux_ij.rho * face_area;
@@ -97,66 +148,66 @@ namespace hydro {
                 total_flux.E += flux_ij.E * face_area;
             }
 
-            double V    = mesh->volumes[i];
-            double frac = dt / V;
+            double frac    = dt_update / mesh->volumes[i];
+            double rho_old = prim_new->rho[i];
+            double rho_new = rho_old - frac * total_flux.rho;
+            double rho_inv = 1.0 / rho_new;
 
-            new_prim.rho[i] = state_i.rho - frac * total_flux.rho;
-
-            double new_rho_inv = 1.0 / new_prim.rho[i];
-
-            new_prim.v[i].x = (state_i.rho * state_i.v.x - frac * total_flux.v.x) * new_rho_inv;
-            new_prim.v[i].y = (state_i.rho * state_i.v.y - frac * total_flux.v.y) * new_rho_inv;
+            prim_new->rho[i] = rho_new;
+            prim_new->v[i].x = (rho_old * prim_new->v[i].x - frac * total_flux.v.x) * rho_inv;
+            prim_new->v[i].y = (rho_old * prim_new->v[i].y - frac * total_flux.v.y) * rho_inv;
 #ifdef dim_3D
-            new_prim.v[i].z = (state_i.rho * state_i.v.z - frac * total_flux.v.z) * new_rho_inv;
+            prim_new->v[i].z = (rho_old * prim_new->v[i].z - frac * total_flux.v.z) * rho_inv;
 #endif
-
-            new_prim.E[i] = state_i.E - frac * total_flux.E;
-        }
-
-#ifdef USE_OPENMP
-#pragma omp parallel for num_threads(_OMP_HYDRO_THREADS_)
-#endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            primvar->rho[i] = new_prim.rho[i];
-            primvar->v[i].x = new_prim.v[i].x;
-            primvar->v[i].y = new_prim.v[i].y;
-#ifdef dim_3D
-            primvar->v[i].z = new_prim.v[i].z;
-#endif
-            primvar->E[i] = new_prim.E[i];
+            prim_new->E[i] -= frac * total_flux.E;
         }
 
         PROFILE_END("HYDRO_STEP (par)");
-
-        // free new primvars
-        free(new_prim.rho);
-        free(new_prim.v);
-        free(new_prim.E);
     }
 
-    prim get_state_j(hsize_t i, int j, const VMesh* mesh, primvars* primvar) {
+    // apply linear spatial extrapolation
+    void apply_spatial_extrapolation(const prim state, const PrimGradients gradient, POINT_TYPE dx, prim* st_extrap) {
 
-        prim state_j;
-
-        // get index
-        hsize_t index   = mesh->neighbor_cell[mesh->face_ptr[i] + j];
-        hsize_t n_hydro = (hsize_t)mesh->n_hydro;
-
-        if (index >= n_hydro) {
-            // its a ghost cell (so lets get the correct index)
-            index = mesh->ghost_ids[index - n_hydro];
-        }
-
-        // load the state
-        state_j.rho = primvar->rho[index];
-        state_j.v.x = primvar->v[index].x;
-        state_j.v.y = primvar->v[index].y;
+        st_extrap->rho = state.rho + point_dot(gradient.rho, dx);
+        st_extrap->v.x = state.v.x + point_dot(gradient.vx, dx);
+        st_extrap->v.y = state.v.y + point_dot(gradient.vy, dx);
 #ifdef dim_3D
-        state_j.v.z = primvar->v[index].z;
+        st_extrap->v.z = state.v.z + point_dot(gradient.vz, dx);
 #endif
-        state_j.E = primvar->E[index];
+        st_extrap->E = state.E + point_dot(gradient.E, dx);
+    }
 
-        return state_j;
+    // apply primitive time extrapolation: W -> W + dt_extrap * dW/dt(cell_idx)
+    void apply_time_extrapolation(prim state_i, PrimGradients grad_i, double dt_extrap, prim* st_extrap) {
+
+        // first compute time derivatives dW/dt
+        prim dWdt;
+        gradients::time_gradient(state_i, grad_i, &dWdt);
+
+        // do time extrapolation
+        st_extrap->rho += dt_extrap * dWdt.rho;
+        st_extrap->v.x += dt_extrap * dWdt.v.x;
+        st_extrap->v.y += dt_extrap * dWdt.v.y;
+#ifdef dim_3D
+        st_extrap->v.z += dt_extrap * dWdt.v.z;
+#endif
+        st_extrap->E += dt_extrap * dWdt.E;
+    }
+
+    // keep states physical
+    void keep_state_physical(prim* state) {
+        const double rho_floor = 1e-12;
+        const double p_floor   = 1e-12;
+
+        if (state->rho < rho_floor) { state->rho = rho_floor; }
+
+        double v2 = state->v.x * state->v.x + state->v.y * state->v.y;
+#ifdef dim_3D
+        v2 += state->v.z * state->v.z;
+#endif
+        double ekin = 0.5 * state->rho * v2;
+        double emin = ekin + p_floor / (_gamma_ - 1.0);
+        if (state->E < emin) { state->E = emin; }
     }
 
     // calc timestep using CFL condition for euler equations

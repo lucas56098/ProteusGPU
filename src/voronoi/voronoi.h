@@ -92,4 +92,10 @@ namespace voronoi {
 
 } // namespace voronoi
 
+// helper
+inline hsize_t hydro_index(hsize_t neighbor_raw, const VMesh* mesh) {
+    if (neighbor_raw < mesh->n_hydro) { return neighbor_raw; }
+    return mesh->ghost_ids[neighbor_raw - mesh->n_hydro];
+}
+
 #endif // VORONOI_H

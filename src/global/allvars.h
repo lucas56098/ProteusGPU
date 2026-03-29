@@ -2,6 +2,7 @@
 #define ALLVARS_H
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -204,9 +205,91 @@ inline double det4x4(double a11,
     return (m234 * a14 - m134 * a24 + m124 * a34 - m123 * a44);
 }
 
+#ifdef dim_2D
+// solve 2x2 weighted least squares system
+inline bool solve_weighted_lsq_2d(double m00, double m01, double m11, double b0, double b1, POINT_TYPE* grad) {
+    double det = m00 * m11 - m01 * m01;
+    if (fabs(det) < 1e-14) { return false; }
+
+    double inv00 = m11 / det;
+    double inv01 = -m01 / det;
+    double inv11 = m00 / det;
+
+    grad->x = inv00 * b0 + inv01 * b1;
+    grad->y = inv01 * b0 + inv11 * b1;
+    return true;
+}
+#else
+// solve 3x3 weighted least squares system
+inline bool solve_weighted_lsq_3d(double      m00,
+                                  double      m01,
+                                  double      m02,
+                                  double      m11,
+                                  double      m12,
+                                  double      m22,
+                                  double      b0,
+                                  double      b1,
+                                  double      b2,
+                                  POINT_TYPE* grad) {
+    double a11 = m00;
+    double a12 = m01;
+    double a13 = m02;
+    double a21 = m01;
+    double a22 = m11;
+    double a23 = m12;
+    double a31 = m02;
+    double a32 = m12;
+    double a33 = m22;
+
+    double det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
+    if (fabs(det) < 1e-18) { return false; }
+
+    double inv00 = (a22 * a33 - a23 * a32) / det;
+    double inv01 = (a13 * a32 - a12 * a33) / det;
+    double inv02 = (a12 * a23 - a13 * a22) / det;
+    double inv10 = (a23 * a31 - a21 * a33) / det;
+    double inv11 = (a11 * a33 - a13 * a31) / det;
+    double inv12 = (a13 * a21 - a11 * a23) / det;
+    double inv20 = (a21 * a32 - a22 * a31) / det;
+    double inv21 = (a12 * a31 - a11 * a32) / det;
+    double inv22 = (a11 * a22 - a12 * a21) / det;
+
+    grad->x = inv00 * b0 + inv01 * b1 + inv02 * b2;
+    grad->y = inv10 * b0 + inv11 * b1 + inv12 * b2;
+    grad->z = inv20 * b0 + inv21 * b1 + inv22 * b2;
+    return true;
+}
+#endif
+
 inline void get_minmax3(double& m, double& M, double x1, double x2, double x3) {
     m = std::min(std::min(x1, x2), x3);
     M = std::max(std::max(x1, x2), x3);
+}
+
+inline double point_dot(const POINT_TYPE& a, const POINT_TYPE& b) {
+#ifdef dim_2D
+    return a.x * b.x + a.y * b.y;
+#else
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+#endif
+}
+
+inline POINT_TYPE point_mul(double s, const POINT_TYPE& p) {
+#ifdef dim_2D
+    POINT_TYPE out = {s * p.x, s * p.y};
+#else
+    POINT_TYPE out = {s * p.x, s * p.y, s * p.z};
+#endif
+    return out;
+}
+
+inline POINT_TYPE point_diff(const double3& a, const double3& b) {
+#ifdef dim_2D
+    POINT_TYPE out = {a.x - b.x, a.y - b.y};
+#else
+    POINT_TYPE out = {a.x - b.x, a.y - b.y, a.z - b.z};
+#endif
+    return out;
 }
 
 // some hydro struct definitions
@@ -224,6 +307,16 @@ struct prim { // a single flux
     POINT_TYPE v = {0., 0., 0.};
 #endif
     double E = 0;
+};
+
+struct PrimGradients {
+    POINT_TYPE rho;
+    POINT_TYPE vx;
+    POINT_TYPE vy;
+#ifdef dim_3D
+    POINT_TYPE vz;
+#endif
+    POINT_TYPE E;
 };
 
 #endif // ALLVARS_H

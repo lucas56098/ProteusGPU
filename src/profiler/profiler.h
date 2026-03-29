@@ -2,7 +2,9 @@
 #define PROFILER_H
 
 #include <chrono>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 using namespace std;
@@ -27,5 +29,17 @@ class Profiler {
     static unordered_map<string, chrono::high_resolution_clock::time_point> m_StartTimes;
     static unordered_map<string, long long>                                 m_Timings;
 };
+
+inline std::string format_hms(double seconds) {
+    if (seconds < 0.0) { seconds = 0.0; }
+    long long total = static_cast<long long>(seconds + 0.5);
+    long long h     = total / 3600;
+    long long m     = (total % 3600) / 60;
+    long long s     = total % 60;
+
+    std::ostringstream os;
+    os << std::setfill('0') << std::setw(2) << h << ":" << std::setw(2) << m << ":" << std::setw(2) << s;
+    return os.str();
+}
 
 #endif // PROFILER_H
