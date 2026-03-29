@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+struct VMesh;
+
 #ifdef USE_HDF5
 #include "hdf5.h"
 
@@ -67,6 +69,12 @@ class OutputHandler {
     std::string getOutputDirectory() const { return outputDirectory; }
 
 #ifdef USE_HDF5
+    // wrapper to convert mesh into meshData and then store snapshot
+    void snapshot(int snap_num, VMesh* mesh, const primvars* primvar, int n_hydro, double t_sim);
+
+    // convert VMesh (for hydro computation) to MeshCellData (for output)
+    void vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData);
+
     // write snapshot (mesh and hydro data) to HDF5 file
     bool writeSnapshot(
         const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim);

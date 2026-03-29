@@ -1,5 +1,7 @@
 #include "output.h"
-#include "../hydro/finite_volume_solver.h"
+#include "../global/allvars.h"
+#include "../voronoi/voronoi.h"
+#include "profiler/profiler.h"
 #include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -24,6 +26,81 @@ bool OutputHandler::initialize() {
 }
 
 #ifdef USE_HDF5
+// wrapper to convert Vmesh to meshData and then write the snapshot file
+void OutputHandler::snapshot(int snap_num, VMesh* mesh, const primvars* primvar, int n_hydro, double t_sim) {
+    PROFILE_START("SNAPSHOTS");
+
+    MeshCellData meshData;
+    vmesh_to_meshdata(mesh, meshData);
+
+    std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
+
+    if (!writeSnapshot(output_file, meshData, primvar, n_hydro, t_sim)) { exit(EXIT_FAILURE); }
+
+    PROFILE_END("SNAPSHOTS");
+}
+
+void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
+    // int n_pts = (int)mesh->n_seeds;
+    int n_pts = (int)mesh->n_hydro;
+
+    // header
+    meshData.header.dimension = DIMENSION;
+    meshData.header.extent    = 1.0; // think about if we want to include the buff here?
+    meshData.header.n         = n_pts;
+    meshData.header.k         = _K_;
+    meshData.header.nmax      = _MAX_P_;
+    meshData.header.seed      = 0;
+#ifdef DEBUG_MODE
+    meshData.header.store_edge_coords = true;
+#else
+    meshData.header.store_edge_coords = false;
+#endif
+
+    meshData.seeds_dims = {(hsize_t)n_pts, DIMENSION};
+
+    // seeds (flatten double3 to flat double array)
+    meshData.seeds.resize(n_pts * DIMENSION);
+    for (int i = 0; i < n_pts; i++) {
+        meshData.seeds[i * DIMENSION + 0] = mesh->seeds[i].x;
+        meshData.seeds[i * DIMENSION + 1] = mesh->seeds[i].y;
+#ifdef dim_3D
+        meshData.seeds[i * DIMENSION + 2] = mesh->seeds[i].z;
+#endif
+    }
+
+    // volumes
+    meshData.volumes.resize(n_pts);
+    for (int i = 0; i < n_pts; i++) {
+        meshData.volumes[i] = mesh->volumes[i];
+    }
+
+    // face counts
+    meshData.face_counts.resize(n_pts);
+    for (int i = 0; i < n_pts; i++) {
+        meshData.face_counts[i] = (int)mesh->face_counts[i];
+    }
+
+#ifdef DEBUG_MODE
+    // edge coords
+    hsize_t total_verts = mesh->num_edge_coord_verts;
+    meshData.faces.edge_coords.resize(total_verts * DIMENSION);
+    for (hsize_t v = 0; v < total_verts * DIMENSION; v++) {
+        meshData.faces.edge_coords[v] = mesh->edge_coords[v];
+    }
+    meshData.faces.edge_coords_dims = {total_verts, DIMENSION};
+
+    meshData.faces.edge_coords_offsets.resize(nf);
+    for (hsize_t f = 0; f < nf; f++) {
+        meshData.faces.edge_coords_offsets[f] = (int)mesh->edge_coords_offsets[f];
+    }
+#endif
+
+#ifdef DEBUG_MODE
+    std::cout << "VORONOI: converted VMesh to MeshCellData (" << n_pts << " cells, " << nf << " faces)" << std::endl;
+#endif
+}
+
 bool OutputHandler::writeSnapshot(
     const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim) {
     std::string fullPath = outputDirectory + filename;

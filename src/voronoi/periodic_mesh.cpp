@@ -14,6 +14,7 @@
 
 namespace voronoi {
 
+    // checks if pt is in box given by xa, xb, ya, ...
     inline bool is_in(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za, double zb) {
 #ifdef dim_2D
         (void)za;
@@ -24,6 +25,7 @@ namespace voronoi {
 #endif
     }
 
+    // add ghost point to shifted position
     inline void add_ghost(POINT_TYPE*    pts,
                           hsize_t        index,
                           hsize_t*       n_ghosts,
@@ -50,7 +52,6 @@ namespace voronoi {
 
     // for now only 2D
     VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points) {
-
         PROFILE_START("MESH_TOTAL");
 
         std::cout << "VORONOI: set up periodic mesh" << std::endl;
@@ -64,10 +65,6 @@ namespace voronoi {
         hsize_t  n_hydro  = num_points;
         hsize_t* original_ids;
         original_ids = (hsize_t*)malloc(max_ghost_points * sizeof(hsize_t)); // naive guess, will be shortened later
-
-#ifdef DEBUG_MODE
-        std::cout << "VORONOI: select which ghostcells are needed" << std::endl;
-#endif
 
         // select points that get ghosts
         for (hsize_t i = 0; i < n_hydro; i++) {
@@ -189,10 +186,6 @@ namespace voronoi {
 #endif
         }
 
-#ifdef DEBUG_MODE
-        std::cout << "VORONOI: scale mesh down to [0,1]^d" << std::endl;
-#endif
-
         // scale down... to [0,1]^2
         double scale = 1. / (1. + (2 * buff));
         for (hsize_t i = 0; i < n_hydro + n_ghosts; i++) {
@@ -208,18 +201,11 @@ namespace voronoi {
         VMesh* mesh = compute_mesh(pts, n_hydro + n_ghosts);
         free(pts);
 
-// set mesh ghost quantities
-#ifdef DEBUG_MODE
-        std::cout << "VORONOI: copy ghost quantities to VMesh" << std::endl;
-#endif
+        // set mesh ghost quantities
         mesh->n_hydro   = n_hydro;
         mesh->ghost_ids = (hsize_t*)realloc(original_ids, n_ghosts * sizeof(hsize_t));
 
-// scale mesh up
-#ifdef DEBUG_MODE
-        std::cout << "VORONOI: scale mesh back to [-buff, 1+buff]^d" << std::endl;
-#endif
-
+        // scale mesh up
         scale = 1. + (2 * buff);
 #ifdef dim_2D
         double vscale = scale * scale;

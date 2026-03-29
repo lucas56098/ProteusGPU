@@ -76,17 +76,11 @@ int main(int argc, char* argv[]) {
 // write output
 #ifdef USE_HDF5
         if (t_sim >= t_nextoutput || t_sim == t_end) {
-            PROFILE_START("SNAPSHOTS");
-            MeshCellData meshData;
-            voronoi::vmesh_to_meshdata(mesh, meshData);
 
-            std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
-            if (!output.writeSnapshot(output_file, meshData, primvar, icData.seedpos_dims[0], t_sim)) {
-                exit(EXIT_FAILURE);
-            }
+            output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
+
             t_nextoutput += output_dt;
             snap_num += 1;
-            PROFILE_END("SNAPSHOTS");
         }
 #endif
     }

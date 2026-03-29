@@ -3,7 +3,6 @@
 
 #include "../global/allvars.h"
 #include "../io/input.h"
-#include "../io/output.h"
 #include "../knn/knn.h"
 #include <cstddef>
 #include <cstdlib>
@@ -90,11 +89,6 @@ namespace voronoi {
 
     // restore original input pts order (after KNN sorted it...)
     void unpermute_vmesh(VMesh* mesh, const unsigned int* sorted_to_original);
-
-#ifdef USE_HDF5
-    // convert VMesh (for hydro computation) to MeshCellData (for output)
-    void vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData);
-#endif
 
 } // namespace voronoi
 

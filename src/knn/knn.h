@@ -16,7 +16,7 @@
  * reading and citing their paper: https://doi.org/10.1145/3272127.3275092
  */
 
-typedef struct {
+typedef struct knn_problem {
     int           len_pts;             // number of input points
     int           N_grid;              // grid resolution
     int           N_cell_offsets;      // actual number of cells in the offset grid
