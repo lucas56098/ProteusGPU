@@ -1,6 +1,6 @@
 # ProteusGPU
 
-[![Build and Test](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml/badge.svg)](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml) [![Version 0.3](https://img.shields.io/badge/version-0.2-blue)](https://github.com/lucas56098/ProteusGPU/releases)
+[![Build and Test](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml/badge.svg)](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml) [![Version 0.3](https://img.shields.io/badge/version-0.3-blue)](https://github.com/lucas56098/ProteusGPU/releases)
 
 ![Banner](/figures/banner_v4.jpg)
 
