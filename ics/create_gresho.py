@@ -1,7 +1,7 @@
 """
 Creates Gresho vortex Initial Conditions (IC) HDF5 file.
 
-supports: random mesh and perturbed cartesian
+supports: random mesh, perturbed cartesian, and polar ring
 """
 
 import h5py
@@ -30,10 +30,11 @@ def create_gresho_vortex(filename, num_seeds, dimension, extent=1.0, gamma=5.0 /
     y = seedpos[:, 1] - 0.5 * extent
 
     radius = np.sqrt(x**2 + y**2)
+    xi = radius / extent
 
-    region_1 = np.where(radius < 0.2 * extent)
-    region_2 = np.where((radius >= 0.2 * extent) & (radius < 0.4 * extent))
-    region_3 = np.where(radius >= 0.4 * extent)
+    region_1 = np.where(xi < 0.2)
+    region_2 = np.where((xi >= 0.2) & (xi < 0.4))
+    region_3 = np.where(xi >= 0.4)
 
     # set density
     rho = np.zeros(num_seeds, dtype="float32")
@@ -43,19 +44,19 @@ def create_gresho_vortex(filename, num_seeds, dimension, extent=1.0, gamma=5.0 /
     vel = np.zeros((num_seeds, dimension), dtype="float32")
     vrot = np.zeros(num_seeds, dtype="float32")
 
-    vrot[region_1] = 5.0 * radius[region_1]
-    vrot[region_2] = 2.0 * (5.0 - radius[region_2])
+    vrot[region_1] = 5.0 * xi[region_1]
+    vrot[region_2] = 2.0 - 5.0 * xi[region_2]
     vrot[region_3] = 0.0
 
-    assert radius[0] == 0  # central point
-    vel[1:, 0] = vrot[1:] * y[1:] / radius[1:]
-    vel[1:, 1] = -vrot[1:] * x[1:] / radius[1:]
+    nonzero_radius = radius > 0.0
+    vel[nonzero_radius, 0] = vrot[nonzero_radius] * y[nonzero_radius] / radius[nonzero_radius]
+    vel[nonzero_radius, 1] = -vrot[nonzero_radius] * x[nonzero_radius] / radius[nonzero_radius]
 
     # set energy (energy per volume)
     pressure = np.zeros(num_seeds, dtype="float64")
 
-    pressure[region_1] = 5.0 + 12.5 * radius[region_1] ** 2
-    pressure[region_2] = 9.0 + 12.5 * radius[region_2] ** 2 - 20 * radius[region_2] + 4 * np.log(radius[region_2] / 0.2)
+    pressure[region_1] = 5.0 + 12.5 * xi[region_1] ** 2
+    pressure[region_2] = 9.0 + 12.5 * xi[region_2] ** 2 - 20 * xi[region_2] + 4 * np.log(xi[region_2] / 0.2)
     pressure[region_3] = 3.0 + 4.0 * np.log(2.0)
 
     Energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
