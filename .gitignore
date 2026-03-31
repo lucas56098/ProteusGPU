@@ -1,7 +1,7 @@
 build/
 libs/
 output
-run/
+run*/
 *.hdf5
 ProteusGPU
 visualize/

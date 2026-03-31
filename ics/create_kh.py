@@ -3,20 +3,21 @@ Creates Kelvin-Helmholtz Initial Conditions (IC) HDF5 file.
 
 supports: random mesh and perturbed cartesian
 """
+
 import h5py
 import numpy as np
+
+from common import seed_positions
+
 
 def create_kelvin_helmholtz(
     filename,
     num_seeds,
     dimension,
-    extent       = 1.0,
-    gamma        = 5./3.,
-    rng_seed     = 424242,
-    mesh_mode    = "random",    # ["random", "cartesian"]
-    perturbation = 0.05         # to perturb the cartesian grid
-    ):
-
+    extent=1.0,
+    gamma=5.0 / 3.0,
+    mesh_mode="random",  # ["random", "cartesian"]
+):
     if dimension not in (2, 3):
         raise ValueError("dimension must be 2 or 3")
 
@@ -28,46 +29,7 @@ def create_kelvin_helmholtz(
     print(f"  Mesh mode: {mesh_mode}")
 
     # Seedpoints
-    rng = np.random.default_rng(rng_seed)
-    if mesh_mode == "random":
-        seedpos = rng.uniform(0.0, extent, size=(num_seeds, dimension)).astype(np.float64)
-    elif mesh_mode == "cartesian":
-        if dimension == 2:
-            nx = int(round(np.sqrt(num_seeds)))
-            ny = nx
-            if nx * ny != num_seeds:
-                raise ValueError("For cartesian 2D mesh, num_seeds must be a perfect square.")
-
-            dx = extent / nx
-            dy = extent / ny
-            x1 = (np.arange(nx) + 0.5) * dx
-            y1 = (np.arange(ny) + 0.5) * dy
-            xx, yy = np.meshgrid(x1, y1, indexing="xy")
-            seedpos = np.column_stack((xx.ravel(), yy.ravel())).astype(np.float64)
-
-            # perturb the cartesian grid
-            seedpos[:, 0] += rng.uniform(-perturbation * dx, perturbation * dx, size=num_seeds)
-            seedpos[:, 1] += rng.uniform(-perturbation * dy, perturbation * dy, size=num_seeds)
-        else:
-            n = int(round(num_seeds ** (1.0 / 3.0)))
-            if n * n * n != num_seeds:
-                raise ValueError("For cartesian 3D mesh, num_seeds must be a perfect cube.")
-
-            dx = extent / n
-            x1 = (np.arange(n) + 0.5) * dx
-            xx, yy, zz = np.meshgrid(x1, x1, x1, indexing="xy")
-            seedpos = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel())).astype(np.float64)
-
-            # perturb the cartesian grid
-            seedpos[:, 0] += rng.uniform(-perturbation * dx, perturbation * dx, size=num_seeds)
-            seedpos[:, 1] += rng.uniform(-perturbation * dx, perturbation * dx, size=num_seeds)
-            seedpos[:, 2] += rng.uniform(-perturbation * dx, perturbation * dx, size=num_seeds)
-
-        # periodic wrap after perturbation
-        seedpos %= extent
-    else:
-        raise ValueError("mesh_mode must be 'random' or 'cartesian'")
-
+    seedpos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
 
     # set hydro states
     x = seedpos[:, 0]
@@ -75,16 +37,25 @@ def create_kelvin_helmholtz(
 
     y_low = 0.25 * extent
     y_high = 0.75 * extent
+    if 0:
+        # dnelson change for vis
+        y_low = 0.4 * extent
+        y_high = 0.6 * extent
+
     sigma = 0.05 * extent / np.sqrt(2.0)
 
     inside_shear = (y > y_low) & (y < y_high)
 
     # set density
     rho = np.where(inside_shear, 2.0, 1.0).astype(np.float64)
-    
+
     # set velocities
     u = np.where(inside_shear, 0.5, -0.5).astype(np.float64)
-    v_pert = 0.1 * np.sin(4.0 * np.pi * x / extent) * (np.exp(-((y - y_low) ** 2) / (2.0 * sigma * sigma)) + np.exp(-((y - y_high) ** 2) / (2.0 * sigma * sigma)))
+    v_pert = (
+        0.1
+        * np.sin(4.0 * np.pi * x / extent)
+        * (np.exp(-((y - y_low) ** 2) / (2.0 * sigma * sigma)) + np.exp(-((y - y_high) ** 2) / (2.0 * sigma * sigma)))
+    )
 
     vel = np.zeros((num_seeds, dimension), dtype=np.float64)
     vel[:, 0] = u
@@ -118,7 +89,7 @@ def create_kelvin_helmholtz(
 
 
 if __name__ == "__main__":
-    # 2D KH ICcl
+    # 2D KH IC
     create_kelvin_helmholtz("IC_kh_2D.hdf5", num_seeds=150**2, dimension=2)
 
     # 3D KH IC

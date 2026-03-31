@@ -59,6 +59,12 @@ int main(int argc, char* argv[]) {
     double t_nextoutput = t_sim + output_dt;
     int    snap_num = 0, next_log = 10;
 
+// write first snapshot at t=0
+#ifdef USE_HDF5
+    output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
+    snap_num += 1;
+#endif
+
     PROFILE_START("HYDRO_MAIN");
     while (t_sim < t_end) {
         double dt = hydro::dt_CFL(CFL, mesh, primvar);
