@@ -290,9 +290,11 @@ namespace knn {
             for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
                 int point_in = threadId + blockId * threadsPerBlock;
                 if (point_in >= len_pts) continue; // return;
+#ifdef DEBUG_MODE
                 if (point_in % 10000 == 0 || point_in == len_pts - 1) {
                     std::cout << "\rKNN: processing point " << point_in + 1 << " / " << len_pts << std::flush;
                 }
+#endif
                 // point considered by this thread
                 POINT_TYPE p = d_stored_points[point_in];
 

@@ -3,23 +3,7 @@
 
 namespace hydro {
 
-    // compute face normal from seed positions: n = normalize(seed_j - seed_i)
-    inline double3 compute_face_normal(double3 seed_i, double3 seed_j) {
-        double dx  = seed_j.x - seed_i.x;
-        double dy  = seed_j.y - seed_i.y;
-        double dz  = seed_j.z - seed_i.z;
-        double len = sqrt(dx * dx + dy * dy + dz * dz);
-        return {dx / len, dy / len, dz / len};
-    }
-
-    prim riemann_hll(hsize_t i, hsize_t j, prim st_l, prim st_r, const VMesh* mesh) {
-
-        // compute normal from seed positions
-        hsize_t neighbor_idx = mesh->neighbor_cell[mesh->face_ptr[i] + j];
-        double3 normal       = compute_face_normal(mesh->seeds[i], mesh->seeds[neighbor_idx]);
-        geom    g            = compute_geom(normal);
-        rotate_to_face(&st_l, &g);
-        rotate_to_face(&st_r, &g);
+    prim riemann_hll(prim st_l, prim st_r) {
 
         // calc f_l and f_r
         prim f_l = get_flux(&st_l);
@@ -51,20 +35,10 @@ namespace hydro {
             flux = f_r;
         }
 
-        // rotate flux back to lab frame
-        rotate_from_face(&flux, &g);
-
         return flux;
     }
 
-    prim riemann_hllc(hsize_t i, hsize_t j, prim st_l, prim st_r, const VMesh* mesh) {
-
-        // compute normal from seed positions
-        hsize_t neighbor_idx = mesh->neighbor_cell[mesh->face_ptr[i] + j];
-        double3 normal       = compute_face_normal(mesh->seeds[i], mesh->seeds[neighbor_idx]);
-        geom    g            = compute_geom(normal);
-        rotate_to_face(&st_l, &g);
-        rotate_to_face(&st_r, &g);
+    prim riemann_hllc(prim st_l, prim st_r) {
 
         // calc f_l and f_r
         prim f_l = get_flux(&st_l);
@@ -113,58 +87,7 @@ namespace hydro {
             flux = f_r;
         }
 
-        // rotate flux back to lab frame
-        rotate_from_face(&flux, &g);
-
         return flux;
-    }
-
-    void rotate_to_face(prim* state, geom* g) {
-        double velx = state->v.x;
-        double vely = state->v.y;
-#ifdef dim_2D
-        state->v.x = velx * g->n.x + vely * g->n.y;
-        state->v.y = velx * g->m.x + vely * g->m.y;
-#else
-        double velz = state->v.z;
-        state->v.x  = velx * g->n.x + vely * g->n.y + velz * g->n.z;
-        state->v.y  = velx * g->m.x + vely * g->m.y + velz * g->m.z;
-        state->v.z  = velx * g->p.x + vely * g->p.y + velz * g->p.z;
-#endif
-    }
-
-    void rotate_from_face(prim* state, geom* g) {
-        double velx = state->v.x;
-        double vely = state->v.y;
-#ifdef dim_2D
-        state->v.x = velx * g->n.x + vely * g->m.x;
-        state->v.y = velx * g->n.y + vely * g->m.y;
-#else
-        double velz = state->v.z;
-        state->v.x  = velx * g->n.x + vely * g->m.x + velz * g->p.x;
-        state->v.y  = velx * g->n.y + vely * g->m.y + velz * g->p.y;
-        state->v.z  = velx * g->n.z + vely * g->m.z + velz * g->p.z;
-#endif
-    }
-
-    geom compute_geom(double3 normal) {
-        geom g;
-
-        double nn = sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
-        g.n       = {normal.x / nn, normal.y / nn, normal.z / nn};
-
-        if (g.n.x != 0.0 || g.n.y != 0.0) {
-            g.m = {-g.n.y, g.n.x, 0.0};
-        } else {
-            g.m = {1.0, 0.0, 0.0};
-        }
-
-        double mm = sqrt(g.m.x * g.m.x + g.m.y * g.m.y + g.m.z * g.m.z);
-        g.m       = {g.m.x / mm, g.m.y / mm, g.m.z / mm};
-
-        g.p = {g.n.y * g.m.z - g.n.z * g.m.y, g.n.z * g.m.x - g.n.x * g.m.z, g.n.x * g.m.y - g.n.y * g.m.x};
-
-        return g;
     }
 
     prim get_flux(prim* state) {

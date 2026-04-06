@@ -1,6 +1,7 @@
 #include "periodic_mesh.h"
 #include "../begrun/begrun.h"
 #include "../global/allvars.h"
+#include "../gradients/gradients.h"
 #include "../io/input.h"
 #include "../io/output.h"
 #include "../knn/knn.h"
@@ -13,6 +14,23 @@
 #include <vector>
 
 namespace voronoi {
+
+    constexpr double PI = 3.14159265358979323846;
+
+    inline double positive_pressure(const primvars* primvar, hsize_t i) {
+        const double rho = primvar->rho[i];
+        if (rho <= 0.0) return 0.0;
+
+#ifdef dim_2D
+        const double v2 = primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y;
+#else
+        const double v2 =
+            primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y + primvar->v[i].z * primvar->v[i].z;
+#endif
+        const double kinetic = 0.5 * rho * v2;
+        const double p       = (_gamma_ - 1.0) * (primvar->E[i] - kinetic);
+        return (p > 0.0) ? p : 0.0;
+    }
 
     // checks if pt is in box given by xa, xb, ya, ...
     inline bool is_in(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za, double zb) {
@@ -54,7 +72,9 @@ namespace voronoi {
     VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points) {
         PROFILE_START("MESH_TOTAL");
 
+#ifdef DEBUG_MODE
         std::cout << "VORONOI: set up periodic mesh" << std::endl;
+#endif
 
         // allocate new pts (that include ghosts)
         hsize_t     max_ghost_points = (DIMENSION + 1) * num_points; // naive guess, will be shortened later
@@ -218,11 +238,24 @@ namespace voronoi {
         for (hsize_t i = 0; i < n_hydro + n_ghosts; i++) {
             mesh->seeds[i].x = (mesh->seeds[i].x - 0.5) * scale + 0.5;
             mesh->seeds[i].y = (mesh->seeds[i].y - 0.5) * scale + 0.5;
+            mesh->com[i].x   = (mesh->com[i].x - 0.5) * scale + 0.5;
+            mesh->com[i].y   = (mesh->com[i].y - 0.5) * scale + 0.5;
 #ifdef dim_3D
             mesh->seeds[i].z = (mesh->seeds[i].z - 0.5) * scale + 0.5;
+            mesh->com[i].z   = (mesh->com[i].z - 0.5) * scale + 0.5;
 #endif
             mesh->volumes[i] = vscale * mesh->volumes[i];
         }
+
+#ifdef MOVING_MESH
+        for (hsize_t i = 0; i < mesh->num_faces; i++) {
+            mesh->f_mid[i].x = (mesh->f_mid[i].x - 0.5) * scale + 0.5;
+            mesh->f_mid[i].y = (mesh->f_mid[i].y - 0.5) * scale + 0.5;
+#ifdef dim_3D
+            mesh->f_mid[i].z = (mesh->f_mid[i].z - 0.5) * scale + 0.5;
+#endif
+        }
+#endif
 
         for (hsize_t i = 0; i < mesh->num_faces; i++) {
             mesh->face_area[i] = ascale * mesh->face_area[i];
@@ -246,6 +279,122 @@ namespace voronoi {
 
         // return that mesh :D
         return mesh;
+    }
+
+    // compute mesh-point velocities (gas velocity + CM drift regularization) to roughly preserve mass
+    void compute_mesh_velocities(const VMesh*         mesh,
+                                 const primvars*      primvar,
+                                 const PrimGradients* grads,
+                                 POINT_TYPE*          v_mesh) {
+
+        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
+            double vx_mesh = primvar->v[i].x;
+            double vy_mesh = primvar->v[i].y;
+#ifdef dim_3D
+            double vz_mesh = primvar->v[i].z;
+#endif
+
+            // effective cell radius
+#ifdef dim_2D
+            const double Ri = std::sqrt(std::max(mesh->volumes[i], 0.0) / PI);
+#else
+            const double Ri = std::cbrt(3.0 * std::max(mesh->volumes[i], 0.0) / (4.0 * PI));
+#endif
+
+            // displacement from seed to COM
+            double dx = wrap_periodic_delta(mesh->com[i].x - mesh->seeds[i].x);
+            double dy = wrap_periodic_delta(mesh->com[i].y - mesh->seeds[i].y);
+#ifdef dim_3D
+            double dz = wrap_periodic_delta(mesh->com[i].z - mesh->seeds[i].z);
+#endif
+
+            // mesh aims for roughly equal-mass cells
+            if (grads != nullptr && Ri > 0.0) {
+#ifdef dim_3D
+                const double dgrad = std::sqrt(grads[i].rho.x * grads[i].rho.x + grads[i].rho.y * grads[i].rho.y +
+                                               grads[i].rho.z * grads[i].rho.z);
+#else
+                const double dgrad = std::sqrt(grads[i].rho.x * grads[i].rho.x + grads[i].rho.y * grads[i].rho.y);
+#endif
+                if (dgrad > 0.0) {
+                    const double scale = primvar->rho[i] / dgrad;
+                    const double tmp   = 3.0 * Ri + scale;
+                    const double disc  = tmp * tmp - 8.0 * Ri * Ri;
+                    if (disc > 0.0) {
+                        const double x_off = (tmp - std::sqrt(disc)) / 4.0;
+                        if (x_off < 0.25 * Ri) {
+                            dx += x_off * grads[i].rho.x / dgrad;
+                            dy += x_off * grads[i].rho.y / dgrad;
+#ifdef dim_3D
+                            dz += x_off * grads[i].rho.z / dgrad;
+#endif
+                        }
+                    }
+                }
+            }
+
+            // distance to target
+#ifdef dim_3D
+            const double di = std::sqrt(dx * dx + dy * dy + dz * dz);
+#else
+            const double di = std::sqrt(dx * dx + dy * dy);
+#endif
+
+            // ramp: kicks in at 0.75 * F * R, full strength at F * R
+            if (di > 0.0 && Ri > 0.0) {
+                const double threshold = CellShapingFactor * Ri;
+                double       fraction  = 0.0;
+                if (di > 0.75 * threshold) {
+                    if (di > threshold)
+                        fraction = CellShapingSpeed;
+                    else
+                        fraction = CellShapingSpeed * (di - 0.75 * threshold) / (0.25 * threshold);
+                }
+
+                if (fraction > 0.0) {
+                    const double rho = primvar->rho[i];
+                    const double p   = positive_pressure(primvar, i);
+                    if (rho > 0.0 && p > 0.0) {
+                        const double ci = std::sqrt(_gamma_ * p / rho);
+                        vx_mesh += fraction * ci * dx / di;
+                        vy_mesh += fraction * ci * dy / di;
+#ifdef dim_3D
+                        vz_mesh += fraction * ci * dz / di;
+#endif
+                    }
+                }
+            }
+
+            v_mesh[i].x = vx_mesh;
+            v_mesh[i].y = vy_mesh;
+#ifdef dim_3D
+            v_mesh[i].z = vz_mesh;
+#endif
+        }
+    }
+
+    // move the mesh with the given mesh point velocities
+    VMesh* move_mesh(VMesh* mesh, const POINT_TYPE* v_mesh, double dt) {
+
+        POINT_TYPE* pts = static_cast<POINT_TYPE*>(malloc(mesh->n_hydro * sizeof(POINT_TYPE)));
+
+        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
+            pts[i].x = fmod((mesh->seeds[i].x + dt * v_mesh[i].x) + 1.0, 1.0);
+            pts[i].y = fmod((mesh->seeds[i].y + dt * v_mesh[i].y) + 1.0, 1.0);
+#ifdef dim_3D
+            pts[i].z = fmod((mesh->seeds[i].z + dt * v_mesh[i].z) + 1.0, 1.0);
+#endif
+        }
+
+        hsize_t n_hydro = mesh->n_hydro;
+
+        free_vmesh(mesh);
+
+        VMesh* new_mesh = compute_periodic_mesh(pts, n_hydro);
+
+        free(pts);
+
+        return new_mesh;
     }
 
 } // namespace voronoi

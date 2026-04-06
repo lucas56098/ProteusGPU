@@ -421,9 +421,29 @@ namespace voronoi {
 
         // compute cell volume/area
 #ifdef dim_2D
-        mesh->volumes[cell_index] = compute_cell_area_2d(vertices, cell.nb_t);
+        double cx                 = cell.voro_seed.x;
+        double cy                 = cell.voro_seed.y;
+        mesh->volumes[cell_index] = compute_cell_area_centroid_2d(vertices, cell.nb_t, cx, cy);
+        mesh->com[cell_index]     = {cx, cy, 0.0};
 #else
         double cell_volume = 0.0;
+        // use average of vertices as a naive centroid approximation. Improve later...
+        double cx = 0.0, cy = 0.0, cz = 0.0;
+        for (const auto& v : vertices) {
+            cx += v.x;
+            cy += v.y;
+            cz += v.z;
+        }
+        if (!vertices.empty()) {
+            cx /= vertices.size();
+            cy /= vertices.size();
+            cz /= vertices.size();
+        } else {
+            cx = cell.voro_seed.x;
+            cy = cell.voro_seed.y;
+            cz = cell.voro_seed.z;
+        }
+        mesh->com[cell_index] = {cx, cy, cz};
 #endif
 
         // count valid faces to ensure capacity (need DIMENSION vertices per face)
@@ -464,31 +484,46 @@ namespace voronoi {
     // -------- helper functions for this --------
 #ifdef dim_2D
     // compute cell area using shoelace formula (2D only)
-    double compute_cell_area_2d(const std::vector<double4>& vertices, int nb_t) {
-        double cx = 0, cy = 0;
+    double compute_cell_area_centroid_2d(const std::vector<double4>& vertices, int nb_t, double& cx, double& cy) {
+        double mx = 0.0, my = 0.0;
         for (int i = 0; i < nb_t; i++) {
-            cx += vertices[i].x;
-            cy += vertices[i].y;
+            mx += vertices[i].x;
+            my += vertices[i].y;
         }
-        cx /= nb_t;
-        cy /= nb_t;
+        mx /= nb_t;
+        my /= nb_t;
 
         std::vector<int> order(nb_t);
         for (int i = 0; i < nb_t; i++) {
             order[i] = i;
         }
         std::sort(order.begin(), order.end(), [&](int a, int b) {
-            return std::atan2(vertices[a].y - cy, vertices[a].x - cx) <
-                   std::atan2(vertices[b].y - cy, vertices[b].x - cx);
+            return std::atan2(vertices[a].y - my, vertices[a].x - mx) <
+                   std::atan2(vertices[b].y - my, vertices[b].x - mx);
         });
 
-        double cell_area = 0;
+        double area2  = 0.0;
+        double Cx_num = 0.0;
+        double Cy_num = 0.0;
         for (int i = 0; i < nb_t; i++) {
-            int j = (i + 1) % nb_t;
-            cell_area += vertices[order[i]].x * vertices[order[j]].y;
-            cell_area -= vertices[order[j]].x * vertices[order[i]].y;
+            int          j     = (i + 1) % nb_t;
+            const double xi    = vertices[order[i]].x;
+            const double yi    = vertices[order[i]].y;
+            const double xj    = vertices[order[j]].x;
+            const double yj    = vertices[order[j]].y;
+            const double cross = xi * yj - xj * yi;
+
+            area2 += cross;
+            Cx_num += (xi + xj) * cross;
+            Cy_num += (yi + yj) * cross;
         }
-        return std::fabs(cell_area) / 2.0;
+
+        if (std::fabs(area2) > 1e-14) {
+            cx = Cx_num / (3.0 * area2);
+            cy = Cy_num / (3.0 * area2);
+        }
+
+        return 0.5 * std::fabs(area2);
     }
 #endif
 
@@ -499,6 +534,9 @@ namespace voronoi {
         if (new_capacity < needed) new_capacity = needed;
         mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, new_capacity * sizeof(int));
         mesh->face_area     = (double*)realloc(mesh->face_area, new_capacity * sizeof(double));
+#ifdef MOVING_MESH
+        mesh->f_mid = (POINT_TYPE*)realloc(mesh->f_mid, new_capacity * sizeof(POINT_TYPE));
+#endif
 #ifdef DEBUG_MODE
         mesh->edge_coords_offsets = (hsize_t*)realloc(mesh->edge_coords_offsets, new_capacity * sizeof(hsize_t));
 #endif
@@ -634,6 +672,52 @@ namespace voronoi {
         hsize_t fi              = mesh->num_faces;
         mesh->neighbor_cell[fi] = neighbor_id;
         mesh->face_area[fi]     = face_measure;
+
+#ifdef MOVING_MESH
+#ifdef dim_2D
+        mesh->f_mid[fi].x = 0.5 * (face_verts[0].x + face_verts[1].x);
+        mesh->f_mid[fi].y = 0.5 * (face_verts[0].y + face_verts[1].y);
+#else // dim_3D
+
+        // compute face centroid via fan triangulation
+        double total_area = 0.0;
+        double cx = 0, cy = 0, cz = 0;
+
+        for (size_t i = 1; i + 1 < face_verts.size(); i++) {
+            double4 v0 = face_verts[0];
+            double4 v1 = face_verts[i];
+            double4 v2 = face_verts[i + 1];
+
+            // compute triangle area via cross product
+            double4 edge1         = minus4(v1, v0);
+            double4 edge2         = minus4(v2, v0);
+            double4 cr            = cross3(edge1, edge2);
+            double  triangle_area = 0.5 * std::sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z);
+
+            // compute triangle centroid
+            double tc_x = (v0.x + v1.x + v2.x) / 3.0;
+            double tc_y = (v0.y + v1.y + v2.y) / 3.0;
+            double tc_z = (v0.z + v1.z + v2.z) / 3.0;
+
+            // accumulate weighted sum
+            total_area += triangle_area;
+            cx += triangle_area * tc_x;
+            cy += triangle_area * tc_y;
+            cz += triangle_area * tc_z;
+        }
+
+        // store final weighted centroid
+        if (total_area > 0) {
+            mesh->f_mid[fi].x = cx / total_area;
+            mesh->f_mid[fi].y = cy / total_area;
+            mesh->f_mid[fi].z = cz / total_area;
+        } else {
+            std::cerr << "something went wrong with the f_mid calc..." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
+#endif // dim 2D
+#endif // MOVING_MESH
 
 #ifdef DEBUG_MODE
         // store face vertex coordinates

@@ -84,8 +84,10 @@ class OutputHandler;
 extern InputHandler  input;
 extern ICData        icData;
 extern OutputHandler output;
-extern double        buff;    // buffer for the periodic bc (box will then be 1 + 2*buff long)
-extern double        _gamma_; // ideal gas constant
+extern double        buff;              // buffer for the periodic bc (box will then be 1 + 2*buff long)
+extern double        _gamma_;           // ideal gas constant
+extern double        CellShapingSpeed;  // regularization speed fraction
+extern double        CellShapingFactor; // regularization threshold in units of cell radius
 
 // abstraction layer to later switch between CPU_DEBUG, CUDA and HIP defines
 // for now just CPU stuff
@@ -283,11 +285,18 @@ inline POINT_TYPE point_mul(double s, const POINT_TYPE& p) {
     return out;
 }
 
+// ensures periodic bc (assumes boxsize 1)
+inline double wrap_periodic_delta(double d) {
+    if (d > 0.5) d -= 1.0;
+    if (d < -0.5) d += 1.0;
+    return d;
+}
+
 inline POINT_TYPE point_diff(const double3& a, const double3& b) {
 #ifdef dim_2D
-    POINT_TYPE out = {a.x - b.x, a.y - b.y};
+    POINT_TYPE out = {wrap_periodic_delta(a.x - b.x), wrap_periodic_delta(a.y - b.y)};
 #else
-    POINT_TYPE out = {a.x - b.x, a.y - b.y, a.z - b.z};
+    POINT_TYPE out = {wrap_periodic_delta(a.x - b.x), wrap_periodic_delta(a.y - b.y), wrap_periodic_delta(a.z - b.z)};
 #endif
     return out;
 }
@@ -318,5 +327,16 @@ struct PrimGradients {
 #endif
     POINT_TYPE E;
 };
+
+// geometry (normalized basis)
+struct geom {
+    double3 n; // normal
+    double3 m; // 1. tangential
+    double3 p; // 2. tangential
+};
+
+// compute face normal and geometry
+double3 compute_face_normal(double3 seed_i, double3 seed_j);
+geom    compute_geom(double3 normal);
 
 #endif // ALLVARS_H

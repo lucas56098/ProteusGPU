@@ -45,7 +45,7 @@ namespace voronoi {
     // put convex cell into VMesh struct
     void extract_cell_to_vmesh(ConvexCell& cell, VMesh* mesh, hsize_t cell_index, hsize_t& face_capacity);
     // helper to compute additional quantities needed in hydro
-    double compute_cell_area_2d(const std::vector<double4>& vertices, int nb_t);
+    double compute_cell_area_centroid_2d(const std::vector<double4>& vertices, int nb_t, double& cx, double& cy);
     void   ensure_face_capacity(VMesh* mesh, hsize_t& face_capacity, hsize_t needed);
     bool   collect_face_vertices(ConvexCell&                 cell,
                                  int                         p,

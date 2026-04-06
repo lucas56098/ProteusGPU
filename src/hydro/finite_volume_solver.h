@@ -7,6 +7,7 @@
 #include "../io/input.h"
 #include "../io/output.h"
 #include "../knn/knn.h"
+#include "../voronoi/periodic_mesh.h"
 #include "../voronoi/voronoi.h"
 #include "riemann.h"
 #include <climits>
@@ -22,13 +23,14 @@ namespace hydro {
     void      free_prim(primvars** primvar);
 
     // RK2 hydro stepping
-    void hydro_step(double dt, const VMesh* mesh, primvars* primvar);
-    void apply_flux_update(double               dt_update,
-                           double               dt_extrap,
-                           const VMesh*         mesh,
-                           const primvars*      prim_old,
-                           const PrimGradients* grads,
-                           primvars*            prim_new);
+    VMesh* hydro_step(double dt, VMesh* mesh, primvars* primvar);
+    void   apply_flux_update(double               dt_update,
+                             double               dt_extrap,
+                             const VMesh*         mesh,
+                             const primvars*      prim_old,
+                             const PrimGradients* grads,
+                             const POINT_TYPE*    v_mesh,
+                             primvars*            prim_new);
 
     // spatial and time extrapolation of states
     void apply_spatial_extrapolation(const prim state, const PrimGradients gradient, POINT_TYPE dx, prim* st_extrap);
@@ -38,6 +40,21 @@ namespace hydro {
     double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar);
 
     // helper
+#ifdef MOVING_MESH
+    void get_vel_face(hsize_t      i,
+                      hsize_t      index_j,
+                      POINT_TYPE   v_mesh_i,
+                      POINT_TYPE   v_mesh_j,
+                      POINT_TYPE   f_mid,
+                      const VMesh* mesh,
+                      geom         g,
+                      POINT_TYPE*  vel_face,
+                      POINT_TYPE*  vel_face_turned);
+    void convert_state_to_local_frame(prim* st, POINT_TYPE vel_face);
+    void convert_flux_to_lab_frame(prim* flux, POINT_TYPE vel_face_turned);
+#endif
+    void        rotate_to_face(prim* state, geom* g);
+    void        rotate_from_face(prim* state, geom* g);
     void        keep_state_physical(prim* state);
     inline prim get_state(hsize_t i, const VMesh* mesh, const primvars* primvar) {
 

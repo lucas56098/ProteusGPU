@@ -20,10 +20,12 @@ USE_HDF5
 # enable OpenMP parallelization for CPU mode (requires g++-15 on macOS)
 USE_OPENMP
 
+# turn on moving mesh
+MOVING_MESH
+
 # Riemann solver
 #RIEMANN_HLL
-RIEMANN_HLLC # 3D is still missing!!
-
+RIEMANN_HLLC
 
 # Output types
 #WRITE_KNN_OUTPUT

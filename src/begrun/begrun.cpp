@@ -44,6 +44,13 @@ namespace begrun {
         // adapt buff for periodic bc to IC resolution (naive, will have to be improved later)
         buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) *
                4; // for approx unform grid this would be 4 layers of ghost points...
+#ifdef MOVING_MESH
+        // read mesh regularization parameters
+        CellShapingSpeed  = input.getParameterDouble("CellShapingSpeed");
+        CellShapingFactor = input.getParameterDouble("CellShapingFactor");
+        std::cout << "BEGRUN: CellShapingSpeed  = " << CellShapingSpeed << std::endl;
+        std::cout << "BEGRUN: CellShapingFactor = " << CellShapingFactor << std::endl;
+#endif
 
         // init output folder
         output = OutputHandler(input.getParameter("output_directory"));
@@ -68,7 +75,7 @@ namespace begrun {
         std::cout << "==========================================================================" << std::endl;
         std::cout << "A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics" << std::endl;
         std::cout << "==========================================================================" << std::endl;
-        std::cout << "Version: 0.3" << std::endl;
+        std::cout << "Version: 0.4" << std::endl;
         std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
         std::cout << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
         std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;

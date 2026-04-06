@@ -16,7 +16,9 @@ namespace voronoi {
     // -------- main voronoi mesh generation --------
     // ----------------------------------------------
     VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points) {
+#ifdef DEBUG_MODE
         std::cout << "VORONOI: Computing Voronoi mesh..." << std::endl;
+#endif
 
         // -------- KNN PROBLEM --------
         PROFILE_START("KNN (par)");
@@ -32,7 +34,9 @@ namespace voronoi {
 
         // solve knn problem
         knn::solve(knn);
+#ifdef DEBUG_MODE
         std::cout << "\n";
+#endif
 #ifdef DEBUG_MODE
         std::cout << "KNN: problem solved." << std::endl;
 #endif
@@ -96,9 +100,8 @@ namespace voronoi {
                          gpu_stat.gpu_data,
                          mesh,
                          face_capacity);
-        std::cout << '\n';
 #ifdef DEBUG_MODE
-        std::cout << "VORONOI: cells computed" << std::endl;
+        std::cout << "\nVORONOI: cells computed" << std::endl;
 #endif
 
         // shrink face arrays to actual size
@@ -143,12 +146,14 @@ namespace voronoi {
                 // global seed_id
                 int seed_id = threadsPerBlock * blockId + threadId;
                 if (seed_id >= N_seedpts) { continue; }
+#ifdef DEBUG_MODE
                 if (seed_id % 10000 == 0 || seed_id == N_seedpts - 1) {
 #ifdef USE_OPENMP
 #pragma omp critical(voro_progress_print)
 #endif
                     std::cout << "\rVORONOI: processing cell " << seed_id + 1 << " / " << N_seedpts << std::flush;
                 }
+#endif
 
                 // create and initalize convex cell
                 ConvexCell cell(seed_id, d_stored_points, &(gpu_stat[seed_id]));
@@ -195,6 +200,7 @@ namespace voronoi {
 
         // per-cell arrays (known size)
         mesh->seeds       = (double3*)calloc(n_seeds, sizeof(double3));
+        mesh->com         = (double3*)calloc(n_seeds, sizeof(double3));
         mesh->volumes     = (double*)calloc(n_seeds, sizeof(double));
         mesh->face_counts = (hsize_t*)calloc(n_seeds, sizeof(hsize_t));
         mesh->face_ptr    = (hsize_t*)calloc(n_seeds, sizeof(hsize_t));
@@ -202,6 +208,10 @@ namespace voronoi {
         // face arrays (initial capacity, grown dynamically during extraction)
         mesh->neighbor_cell = (int*)malloc(initial_face_capacity * sizeof(int));
         mesh->face_area     = (double*)malloc(initial_face_capacity * sizeof(double));
+
+#ifdef MOVING_MESH
+        mesh->f_mid = (POINT_TYPE*)malloc(initial_face_capacity * sizeof(POINT_TYPE));
+#endif
 
 #ifdef DEBUG_MODE
         mesh->edge_coords =
@@ -218,11 +228,15 @@ namespace voronoi {
     void free_vmesh(VMesh* mesh) {
         if (!mesh) return;
         free(mesh->seeds);
+        free(mesh->com);
         free(mesh->volumes);
         free(mesh->face_counts);
         free(mesh->face_ptr);
         free(mesh->neighbor_cell);
         free(mesh->face_area);
+#ifdef MOVING_MESH
+        free(mesh->f_mid);
+#endif
 #ifdef DEBUG_MODE
         free(mesh->edge_coords);
         free(mesh->edge_coords_offsets);
@@ -248,6 +262,7 @@ namespace voronoi {
 
         // New cell-wise arrays in original input order.
         double3* new_seeds       = (double3*)malloc(n * sizeof(double3));
+        double3* new_com         = (double3*)malloc(n * sizeof(double3));
         double*  new_volumes     = (double*)malloc(n * sizeof(double));
         hsize_t* new_face_counts = (hsize_t*)malloc(n * sizeof(hsize_t));
         hsize_t* new_face_ptr    = (hsize_t*)malloc(n * sizeof(hsize_t));
@@ -255,6 +270,9 @@ namespace voronoi {
         // Face arrays are rebuilt as contiguous blocks per (now unpermuted) cell.
         int*    new_neighbor_cell = (int*)malloc(mesh->num_faces * sizeof(int));
         double* new_face_area     = (double*)malloc(mesh->num_faces * sizeof(double));
+#ifdef MOVING_MESH
+        POINT_TYPE* new_f_mid = (POINT_TYPE*)malloc(mesh->num_faces * sizeof(POINT_TYPE));
+#endif
 
 #ifdef DEBUG_MODE
         hsize_t* new_edge_coords_offsets = (hsize_t*)malloc(mesh->num_faces * sizeof(hsize_t));
@@ -279,6 +297,7 @@ namespace voronoi {
 
             // Per-cell scalars move to original slot; faces are appended at face_cursor.
             new_seeds[original]       = mesh->seeds[sorted_idx];
+            new_com[original]         = mesh->com[sorted_idx];
             new_volumes[original]     = mesh->volumes[sorted_idx];
             new_face_counts[original] = count;
             new_face_ptr[original]    = face_cursor;
@@ -296,6 +315,10 @@ namespace voronoi {
                 }
 
                 new_face_area[new_fi] = mesh->face_area[old_fi];
+
+#ifdef MOVING_MESH
+                new_f_mid[new_fi] = mesh->f_mid[old_fi];
+#endif
 
 #ifdef DEBUG_MODE
                 hsize_t verts_in_face           = mesh->edge_coords_offsets[old_fi];
@@ -322,11 +345,15 @@ namespace voronoi {
 
         // Swap in rebuilt arrays.
         free(mesh->seeds);
+        free(mesh->com);
         free(mesh->volumes);
         free(mesh->face_counts);
         free(mesh->face_ptr);
         free(mesh->neighbor_cell);
         free(mesh->face_area);
+#ifdef MOVING_MESH
+        free(mesh->f_mid);
+#endif
 
 #ifdef DEBUG_MODE
         free(mesh->edge_coords_offsets);
@@ -334,11 +361,15 @@ namespace voronoi {
 #endif
 
         mesh->seeds         = new_seeds;
+        mesh->com           = new_com;
         mesh->volumes       = new_volumes;
         mesh->face_counts   = new_face_counts;
         mesh->face_ptr      = new_face_ptr;
         mesh->neighbor_cell = new_neighbor_cell;
         mesh->face_area     = new_face_area;
+#ifdef MOVING_MESH
+        mesh->f_mid = new_f_mid;
+#endif
 
 #ifdef DEBUG_MODE
         mesh->edge_coords_offsets  = new_edge_coords_offsets;

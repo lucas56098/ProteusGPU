@@ -77,7 +77,7 @@ namespace gradients {
                 d_state.v.x = state_j.v.x - state_i.v.x;
                 d_state.v.y = state_j.v.y - state_i.v.y;
 #ifdef dim_3D
-                d_state.v.x = state_j.v.z - state_i.v.z;
+                d_state.v.z = state_j.v.z - state_i.v.z;
 #endif
                 d_state.E = state_j.E - state_i.E;
 

@@ -28,7 +28,7 @@
 ==========================================================================
 A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics
 ==========================================================================
-Version: 0.3
+Version: 0.4
 Authors: Lucas Schleuss, Dylan Nelson
 Institution: Institute of Theoretical Astrophysics, Heidelberg University
 ========================================================================*/
@@ -57,7 +57,7 @@ int main(int argc, char* argv[]) {
 
     double output_dt    = std::stof(input.getParameter("output_dt"));
     double t_nextoutput = t_sim + output_dt;
-    int    snap_num = 0, next_log = 10;
+    int    snap_num = 0, next_log = 1;
 
 // write first snapshot at t=0
 #ifdef USE_HDF5
@@ -75,7 +75,7 @@ int main(int argc, char* argv[]) {
         // make sure we exactly hit t_end
         if (t_sim + dt > t_end) { dt = t_end - t_sim; }
 
-        hydro::hydro_step(dt, mesh, primvar);
+        mesh = hydro::hydro_step(dt, mesh, primvar);
         t_sim += dt;
         step++;
 

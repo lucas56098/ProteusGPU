@@ -26,6 +26,7 @@ struct VMesh {
 
     // stored for all cells
     double3* seeds;       // seedpoints
+    double3* com;         // cell centroid
     double*  volumes;     // area in 2D, volume in 3D
     hsize_t* face_counts; // number of faces per cell
     hsize_t* face_ptr;    // pointer to start of each cell's faces in the face arrays
@@ -33,6 +34,9 @@ struct VMesh {
     // stored for all faces
     int*    neighbor_cell; // global id of neighboring cell for each face
     double* face_area;     // edge length in 2D, face area in 3D
+#ifdef MOVING_MESH
+    POINT_TYPE* f_mid; // midpoint of the faces
+#endif
 #ifdef DEBUG_MODE
     double*  edge_coords;          // flat array of all face vertex coordinates (DIMENSION doubles per vertex)
     hsize_t* edge_coords_offsets;  // number of vertices per face
