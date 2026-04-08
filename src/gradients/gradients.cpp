@@ -6,9 +6,9 @@
 namespace gradients {
 
     // compute spatial gradients
-    PrimGradients* compute_prim_gradients(const VMesh* mesh, const primvars* primvar) {
+    void compute_prim_gradients(const VMesh* mesh, const primvars* primvar, PrimGradients* grads) {
         PROFILE_START("GRADIENTS (par)");
-        PrimGradients* grads = (PrimGradients*)calloc(mesh->n_hydro, sizeof(PrimGradients));
+        memset(grads, 0, mesh->n_hydro * sizeof(PrimGradients));
 
         // loop over all hydro cells
 #ifdef USE_OPENMP
@@ -147,12 +147,6 @@ namespace gradients {
         }
 
         PROFILE_END("GRADIENTS (par)");
-        return grads;
-    }
-
-    // free gradients buffer
-    void free_prim_gradients(PrimGradients* grads) {
-        free(grads);
     }
 
     // compute dW/dt ("time gradients") based on states and gradients

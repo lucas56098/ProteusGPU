@@ -16,6 +16,7 @@ namespace begrun {
 
     // called in main
     void begrun(int argc, char* argv[]);
+    void free_initial_conditions();
 
     // helpers
     void         print_banner();

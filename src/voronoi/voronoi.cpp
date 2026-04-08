@@ -64,9 +64,7 @@ namespace voronoi {
         compute_cells(n_pts, knn, stat, mesh);
 
         // reorder VMesh from sorted KNN order back to original input order
-        unsigned int* knn_permutation = knn::get_permutation(knn);
-        unpermute_vmesh(mesh, knn_permutation);
-        free(knn_permutation);
+        unpermute_vmesh(mesh, knn->d_permutation);
 
         PROFILE_END("VORONOI (par)");
 

@@ -9,8 +9,7 @@
 namespace gradients {
 
     // compute and free gradients
-    PrimGradients* compute_prim_gradients(const VMesh* mesh, const primvars* primvar);
-    void           free_prim_gradients(PrimGradients* grads);
+    void compute_prim_gradients(const VMesh* mesh, const primvars* primvar, PrimGradients* grads);
 
     // calc dW/dt ("time gradients") based on states and gradients
     void time_gradient(prim state_i, PrimGradients grad_i, prim* dWdt);

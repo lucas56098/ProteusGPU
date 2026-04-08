@@ -45,9 +45,20 @@ namespace hydro {
     // main hydro routine (RK2 step including mesh movement and updated states)
     VMesh* hydro_step(double dt, VMesh* mesh, primvars* primvar) {
 
-        // allocate primitive accumulator for new state
-        primvars prim_new;
-        allocate_prim_buffer(mesh->n_hydro, &prim_new);
+        // buffers allocated once, reused every timestep (n_hydro is constant)
+        static primvars       prim_new    = {};
+        static PrimGradients* grads       = nullptr;
+        static POINT_TYPE*    v_mesh      = nullptr;
+        static double*        old_volumes = nullptr;
+
+        if (!grads) {
+            allocate_prim_buffer(mesh->n_hydro, &prim_new);
+            grads = (PrimGradients*)malloc(mesh->n_hydro * sizeof(PrimGradients));
+#ifdef MOVING_MESH
+            v_mesh      = (POINT_TYPE*)malloc(mesh->n_hydro * sizeof(POINT_TYPE));
+            old_volumes = (double*)malloc(mesh->n_hydro * sizeof(double));
+#endif
+        }
 
         // initialize new state from old primitive variables
         std::memcpy(prim_new.rho, primvar->rho, mesh->n_hydro * sizeof(double));
@@ -55,12 +66,9 @@ namespace hydro {
         std::memcpy(prim_new.E, primvar->E, mesh->n_hydro * sizeof(double));
 
         // compute gradients from old state on old mesh
-        PrimGradients* grads = gradients::compute_prim_gradients(mesh, primvar);
+        gradients::compute_prim_gradients(mesh, primvar, grads);
 
-        // compute mesh-point velocities
-        POINT_TYPE* v_mesh = nullptr;
 #ifdef MOVING_MESH
-        v_mesh = (POINT_TYPE*)malloc(mesh->n_hydro * sizeof(POINT_TYPE));
         voronoi::compute_mesh_velocities(mesh, primvar, grads, v_mesh);
 #endif
 
@@ -69,7 +77,6 @@ namespace hydro {
 
 #ifdef MOVING_MESH
         // store old volume
-        double* old_volumes = (double*)malloc(mesh->n_hydro * sizeof(double));
         std::memcpy(old_volumes, mesh->volumes, mesh->n_hydro * sizeof(double));
 
         // move mesh
@@ -81,27 +88,19 @@ namespace hydro {
             prim_new.rho[i] *= volume_ratio;
             prim_new.E[i] *= volume_ratio;
         }
-        free(old_volumes);
 
         // compute gradients for second half
-        gradients::free_prim_gradients(grads);
-        grads = gradients::compute_prim_gradients(mesh, primvar);
+        gradients::compute_prim_gradients(mesh, primvar, grads);
 #endif
 
         // second half update (full dt time extrapolation)
         apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, v_mesh, &prim_new);
-
-        gradients::free_prim_gradients(grads);
 
         // final copy: primvar = prim_new
         std::memcpy(primvar->rho, prim_new.rho, mesh->n_hydro * sizeof(double));
         std::memcpy(primvar->v, prim_new.v, mesh->n_hydro * sizeof(POINT_TYPE));
         std::memcpy(primvar->E, prim_new.E, mesh->n_hydro * sizeof(double));
 
-        free_prim_buffer(&prim_new);
-#ifdef MOVING_MESH
-        free(v_mesh);
-#endif
         return mesh;
     }
 

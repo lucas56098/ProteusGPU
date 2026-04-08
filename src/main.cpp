@@ -47,6 +47,9 @@ int main(int argc, char* argv[]) {
     // compute voronoi mesh
     VMesh* mesh = voronoi::compute_periodic_mesh((POINT_TYPE*)icData.seedpos.data(), icData.seedpos_dims[0]);
 
+    // free IC data no longer needed
+    begrun::free_initial_conditions();
+
     // start timestep loop
     std::cout << "HYDRO: started" << std::endl;
 

@@ -59,6 +59,13 @@ namespace begrun {
         PROFILE_END("BEGRUN");
     }
 
+    void free_initial_conditions() {
+        std::vector<double>().swap(icData.seedpos);
+        std::vector<double>().swap(icData.rho);
+        std::vector<double>().swap(icData.vel);
+        std::vector<double>().swap(icData.Energy);
+    }
+
     // prints welcome message
     void print_banner() {
         std::cout << "==========================================================================" << std::endl;
