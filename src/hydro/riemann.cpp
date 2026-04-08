@@ -9,11 +9,13 @@ namespace hydro {
         prim f_l = get_flux(&st_l);
         prim f_r = get_flux(&st_r);
 
+        // cache pressure
+        double P_l = get_P_ideal_gas(&st_l);
+        double P_r = get_P_ideal_gas(&st_r);
+
         // wave speeds
-        double SL = std::min(st_l.v.x - sqrt((_gamma_ * get_P_ideal_gas(&st_l)) / st_l.rho),
-                             st_r.v.x - sqrt((_gamma_ * get_P_ideal_gas(&st_r)) / st_r.rho));
-        double SR = std::max(st_l.v.x + sqrt((_gamma_ * get_P_ideal_gas(&st_l)) / st_l.rho),
-                             st_r.v.x + sqrt((_gamma_ * get_P_ideal_gas(&st_r)) / st_r.rho));
+        double SL = std::min(st_l.v.x - sqrt((_gamma_ * P_l) / st_l.rho), st_r.v.x - sqrt((_gamma_ * P_r) / st_r.rho));
+        double SR = std::max(st_l.v.x + sqrt((_gamma_ * P_l) / st_l.rho), st_r.v.x + sqrt((_gamma_ * P_r) / st_r.rho));
 
         // calc HLL flux
         prim flux;
@@ -44,15 +46,16 @@ namespace hydro {
         prim f_l = get_flux(&st_l);
         prim f_r = get_flux(&st_r);
 
+        // cache pressure
+        double P_l = get_P_ideal_gas(&st_l);
+        double P_r = get_P_ideal_gas(&st_r);
+
         // wave speeds
-        double SL = std::min(st_l.v.x - sqrt((_gamma_ * get_P_ideal_gas(&st_l)) / st_l.rho),
-                             st_r.v.x - sqrt((_gamma_ * get_P_ideal_gas(&st_r)) / st_r.rho));
-        double SR = std::max(st_l.v.x + sqrt((_gamma_ * get_P_ideal_gas(&st_l)) / st_l.rho),
-                             st_r.v.x + sqrt((_gamma_ * get_P_ideal_gas(&st_r)) / st_r.rho));
+        double SL = std::min(st_l.v.x - sqrt((_gamma_ * P_l) / st_l.rho), st_r.v.x - sqrt((_gamma_ * P_r) / st_r.rho));
+        double SR = std::max(st_l.v.x + sqrt((_gamma_ * P_l) / st_l.rho), st_r.v.x + sqrt((_gamma_ * P_r) / st_r.rho));
 
         // calculate S_star
-        double S_star = (get_P_ideal_gas(&st_r) - get_P_ideal_gas(&st_l) + st_l.rho * st_l.v.x * (SL - st_l.v.x) -
-                         st_r.rho * st_r.v.x * (SR - st_r.v.x)) /
+        double S_star = (P_r - P_l + st_l.rho * st_l.v.x * (SL - st_l.v.x) - st_r.rho * st_r.v.x * (SR - st_r.v.x)) /
                         (st_l.rho * (SL - st_l.v.x) - st_r.rho * (SR - st_r.v.x));
 
         // HLLC solver for F
@@ -62,26 +65,26 @@ namespace hydro {
         } else if (SL <= 0 && 0 <= S_star) {
             flux.rho = (S_star * (SL * st_l.rho - f_l.rho)) / (SL - S_star);
             flux.v.x = (S_star * (SL * st_l.rho * st_l.v.x - f_l.v.x) +
-                        SL * (get_P_ideal_gas(&st_l) + st_l.rho * (SL - st_l.v.x) * (S_star - st_l.v.x))) /
+                        SL * (P_l + st_l.rho * (SL - st_l.v.x) * (S_star - st_l.v.x))) /
                        (SL - S_star);
             flux.v.y = (S_star * (SL * st_l.rho * st_l.v.y - f_l.v.y)) / (SL - S_star);
 #ifdef dim_3D
             flux.v.z = (S_star * (SL * st_l.rho * st_l.v.z - f_l.v.z)) / (SL - S_star);
 #endif
             flux.E = (S_star * (SL * st_l.E - f_l.E) +
-                      SL * (get_P_ideal_gas(&st_l) + st_l.rho * (SL - st_l.v.x) * (S_star - st_l.v.x)) * S_star) /
+                      SL * (P_l + st_l.rho * (SL - st_l.v.x) * (S_star - st_l.v.x)) * S_star) /
                      (SL - S_star);
         } else if (S_star <= 0 && 0 <= SR) {
             flux.rho = (S_star * (SR * st_r.rho - f_r.rho)) / (SR - S_star);
             flux.v.x = (S_star * (SR * st_r.rho * st_r.v.x - f_r.v.x) +
-                        SR * (get_P_ideal_gas(&st_r) + st_r.rho * (SR - st_r.v.x) * (S_star - st_r.v.x))) /
+                        SR * (P_r + st_r.rho * (SR - st_r.v.x) * (S_star - st_r.v.x))) /
                        (SR - S_star);
             flux.v.y = (S_star * (SR * st_r.rho * st_r.v.y - f_r.v.y)) / (SR - S_star);
 #ifdef dim_3D
             flux.v.z = (S_star * (SR * st_r.rho * st_r.v.z - f_r.v.z)) / (SR - S_star);
 #endif
             flux.E = (S_star * (SR * st_r.E - f_r.E) +
-                      SR * (get_P_ideal_gas(&st_r) + st_r.rho * (SR - st_r.v.x) * (S_star - st_r.v.x)) * S_star) /
+                      SR * (P_r + st_r.rho * (SR - st_r.v.x) * (S_star - st_r.v.x)) * S_star) /
                      (SR - S_star);
         } else if (0 >= SR) {
             flux = f_r;
