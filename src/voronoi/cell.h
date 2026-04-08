@@ -45,14 +45,39 @@ namespace voronoi {
     // put convex cell into VMesh struct
     void extract_cell_to_vmesh(ConvexCell& cell, VMesh* mesh, hsize_t cell_index, hsize_t& face_capacity);
     // helper to compute additional quantities needed in hydro
-    double compute_cell_area_centroid_2d(const std::vector<double4>& vertices, int nb_t, double& cx, double& cy);
+    double compute_cell_area_centroid_2d(const double4* vertices, int nb_t, double& cx, double& cy);
     void   ensure_face_capacity(VMesh* mesh, hsize_t& face_capacity, hsize_t needed);
-    bool   collect_face_vertices(ConvexCell&                 cell,
-                                 int                         p,
-                                 const std::vector<double4>& vertices,
-                                 std::vector<double4>&       face_verts);
+    bool   collect_face_vertices(ConvexCell& cell, int p, const double4* vertices, std::vector<double4>& face_verts);
     double compute_face_measure(std::vector<double4>& face_verts, double4 seed, double* cell_volume);
     void   store_face_data(VMesh* mesh, const std::vector<double4>& face_verts, int neighbor_id, double face_measure);
+
+#ifdef CPU_DEBUG
+    // per-face data for lock-free parallel extraction
+    struct CellFaceInfo {
+        int    neighbor_id;
+        double face_area;
+#ifdef MOVING_MESH
+        POINT_TYPE f_mid;
+#endif
+#ifdef DEBUG_MODE
+        std::vector<double4> face_verts;
+#endif
+    };
+
+    // per-cell extraction result
+    struct CellExtractionResult {
+        bool                      valid;
+        int                       face_count;
+        std::vector<CellFaceInfo> faces;
+    };
+
+    // extract per-cell data and face info into local buffer (thread-safe, no shared writes to face arrays)
+    void extract_cell_percell(ConvexCell& cell, VMesh* mesh, hsize_t cell_index, CellExtractionResult& result);
+#endif
+
+#ifdef DEBUG_MODE
+    void ensure_edge_coords_capacity(VMesh* mesh, hsize_t needed_verts);
+#endif
 
 } // namespace voronoi
 

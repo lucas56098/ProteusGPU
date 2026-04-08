@@ -423,7 +423,7 @@ namespace voronoi {
 #ifdef dim_2D
         double cx                 = cell.voro_seed.x;
         double cy                 = cell.voro_seed.y;
-        mesh->volumes[cell_index] = compute_cell_area_centroid_2d(vertices, cell.nb_t, cx, cy);
+        mesh->volumes[cell_index] = compute_cell_area_centroid_2d(vertices.data(), cell.nb_t, cx, cy);
         mesh->com[cell_index]     = {cx, cy, 0.0};
 #else
         double cell_volume = 0.0;
@@ -463,7 +463,7 @@ namespace voronoi {
         int actual_count = 0;
         for (int p = 0; p < cell.nb_v; p++) {
             std::vector<double4> face_verts;
-            if (!collect_face_vertices(cell, p, vertices, face_verts)) continue;
+            if (!collect_face_vertices(cell, p, vertices.data(), face_verts)) continue;
 
 #ifdef dim_2D
             double face_measure = compute_face_measure(face_verts, cell.voro_seed, nullptr);
@@ -481,10 +481,115 @@ namespace voronoi {
         mesh->face_counts[cell_index] = (hsize_t)actual_count;
     }
 
+#ifdef CPU_DEBUG
+    // lock-free per-cell extraction: writes per-cell arrays directly, stores face data in local buffer
+    void extract_cell_percell(ConvexCell& cell, VMesh* mesh, hsize_t cell_index, CellExtractionResult& result) {
+        result.valid      = false;
+        result.face_count = 0;
+        result.faces.clear();
+        result.faces.reserve(cell.nb_v);
+
+        // store seed position (per-cell indexed, thread-safe)
+        double3 seed            = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
+        mesh->seeds[cell_index] = seed;
+
+        // compute all vertex positions (stack array)
+        double4 vertices[_MAX_T_];
+        for (int i = 0; i < cell.nb_t; i++) {
+            vertices[i] = cell.compute_vertex_point(cell.triangle[i], true);
+        }
+
+        // compute cell volume/area and centroid (per-cell indexed, thread-safe)
+#ifdef dim_2D
+        double cx                 = cell.voro_seed.x;
+        double cy                 = cell.voro_seed.y;
+        mesh->volumes[cell_index] = compute_cell_area_centroid_2d(vertices, cell.nb_t, cx, cy);
+        mesh->com[cell_index]     = {cx, cy, 0.0};
+#else
+        double cell_volume = 0.0;
+        double cx = 0.0, cy = 0.0, cz = 0.0;
+        for (const auto& v : vertices) {
+            cx += v.x;
+            cy += v.y;
+            cz += v.z;
+        }
+        if (!vertices.empty()) {
+            cx /= vertices.size();
+            cy /= vertices.size();
+            cz /= vertices.size();
+        } else {
+            cx = cell.voro_seed.x;
+            cy = cell.voro_seed.y;
+            cz = cell.voro_seed.z;
+        }
+        mesh->com[cell_index] = {cx, cy, cz};
+#endif
+
+        // extract faces into local buffer (no shared writes)
+        std::vector<double4> face_verts;
+        face_verts.reserve(_MAX_T_);
+        for (int p = 0; p < cell.nb_v; p++) {
+            face_verts.clear();
+            if (!collect_face_vertices(cell, p, vertices, face_verts)) continue;
+
+            CellFaceInfo fi;
+            fi.neighbor_id = cell.plane_vid[p];
+
+#ifdef dim_2D
+            fi.face_area = compute_face_measure(face_verts, cell.voro_seed, nullptr);
+#else
+            fi.face_area = compute_face_measure(face_verts, cell.voro_seed, &cell_volume);
+#endif
+
+#ifdef MOVING_MESH
+#ifdef dim_2D
+            fi.f_mid.x = 0.5 * (face_verts[0].x + face_verts[1].x);
+            fi.f_mid.y = 0.5 * (face_verts[0].y + face_verts[1].y);
+#else
+            // 3D face centroid via fan triangulation
+            double total_area = 0.0;
+            double fcx = 0, fcy = 0, fcz = 0;
+            for (size_t i = 1; i + 1 < face_verts.size(); i++) {
+                double4 e1            = minus4(face_verts[i], face_verts[0]);
+                double4 e2            = minus4(face_verts[i + 1], face_verts[0]);
+                double4 cr            = cross3(e1, e2);
+                double  triangle_area = 0.5 * std::sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z);
+                fcx += triangle_area * (face_verts[0].x + face_verts[i].x + face_verts[i + 1].x) / 3.0;
+                fcy += triangle_area * (face_verts[0].y + face_verts[i].y + face_verts[i + 1].y) / 3.0;
+                fcz += triangle_area * (face_verts[0].z + face_verts[i].z + face_verts[i + 1].z) / 3.0;
+                total_area += triangle_area;
+            }
+            if (total_area > 0) {
+                fi.f_mid.x = fcx / total_area;
+                fi.f_mid.y = fcy / total_area;
+                fi.f_mid.z = fcz / total_area;
+            } else {
+                std::cerr << "something went wrong with the f_mid calc..." << std::endl;
+                exit(EXIT_FAILURE);
+            }
+#endif
+#endif
+
+#ifdef DEBUG_MODE
+            fi.face_verts = face_verts;
+#endif
+
+            result.faces.push_back(fi);
+            result.face_count++;
+        }
+
+#ifdef dim_3D
+        mesh->volumes[cell_index] = std::fabs(cell_volume);
+#endif
+
+        result.valid = true;
+    }
+#endif
+
     // -------- helper functions for this --------
 #ifdef dim_2D
     // compute cell area using shoelace formula (2D only)
-    double compute_cell_area_centroid_2d(const std::vector<double4>& vertices, int nb_t, double& cx, double& cy) {
+    double compute_cell_area_centroid_2d(const double4* vertices, int nb_t, double& cx, double& cy) {
         double mx = 0.0, my = 0.0;
         for (int i = 0; i < nb_t; i++) {
             mx += vertices[i].x;
@@ -493,13 +598,23 @@ namespace voronoi {
         mx /= nb_t;
         my /= nb_t;
 
-        std::vector<int> order(nb_t);
+        // sort by angle using cross-product comparison (avoids expensive atan2)
+        int order[_MAX_T_];
         for (int i = 0; i < nb_t; i++) {
             order[i] = i;
         }
-        std::sort(order.begin(), order.end(), [&](int a, int b) {
-            return std::atan2(vertices[a].y - my, vertices[a].x - mx) <
-                   std::atan2(vertices[b].y - my, vertices[b].x - mx);
+        std::sort(order, order + nb_t, [&](int a, int b) {
+            double ax = vertices[a].x - mx, ay = vertices[a].y - my;
+            double bx = vertices[b].x - mx, by = vertices[b].y - my;
+            // half-plane: positive y (or positive x when y==0) comes first
+            int ha = (ay > 0.0) || (ay == 0.0 && ax > 0.0) ? 0 : 1;
+            int hb = (by > 0.0) || (by == 0.0 && bx > 0.0) ? 0 : 1;
+            if (ha != hb) return ha < hb;
+            // same half-plane: use cross product for ordering
+            double cross = ax * by - ay * bx;
+            if (cross != 0.0) return cross > 0.0;
+            // collinear: closer point first
+            return (ax * ax + ay * ay) < (bx * bx + by * by);
         });
 
         double area2  = 0.0;
@@ -543,30 +658,31 @@ namespace voronoi {
         face_capacity = new_capacity;
     }
 
-    bool collect_face_vertices(ConvexCell&                 cell,
-                               int                         p,
-                               const std::vector<double4>& vertices,
-                               std::vector<double4>&       face_verts) {
-        // find vertices that reference plane p
-        std::vector<int> face_vert_indices;
+    bool collect_face_vertices(ConvexCell& cell, int p, const double4* vertices, std::vector<double4>& face_verts) {
+        // find vertices that reference plane p (stack array)
+        int face_vert_indices[_MAX_T_];
+        int n_fvi = 0;
         for (int i = 0; i < cell.nb_t; i++) {
-            if (vert_references_plane(cell.triangle, i, (uchar)p)) { face_vert_indices.push_back(i); }
+            if (vert_references_plane(cell.triangle, i, (uchar)p)) { face_vert_indices[n_fvi++] = i; }
         }
-        if ((int)face_vert_indices.size() < DIMENSION) return false;
+        if (n_fvi < DIMENSION) return false;
 
 #ifdef dim_2D
-        for (int idx : face_vert_indices) {
-            face_verts.push_back(vertices[idx]);
+        for (int k = 0; k < n_fvi; k++) {
+            face_verts.push_back(vertices[face_vert_indices[k]]);
         }
 #else
         // order vertices by adjacency (adjacent triangles on a face share an edge)
-        std::vector<int> ordered;
-        ordered.push_back(face_vert_indices[0]);
-        std::vector<bool> used(face_vert_indices.size(), false);
-        used[0] = true;
+        int  ordered[_MAX_T_];
+        bool used[_MAX_T_];
+        for (int k = 0; k < n_fvi; k++)
+            used[k] = false;
+        ordered[0]    = face_vert_indices[0];
+        used[0]       = true;
+        int n_ordered = 1;
 
-        for (size_t step = 1; step < face_vert_indices.size(); step++) {
-            int last = ordered.back();
+        for (int step = 1; step < n_fvi; step++) {
+            int last = ordered[n_ordered - 1];
 
             // get the DIMENSION-1 other planes in this vertex that are not p
             uchar others_last[DIMENSION - 1];
@@ -577,15 +693,15 @@ namespace voronoi {
             }
 
             bool found = false;
-            for (size_t j = 0; j < face_vert_indices.size(); j++) {
+            for (int j = 0; j < n_fvi; j++) {
                 if (used[j]) continue;
                 int candidate = face_vert_indices[j];
 
                 for (int o = 0; o < DIMENSION - 1; o++) {
                     if (vert_references_plane(cell.triangle, candidate, others_last[o])) {
-                        ordered.push_back(candidate);
-                        used[j] = true;
-                        found   = true;
+                        ordered[n_ordered++] = candidate;
+                        used[j]              = true;
+                        found                = true;
                         break;
                     }
                 }
@@ -594,10 +710,10 @@ namespace voronoi {
             if (!found) break;
         }
 
-        if ((int)ordered.size() < DIMENSION) return false;
+        if (n_ordered < DIMENSION) return false;
 
-        for (int idx : ordered) {
-            face_verts.push_back(vertices[idx]);
+        for (int k = 0; k < n_ordered; k++) {
+            face_verts.push_back(vertices[ordered[k]]);
         }
 #endif
         return true;
@@ -656,8 +772,8 @@ namespace voronoi {
 
 #ifdef DEBUG_MODE
     // helper needed in store_face_data
-    hsize_t     edge_coords_capacity_global = 0;
-    static void ensure_edge_coords_capacity(VMesh* mesh, hsize_t needed_verts) {
+    hsize_t edge_coords_capacity_global = 0;
+    void    ensure_edge_coords_capacity(VMesh* mesh, hsize_t needed_verts) {
         if (needed_verts <= edge_coords_capacity_global) return;
         hsize_t new_capacity = edge_coords_capacity_global * 2;
         if (new_capacity < needed_verts) new_capacity = needed_verts;
