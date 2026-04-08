@@ -1,19 +1,6 @@
-#include "allvars.h"
-#include "../io/input.h"
-#include "../io/output.h"
-
-#if defined(CPU_DEBUG) && !defined(USE_OPENMP)
-int threadId;
-#endif
-// structs for input, output and IC handling
-InputHandler  input;
-ICData        icData;
-OutputHandler output;
-double        buff    = 0.5; // will be reduced once IC loaded
-double        _gamma_ = 5. / 3.;
-
-double CellShapingSpeed  = 0.5;
-double CellShapingFactor = 1.0;
+#include "geometry.h"
+#include "math_utils.h"
+#include <cmath>
 
 // computes the normal vector for a face between two seedpoints
 double3 compute_face_normal(double3 seed_i, double3 seed_j) {

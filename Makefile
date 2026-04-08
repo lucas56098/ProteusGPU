@@ -60,7 +60,7 @@ HDF5_LIB_DIR = libs/hdf5/lib
 
 # source files
 MAIN_SRC = $(SRC_DIR)/main.cpp
-GLOBAL_SRC = $(GLOBAL_DIR)/allvars.cpp
+GLOBAL_SRC = $(GLOBAL_DIR)/globals.cpp $(GLOBAL_DIR)/geometry.cpp
 IO_SRC = $(IO_DIR)/input.cpp $(IO_DIR)/output.cpp
 KNN_SRC = $(KNN_DIR)/knn.cpp
 BEGRUN_SRC = $(BEGRUN_DIR)/begrun.cpp
@@ -72,7 +72,7 @@ SOURCES = $(MAIN_SRC) $(GLOBAL_SRC) $(IO_SRC) $(KNN_SRC) $(BEGRUN_SRC) $(VORONOI
 
 # object files
 MAIN_OBJ = $(BUILD_DIR)/main.o
-GLOBAL_OBJ = $(BUILD_DIR)/allvars.o
+GLOBAL_OBJ = $(BUILD_DIR)/globals.o $(BUILD_DIR)/geometry.o
 IO_OBJ = $(BUILD_DIR)/input.o $(BUILD_DIR)/output.o
 KNN_OBJ = $(BUILD_DIR)/knn.o
 BEGRUN_OBJ = $(BUILD_DIR)/begrun.o
@@ -158,7 +158,10 @@ $(TARGET): $(OBJECTS) | $(BUILD_DIR)
 $(BUILD_DIR)/main.o: $(SRC_DIR)/main.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/allvars.o: $(GLOBAL_DIR)/allvars.cpp $(GLOBAL_DIR)/allvars.h | $(BUILD_DIR)
+$(BUILD_DIR)/globals.o: $(GLOBAL_DIR)/globals.cpp $(GLOBAL_DIR)/globals.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/geometry.o: $(GLOBAL_DIR)/geometry.cpp $(GLOBAL_DIR)/geometry.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/input.o: $(IO_DIR)/input.cpp $(IO_DIR)/input.h | $(BUILD_DIR)
