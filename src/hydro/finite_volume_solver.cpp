@@ -42,14 +42,17 @@ namespace hydro {
         *primvar = NULL;
     }
 
+    // persistent mesh velocity buffer
+    static POINT_TYPE* s_v_mesh = nullptr;
+
     // main hydro routine (RK2 step including mesh movement and updated states)
     VMesh* hydro_step(double dt, VMesh* mesh, primvars* primvar) {
 
         // buffers allocated once, reused every timestep (n_hydro is constant)
         static primvars       prim_new    = {};
         static PrimGradients* grads       = nullptr;
-        static POINT_TYPE*    v_mesh      = nullptr;
         static double*        old_volumes = nullptr;
+        POINT_TYPE*&          v_mesh      = s_v_mesh;
 
         if (!grads) {
             allocate_prim_buffer(mesh->n_hydro, &prim_new);
@@ -57,6 +60,8 @@ namespace hydro {
 #ifdef MOVING_MESH
             v_mesh      = (POINT_TYPE*)malloc(mesh->n_hydro * sizeof(POINT_TYPE));
             old_volumes = (double*)malloc(mesh->n_hydro * sizeof(double));
+#else
+            (void)old_volumes;
 #endif
         }
 
@@ -429,14 +434,36 @@ namespace hydro {
             double c_i = sqrt(_gamma_ * P / state_i.rho);
 
 #ifdef dim_2D
-            double R_i   = sqrt(mesh->volumes[i] / M_PI);
-            double v_abs = sqrt(state_i.v.x * state_i.v.x + state_i.v.y * state_i.v.y);
+            double R_i = sqrt(mesh->volumes[i] / M_PI);
 #else
-            double R_i   = cbrt(3.0 * mesh->volumes[i] / (4.0 * M_PI));
-            double v_abs = sqrt(state_i.v.x * state_i.v.x + state_i.v.y * state_i.v.y + state_i.v.z * state_i.v.z);
+            double R_i = cbrt(3.0 * mesh->volumes[i] / (4.0 * M_PI));
 #endif
 
-            double dt_i = CFL * (R_i / (c_i + v_abs));
+#ifdef MOVING_MESH
+            // moving mesh: use relative velocity between fluid and mesh point
+            double dvx = state_i.v.x;
+            double dvy = state_i.v.y;
+            if (s_v_mesh) {
+                dvx -= s_v_mesh[i].x;
+                dvy -= s_v_mesh[i].y;
+            }
+#ifdef dim_3D
+            double dvz = state_i.v.z;
+            if (s_v_mesh) { dvz -= s_v_mesh[i].z; }
+            double v_sig = sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+#else
+            double v_sig = sqrt(dvx * dvx + dvy * dvy);
+#endif
+#else
+            // static mesh: use absolute fluid velocity
+#ifdef dim_2D
+            double v_sig = sqrt(state_i.v.x * state_i.v.x + state_i.v.y * state_i.v.y);
+#else
+            double v_sig = sqrt(state_i.v.x * state_i.v.x + state_i.v.y * state_i.v.y + state_i.v.z * state_i.v.z);
+#endif
+#endif
+
+            double dt_i = CFL * (R_i / (c_i + v_sig));
 
             if (dt_i < min_dt) { min_dt = dt_i; }
         }
