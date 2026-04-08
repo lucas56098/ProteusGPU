@@ -150,6 +150,8 @@ namespace hydro {
                 POINT_TYPE vm_i = v_mesh[i];
                 POINT_TYPE vm_j = v_mesh[hydro_index(index_j, mesh)];
                 get_vel_face(i, index_j, vm_i, vm_j, mesh->f_mid[face_idx], mesh, g, &vel_face, &vel_face_turned);
+#else
+                (void)v_mesh;
 #endif
 
                 // second-order reconstruction at face center
