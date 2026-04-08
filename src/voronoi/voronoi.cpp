@@ -77,8 +77,6 @@ namespace voronoi {
 
     // compute voronoi cells from knn results and store in VMesh
     void compute_cells(int N_seedpts, knn_problem* knn, std::vector<Status>& stat, VMesh* mesh) {
-        // buffer to store (success, failure reason) for each cell
-        GPUBuffer<Status> gpu_stat(stat);
 
         // initial capacities for face arrays
         hsize_t face_capacity = mesh->n_seeds * 16;
@@ -99,7 +97,7 @@ namespace voronoi {
                          N_seedpts,
                          (double*)knn->d_stored_points,
                          knn->d_knearests,
-                         gpu_stat.gpu_data,
+                         stat.data(),
                          mesh,
                          face_capacity);
 #ifdef DEBUG_MODE
@@ -118,8 +116,7 @@ namespace voronoi {
         }
 
         // check if any cells failed and retry with cpu fallback
-        gpu_stat.gpu2cpu();
-        cpu_fallback_failed_cells(N_seedpts, (double*)knn->d_stored_points, gpu_stat.cpu_data, mesh);
+        cpu_fallback_failed_cells(N_seedpts, (double*)knn->d_stored_points, stat.data(), mesh);
     }
 
     // cpu fallback for cells that failed during knn-based construction
@@ -277,7 +274,7 @@ namespace voronoi {
             results[i].valid = false;
         }
 
-        // Phase 1: single parallel region over all seed points
+        // parallel region over all seed points
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(dynamic, _VORO_BLOCK_SIZE_)
 #endif
@@ -316,7 +313,7 @@ namespace voronoi {
             if (gpu_stat[seed_id] == success) { extract_cell_percell(cell, mesh, (hsize_t)seed_id, results[seed_id]); }
         }
 
-        // Phase 2: serial merge — set face_ptr/face_counts and copy face data into VMesh
+        // serial merge — set face_ptr/face_counts and copy face data into VMesh
         for (int seed_id = 0; seed_id < N_seedpts; seed_id++) {
             if (!results[seed_id].valid) continue;
 
@@ -385,7 +382,7 @@ namespace voronoi {
         mesh->num_edge_coord_verts = 0;
 #endif
 
-        // add ghost here
+        // ghosts are manually allocated in compute periodic mesh
 
         return mesh;
     }
@@ -418,21 +415,21 @@ namespace voronoi {
 
         if (n == 0 || sorted_to_original == NULL) return;
 
-        // Build inverse map: original id -> sorted id.
+        // build inverse map: original id -> sorted id.
         std::vector<int> original_to_sorted(n, -1);
         for (hsize_t sorted = 0; sorted < n; sorted++) {
             unsigned int original = sorted_to_original[sorted];
             if (original < n) { original_to_sorted[original] = (int)sorted; }
         }
 
-        // New cell-wise arrays in original input order.
+        // new cell-wise arrays in original input order.
         double3* new_seeds       = (double3*)malloc(n * sizeof(double3));
         double3* new_com         = (double3*)malloc(n * sizeof(double3));
         double*  new_volumes     = (double*)malloc(n * sizeof(double));
         hsize_t* new_face_counts = (hsize_t*)malloc(n * sizeof(hsize_t));
         hsize_t* new_face_ptr    = (hsize_t*)malloc(n * sizeof(hsize_t));
 
-        // Face arrays are rebuilt as contiguous blocks per (now unpermuted) cell.
+        // face arrays are rebuilt as contiguous blocks per (now unpermuted) cell.
         int*    new_neighbor_cell = (int*)malloc(mesh->num_faces * sizeof(int));
         double* new_face_area     = (double*)malloc(mesh->num_faces * sizeof(double));
 #ifdef MOVING_MESH
@@ -460,7 +457,7 @@ namespace voronoi {
             hsize_t count      = mesh->face_counts[sorted_idx];
             hsize_t start      = mesh->face_ptr[sorted_idx];
 
-            // Per-cell scalars move to original slot; faces are appended at face_cursor.
+            // per-cell scalars move to original slot; faces are appended at face_cursor.
             new_seeds[original]       = mesh->seeds[sorted_idx];
             new_com[original]         = mesh->com[sorted_idx];
             new_volumes[original]     = mesh->volumes[sorted_idx];
@@ -471,7 +468,7 @@ namespace voronoi {
                 hsize_t old_fi = start + f;
                 hsize_t new_fi = face_cursor + f;
 
-                // Neighbor ids are still in sorted indexing; convert back to original ids.
+                // neighbor ids are still in sorted indexing; convert back to original ids.
                 int sorted_neighbor = mesh->neighbor_cell[old_fi];
                 if (sorted_neighbor >= 0 && (hsize_t)sorted_neighbor < n) {
                     new_neighbor_cell[new_fi] = (int)sorted_to_original[sorted_neighbor];
@@ -490,7 +487,7 @@ namespace voronoi {
                 hsize_t old_edge_coord_cursor   = old_edge_start[old_fi];
                 new_edge_coords_offsets[new_fi] = verts_in_face;
 
-                // Copy the variable-length face vertex block in flat storage.
+                // copy the variable-length face vertex block in flat storage.
                 for (hsize_t vi = 0; vi < verts_in_face; vi++) {
                     new_edge_coords[(new_edge_coord_cursor + vi) * DIMENSION + 0] =
                         mesh->edge_coords[(old_edge_coord_cursor + vi) * DIMENSION + 0];
@@ -508,7 +505,7 @@ namespace voronoi {
             face_cursor += count;
         }
 
-        // Swap in rebuilt arrays.
+        // swap in rebuilt arrays.
         free(mesh->seeds);
         free(mesh->com);
         free(mesh->volumes);

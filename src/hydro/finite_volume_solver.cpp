@@ -11,7 +11,7 @@ namespace hydro {
     primvars* init(int n_hydro) {
 
         // allocate prim struct
-        primvars* hydro_data = new primvars();
+        primvars* hydro_data = (primvars*)malloc(sizeof(primvars));
         hydro_data->rho      = (double*)malloc(n_hydro * sizeof(double));
         hydro_data->v        = (POINT_TYPE*)malloc(n_hydro * sizeof(POINT_TYPE));
         hydro_data->E        = (double*)malloc(n_hydro * sizeof(double));

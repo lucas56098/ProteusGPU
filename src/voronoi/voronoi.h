@@ -50,27 +50,6 @@ struct VMesh {
 
 namespace voronoi {
 
-    // buffer struct for GPU-CPU data transfer (maybe we dont need this on GH200?)
-    template <class T> struct GPUBuffer {
-        void init(T* data) {
-            cpu_data = data;
-            gpuMalloc((void**)&gpu_data, size * sizeof(T));
-            cpu2gpu();
-        }
-        GPUBuffer(std::vector<T>& v) {
-            size = v.size();
-            init(v.data());
-        }
-        ~GPUBuffer() { gpuFree(gpu_data); }
-
-        void cpu2gpu() { gpuMemcpy(gpu_data, cpu_data, size * sizeof(T)); }
-        void gpu2cpu() { gpuMemcpy(cpu_data, gpu_data, size * sizeof(T)); }
-
-        T*  cpu_data;
-        T*  gpu_data;
-        int size;
-    };
-
     // allocation and deallocation of VMesh
     VMesh* allocate_vmesh(hsize_t n_seeds, hsize_t initial_face_capacity);
     void   free_vmesh(VMesh* mesh);

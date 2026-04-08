@@ -259,7 +259,7 @@ namespace voronoi {
             return;
         }
 
-        // build circular list: B0 → B1 → B0
+        // build circular list: B0 -> B1 -> B0
         first_boundary                   = boundary_lines[0];
         boundary_next[boundary_lines[0]] = boundary_lines[1];
         boundary_next[boundary_lines[1]] = boundary_lines[0];
@@ -489,23 +489,24 @@ namespace voronoi {
         result.faces.clear();
         result.faces.reserve(cell.nb_v);
 
-        // store seed position (per-cell indexed, thread-safe)
+        // store seed position
         double3 seed            = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
         mesh->seeds[cell_index] = seed;
 
-        // compute all vertex positions (stack array)
+        // compute all vertex positions
         double4 vertices[_MAX_T_];
         for (int i = 0; i < cell.nb_t; i++) {
             vertices[i] = cell.compute_vertex_point(cell.triangle[i], true);
         }
 
-        // compute cell volume/area and centroid (per-cell indexed, thread-safe)
+        // compute cell volume/area and centroid
 #ifdef dim_2D
         double cx                 = cell.voro_seed.x;
         double cy                 = cell.voro_seed.y;
         mesh->volumes[cell_index] = compute_cell_area_centroid_2d(vertices, cell.nb_t, cx, cy);
         mesh->com[cell_index]     = {cx, cy, 0.0};
 #else
+        // rough cell centroid approximation (mean of verticies) -> improve in the future
         double cell_volume = 0.0;
         double cx = 0.0, cy = 0.0, cz = 0.0;
         for (int i = 0; i < cell.nb_t; i++) {
@@ -525,7 +526,7 @@ namespace voronoi {
         mesh->com[cell_index] = {cx, cy, cz};
 #endif
 
-        // extract faces into local buffer (no shared writes)
+        // extract faces into local buffer
         std::vector<double4> face_verts;
         face_verts.reserve(_MAX_T_);
         for (int p = 0; p < cell.nb_v; p++) {
@@ -546,7 +547,7 @@ namespace voronoi {
             fi.f_mid.x = 0.5 * (face_verts[0].x + face_verts[1].x);
             fi.f_mid.y = 0.5 * (face_verts[0].y + face_verts[1].y);
 #else
-            // 3D face centroid via fan triangulation
+            // face centroid via fan triangulation
             double total_area = 0.0;
             double fcx = 0, fcy = 0, fcz = 0;
             for (size_t i = 1; i + 1 < face_verts.size(); i++) {

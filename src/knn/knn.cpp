@@ -89,35 +89,35 @@ namespace knn {
         }
 
         // -------- allocate memory buffers and copy data --------
-        gpuMallocNCopy((void**)&knn->d_cell_offsets, cell_offsets, knn->N_cell_offsets * sizeof(int));
+        knn->d_cell_offsets = (int*)malloc(knn->N_cell_offsets * sizeof(int));
+        memcpy(knn->d_cell_offsets, cell_offsets, knn->N_cell_offsets * sizeof(int));
         free(cell_offsets);
 
-        gpuMallocNCopy((void**)&knn->d_cell_offset_dists, cell_offset_dists, knn->N_cell_offsets * sizeof(double));
+        knn->d_cell_offset_dists = (double*)malloc(knn->N_cell_offsets * sizeof(double));
+        memcpy(knn->d_cell_offset_dists, cell_offset_dists, knn->N_cell_offsets * sizeof(double));
         free(cell_offset_dists);
 
-        POINT_TYPE* d_points = NULL;
-        gpuMallocNCopy((void**)&d_points,
-                       pts,
-                       len_pts * sizeof(POINT_TYPE)); // input pts to GPU (temporary), freed after sorting into grid
+        POINT_TYPE* d_points = (POINT_TYPE*)malloc(len_pts * sizeof(POINT_TYPE));
+        memcpy(d_points, pts, len_pts * sizeof(POINT_TYPE)); // input pts (temporary), freed after sorting into grid
 
-        int Npow = pow(knn->N_grid, DIMENSION);
-        gpuMallocNMemset((void**)&knn->d_counters, 0x00, Npow * sizeof(int)); // pts per grid cell
-        gpuMallocNMemset((void**)&knn->d_ptrs, 0x00, Npow * sizeof(int));     // cell ptrs to start in d_stored_points
+        int Npow        = pow(knn->N_grid, DIMENSION);
+        knn->d_counters = (int*)calloc(Npow, sizeof(int)); // pts per grid cell
+        knn->d_ptrs     = (int*)calloc(Npow, sizeof(int)); // cell ptrs to start in d_stored_points
 
-        gpuMallocNMemset((void**)&knn->d_globcounter, 0x00, sizeof(int)); // global counter
-        gpuMallocNMemset((void**)&knn->d_stored_points,
-                         0x00,
-                         knn->len_pts * sizeof(POINT_TYPE)); // will be filled with sorted points
-        gpuMallocNMemset((void**)&knn->d_permutation,
-                         0x00,
-                         knn->len_pts * sizeof(unsigned int)); // permutation to restore original order
-        gpuMallocNMemset((void**)&knn->d_knearests, 0xFF, knn->len_pts * _K_ * sizeof(int)); // result indices of knn
+        knn->d_globcounter = (int*)calloc(1, sizeof(int)); // global counter
+        knn->d_stored_points =
+            (POINT_TYPE*)calloc(knn->len_pts, sizeof(POINT_TYPE)); // will be filled with sorted points
+        knn->d_permutation =
+            (unsigned int*)calloc(knn->len_pts, sizeof(unsigned int)); // permutation to restore original order
+
+        knn->d_knearests = (unsigned int*)malloc(knn->len_pts * _K_ * sizeof(int)); // result indices of knn
+        memset(knn->d_knearests, 0xFF, knn->len_pts * _K_ * sizeof(int));
 
         // -------- reorganize input points by grid cell --------
         sort_points_into_grid(knn, d_points, len_pts);
 
-        // no longer need orignal points on GPU
-        gpuFree(d_points);
+        // no longer need original points
+        free(d_points);
 
         return knn;
     }
@@ -147,7 +147,7 @@ namespace knn {
         // -------- store points in their cell-organized locations -------
         {
             // reset counters: we'll reuse them for atomic allocation within each cell's range
-            gpuMemset(knn->d_counters, 0x00, pow(knn->N_grid, DIMENSION) * sizeof(int));
+            memset(knn->d_counters, 0x00, pow(knn->N_grid, DIMENSION) * sizeof(int));
 
             int threadsPerBlock = 256;
             int blocksPerGrid   = (len_pts + threadsPerBlock - 1) / threadsPerBlock;
@@ -475,14 +475,14 @@ namespace knn {
 
     // -------- other --------
     void knn_free(knn_problem** knn) {
-        gpuFree((*knn)->d_cell_offsets);
-        gpuFree((*knn)->d_cell_offset_dists);
-        gpuFree((*knn)->d_permutation);
-        gpuFree((*knn)->d_counters);
-        gpuFree((*knn)->d_ptrs);
-        gpuFree((*knn)->d_globcounter);
-        gpuFree((*knn)->d_stored_points);
-        gpuFree((*knn)->d_knearests);
+        free((*knn)->d_cell_offsets);
+        free((*knn)->d_cell_offset_dists);
+        free((*knn)->d_permutation);
+        free((*knn)->d_counters);
+        free((*knn)->d_ptrs);
+        free((*knn)->d_globcounter);
+        free((*knn)->d_stored_points);
+        free((*knn)->d_knearests);
         free(*knn);
         *knn = NULL;
     }
@@ -490,19 +490,19 @@ namespace knn {
     // -------- get stuff from gpu to cpu --------
     POINT_TYPE* get_points(knn_problem* knn) {
         POINT_TYPE* pts = (POINT_TYPE*)malloc(knn->len_pts * sizeof(POINT_TYPE));
-        gpuMemcpy(pts, knn->d_stored_points, knn->len_pts * sizeof(POINT_TYPE));
+        memcpy(pts, knn->d_stored_points, knn->len_pts * sizeof(POINT_TYPE));
         return pts;
     }
 
     unsigned int* get_knearest(knn_problem* knn) {
         unsigned int* knearest = (unsigned int*)malloc(knn->len_pts * _K_ * sizeof(int));
-        gpuMemcpy(knearest, knn->d_knearests, knn->len_pts * _K_ * sizeof(int));
+        memcpy(knearest, knn->d_knearests, knn->len_pts * _K_ * sizeof(int));
         return knearest;
     }
 
     unsigned int* get_permutation(knn_problem* knn) {
         unsigned int* permutation = (unsigned int*)malloc(knn->len_pts * sizeof(int));
-        gpuMemcpy(permutation, knn->d_permutation, knn->len_pts * sizeof(int));
+        memcpy(permutation, knn->d_permutation, knn->len_pts * sizeof(int));
         return permutation;
     }
 
