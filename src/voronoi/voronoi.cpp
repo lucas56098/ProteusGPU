@@ -7,7 +7,9 @@
 #include "cell.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 namespace voronoi {
@@ -115,13 +117,143 @@ namespace voronoi {
 #endif
         }
 
-        // check if any cells failed...
+        // check if any cells failed and retry with cpu fallback
         gpu_stat.gpu2cpu();
+        cpu_fallback_failed_cells(N_seedpts, (double*)knn->d_stored_points, gpu_stat.cpu_data, mesh);
+    }
+
+    // cpu fallback for cells that failed during knn-based construction
+    void cpu_fallback_failed_cells(int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh) {
+        int num_failed = 0;
         for (int i = 0; i < N_seedpts; i++) {
-            if (gpu_stat.cpu_data[i] != success) {
-                std::cout << "VORONOI: cell " << i << " failed with status: " << gpu_stat.cpu_data[i] << std::endl;
-                // do cpu fallback here i guess
+            if (stat[i] != success) { num_failed++; }
+        }
+        if (num_failed == 0) return;
+
+        std::cout << "VORONOI: " << num_failed << " cells failed, retrying with fallback..." << std::endl;
+
+        hsize_t fallback_face_capacity = mesh->num_faces;
+
+        for (int i = 0; i < N_seedpts; i++) {
+            if (stat[i] == success) continue;
+
+            Status original_status = stat[i];
+
+            // for unexpected errors (triangle/vertex overflow, inconsistent boundary) abort
+            if (original_status != security_radius_not_reached && original_status != needs_exact_predicates) {
+                std::cerr << "VORONOI: cell " << i << " failed with unrecoverable status: " << original_status
+                          << std::endl;
+                exit(EXIT_FAILURE);
             }
+
+            std::cout << "VORONOI: cell " << i << " failed with status: " << original_status << std::endl;
+
+            // sort all other seed indices by distance to this seed
+            double4 seed_pos = point_from_ptr(d_stored_points + DIMENSION * i);
+
+            std::vector<std::pair<double, int>> dists;
+            dists.reserve(N_seedpts - 1);
+            for (int j = 0; j < N_seedpts; j++) {
+                if (j == i) continue;
+                double4 other = point_from_ptr(d_stored_points + DIMENSION * j);
+                double  dx    = other.x - seed_pos.x;
+                double  dy    = other.y - seed_pos.y;
+                double  dz    = other.z - seed_pos.z;
+                double  dist2 = dx * dx + dy * dy + dz * dz;
+                dists.push_back({dist2, j});
+            }
+            std::sort(dists.begin(), dists.end());
+
+            bool cell_ok = false;
+
+            if (original_status == security_radius_not_reached) {
+                // security radius not reached: retry once with all seeds
+                Status     fallback_status = success;
+                ConvexCell cell(i, d_stored_points, &fallback_status);
+
+                for (size_t di = 0; di < dists.size(); di++) {
+                    int j = dists[di].second;
+                    cell.clip_by_plane(j);
+                    if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * j))) break;
+                    if (fallback_status != success) break;
+                }
+
+                if (fallback_status == success) {
+                    extract_cell_to_vmesh(cell, mesh, (hsize_t)i, fallback_face_capacity);
+                    std::cout << "VORONOI: cell " << i << " fallback (all seeds) succeeded." << std::endl;
+                    cell_ok = true;
+                } else {
+                    std::cerr << "VORONOI: cell " << i
+                              << " fallback (all seeds) failed with status: " << fallback_status << std::endl;
+                }
+
+            } else if (original_status == needs_exact_predicates) {
+                // needs exact predicates: retry with increasing perturbation to break degeneracy
+                int    max_perturb   = 5;
+                double perturb_scale = 1e-13;
+
+                for (int attempt = 0; attempt <= max_perturb; attempt++) {
+                    if (attempt > 0) {
+                        // deterministic pseudo-random perturbation based on seed id and attempt
+                        unsigned int hash = (unsigned int)(i * 2654435761u + attempt * 40503u);
+                        for (int d = 0; d < DIMENSION; d++) {
+                            hash                               = hash * 1103515245u + 12345u;
+                            double r                           = ((double)(hash & 0xFFFF) / 32768.0 - 1.0); // [-1, 1]
+                            d_stored_points[DIMENSION * i + d] = (d == 0   ? seed_pos.x
+                                                                  : d == 1 ? seed_pos.y
+                                                                           : seed_pos.z) +
+                                                                 r * perturb_scale;
+                        }
+                        perturb_scale *= 10.0;
+                    }
+
+                    Status     fallback_status = success;
+                    ConvexCell cell(i, d_stored_points, &fallback_status);
+
+                    for (size_t di = 0; di < dists.size(); di++) {
+                        int j = dists[di].second;
+                        cell.clip_by_plane(j);
+                        if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * j))) break;
+                        if (fallback_status != success) break;
+                    }
+
+                    // restore original position after perturbation
+                    if (attempt > 0) {
+                        d_stored_points[DIMENSION * i + 0] = seed_pos.x;
+                        d_stored_points[DIMENSION * i + 1] = seed_pos.y;
+#ifdef dim_3D
+                        d_stored_points[DIMENSION * i + 2] = seed_pos.z;
+#endif
+                    }
+
+                    if (fallback_status == success) {
+                        extract_cell_to_vmesh(cell, mesh, (hsize_t)i, fallback_face_capacity);
+                        std::cout << "VORONOI: cell " << i << " fallback (perturbed, attempt " << attempt
+                                  << ") succeeded." << std::endl;
+                        cell_ok = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!cell_ok) {
+                std::cerr << "VORONOI: cell " << i << " all fallback attempts FAILED, aborting." << std::endl;
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // re-shrink face arrays after fallback
+        if (mesh->num_faces > 0) {
+            mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, mesh->num_faces * sizeof(int));
+            mesh->face_area     = (double*)realloc(mesh->face_area, mesh->num_faces * sizeof(double));
+#ifdef MOVING_MESH
+            mesh->f_mid = (POINT_TYPE*)realloc(mesh->f_mid, mesh->num_faces * sizeof(POINT_TYPE));
+#endif
+#ifdef DEBUG_MODE
+            mesh->edge_coords_offsets = (hsize_t*)realloc(mesh->edge_coords_offsets, mesh->num_faces * sizeof(hsize_t));
+            mesh->edge_coords =
+                (double*)realloc(mesh->edge_coords, mesh->num_edge_coord_verts * DIMENSION * sizeof(double));
+#endif
         }
     }
 
@@ -136,53 +268,86 @@ namespace voronoi {
                           VMesh*        mesh,
                           hsize_t&      face_capacity) {
 
-        // emulate kernel
-        for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
-#ifdef USE_OPENMP
-#pragma omp parallel for num_threads(_VORO_BLOCK_SIZE_) schedule(static)
-#endif
-            for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
+        (void)blocksPerGrid;
+        (void)threadsPerBlock;
 
-                // global seed_id
-                int seed_id = threadsPerBlock * blockId + threadId;
-                if (seed_id >= N_seedpts) { continue; }
+        // per-cell extraction results for ALL cells
+        std::vector<CellExtractionResult> results(N_seedpts);
+        for (int i = 0; i < N_seedpts; i++) {
+            results[i].valid = false;
+        }
+
+        // Phase 1: single parallel region over all seed points
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(dynamic, _VORO_BLOCK_SIZE_)
+#endif
+        for (int seed_id = 0; seed_id < N_seedpts; seed_id++) {
 #ifdef DEBUG_MODE
-                if (seed_id % 10000 == 0 || seed_id == N_seedpts - 1) {
+            if (seed_id % 10000 == 0 || seed_id == N_seedpts - 1) {
 #ifdef USE_OPENMP
 #pragma omp critical(voro_progress_print)
 #endif
-                    std::cout << "\rVORONOI: processing cell " << seed_id + 1 << " / " << N_seedpts << std::flush;
-                }
+                std::cout << "\rVORONOI: processing cell " << seed_id + 1 << " / " << N_seedpts << std::flush;
+            }
 #endif
 
-                // create and initalize convex cell
-                ConvexCell cell(seed_id, d_stored_points, &(gpu_stat[seed_id]));
+            // create and initalize convex cell
+            ConvexCell cell(seed_id, d_stored_points, &(gpu_stat[seed_id]));
 
-                // clip cell by _K_ nearest neighbor planes
-                for (int v = 0; v < _K_; v++) {
+            // clip cell by _K_ nearest neighbor planes
+            for (int v = 0; v < _K_; v++) {
 
-                    unsigned int z = d_knearests[_K_ * seed_id + v];
-                    cell.clip_by_plane(z);
+                unsigned int z = d_knearests[_K_ * seed_id + v];
+                cell.clip_by_plane(z);
 
-                    // security radius early exit
-                    if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * z))) { break; }
+                // security radius early exit
+                if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * z))) { break; }
 
-                    // gpu stat failure return...
-                    if (gpu_stat[seed_id] != success) { break; }
-                }
-                // check if we are sure that the cell is correct
-                if (!cell.is_security_radius_reached(
-                        point_from_ptr(d_stored_points + DIMENSION * d_knearests[_K_ * (seed_id + 1) - 1]))) {
-                    gpu_stat[seed_id] = security_radius_not_reached;
-                }
+                // gpu stat failure return...
+                if (gpu_stat[seed_id] != success) { break; }
+            }
+            // check if we are sure that the cell is correct
+            if (!cell.is_security_radius_reached(
+                    point_from_ptr(d_stored_points + DIMENSION * d_knearests[_K_ * (seed_id + 1) - 1]))) {
+                gpu_stat[seed_id] = security_radius_not_reached;
+            }
 
-                // store cell in Vmesh if successful
-                if (gpu_stat[seed_id] == success) {
-#ifdef USE_OPENMP
-#pragma omp critical(voro_mesh_write)
+            // extract per-cell data and face info into thread-local buffer
+            if (gpu_stat[seed_id] == success) { extract_cell_percell(cell, mesh, (hsize_t)seed_id, results[seed_id]); }
+        }
+
+        // Phase 2: serial merge — set face_ptr/face_counts and copy face data into VMesh
+        for (int seed_id = 0; seed_id < N_seedpts; seed_id++) {
+            if (!results[seed_id].valid) continue;
+
+            mesh->face_ptr[seed_id]    = mesh->num_faces;
+            mesh->face_counts[seed_id] = (hsize_t)results[seed_id].face_count;
+            ensure_face_capacity(mesh, face_capacity, mesh->num_faces + results[seed_id].face_count);
+
+            for (int f = 0; f < results[seed_id].face_count; f++) {
+                hsize_t             fi  = mesh->num_faces;
+                const CellFaceInfo& cfi = results[seed_id].faces[f];
+
+                mesh->neighbor_cell[fi] = cfi.neighbor_id;
+                mesh->face_area[fi]     = cfi.face_area;
+#ifdef MOVING_MESH
+                mesh->f_mid[fi] = cfi.f_mid;
 #endif
-                    extract_cell_to_vmesh(cell, mesh, (hsize_t)seed_id, face_capacity);
+#ifdef DEBUG_MODE
+                const auto& fv                = cfi.face_verts;
+                mesh->edge_coords_offsets[fi] = (hsize_t)fv.size();
+                ensure_edge_coords_capacity(mesh, mesh->num_edge_coord_verts + fv.size());
+                hsize_t ec = mesh->num_edge_coord_verts;
+                for (size_t vi = 0; vi < fv.size(); vi++) {
+                    mesh->edge_coords[(ec + vi) * DIMENSION + 0] = fv[vi].x;
+                    mesh->edge_coords[(ec + vi) * DIMENSION + 1] = fv[vi].y;
+#ifdef dim_3D
+                    mesh->edge_coords[(ec + vi) * DIMENSION + 2] = fv[vi].z;
+#endif
                 }
+                mesh->num_edge_coord_verts += fv.size();
+#endif
+                mesh->num_faces++;
             }
         }
     }

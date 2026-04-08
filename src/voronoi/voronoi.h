@@ -79,6 +79,9 @@ namespace voronoi {
     VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points);
     void   compute_cells(int N_seedpts, knn_problem* knn, std::vector<Status>& stat, VMesh* mesh);
 
+    // cpu fallback for cells that failed during knn-based construction
+    void cpu_fallback_failed_cells(int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh);
+
 // kernels
 #ifdef CPU_DEBUG
     void cpu_compute_cell(int           blocksPerGrid,
