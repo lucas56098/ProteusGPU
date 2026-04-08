@@ -279,33 +279,40 @@ namespace knn {
                       const double*     d_cell_offset_dists,
                       unsigned int*     d_knearest) {
 
-        // __shared__ : each thread updates its k-nearest
-        unsigned int knearest[_K_ * _KNN_BLOCK_SIZE_];
-        double       knearest_dists[_K_ * _KNN_BLOCK_SIZE_];
+        (void)blocksPerGrid; // not used in cpu debug, will be used in kernel call
+        (void)threadsPerBlock;
 
-        for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
+        // parallel region over all points
 #ifdef USE_OPENMP
-#pragma omp parallel for
+#pragma omp parallel
 #endif
-            for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
-                int point_in = threadId + blockId * threadsPerBlock;
-                if (point_in >= len_pts) continue; // return;
+        {
+            // thread-private k-nearest arrays
+            unsigned int knearest[_K_];
+            double       knearest_dists[_K_];
+
+#ifdef USE_OPENMP
+#pragma omp for schedule(dynamic, _KNN_BLOCK_SIZE_)
+#endif
+            for (int point_in = 0; point_in < len_pts; point_in++) {
 #ifdef DEBUG_MODE
                 if (point_in % 10000 == 0 || point_in == len_pts - 1) {
+#ifdef USE_OPENMP
+#pragma omp critical(knn_progress_print)
+#endif
                     std::cout << "\rKNN: processing point " << point_in + 1 << " / " << len_pts << std::flush;
                 }
 #endif
                 // point considered by this thread
                 POINT_TYPE p = d_stored_points[point_in];
 
-                // compute cell_id of point and offset for knn storage
+                // compute cell_id of point
                 int cell_in = cellFromPoint(N_grid, p);
-                int offs    = threadId * _K_;
 
                 // set knearest and knearest_dist to maximum values
                 for (int i = 0; i < _K_; i++) {
-                    knearest[offs + i]       = UINT_MAX;
-                    knearest_dists[offs + i] = DBL_MAX;
+                    knearest[i]       = UINT_MAX;
+                    knearest_dists[i] = DBL_MAX;
                 }
 
                 int search_cell_index = 0;
@@ -316,7 +323,7 @@ namespace knn {
                     double min_dist = d_cell_offset_dists[search_cell_index];
 
                     // early termination: all cells are farther: we've found the true knn
-                    if (knearest_dists[offs] < min_dist) { break; }
+                    if (knearest_dists[0] < min_dist) { break; }
 
                     int cell = cell_in + d_cell_offsets[search_cell_index];
 
@@ -336,10 +343,10 @@ namespace knn {
                             double     d     = dist2_point(p, p_cmp);
 
                             // if new k-nearest neighbour
-                            if (d < knearest_dists[offs]) {
-                                knearest[offs]       = ptr;
-                                knearest_dists[offs] = d;
-                                heapify(knearest + offs, knearest_dists + offs, 0, _K_);
+                            if (d < knearest_dists[0]) {
+                                knearest[0]       = ptr;
+                                knearest_dists[0] = d;
+                                heapify(knearest, knearest_dists, 0, _K_);
                             }
                         }
                     }
@@ -351,10 +358,10 @@ namespace knn {
                     std::cerr << "KNN: Not sure if we found all ngb here... Thats a problem!" << std::endl;
                 }
 
-                heapsort(knearest + offs, knearest_dists + offs, _K_);
+                heapsort(knearest, knearest_dists, _K_);
 
                 for (int i = 0; i < _K_; i++) {
-                    d_knearest[point_in * _K_ + i] = knearest[offs + i];
+                    d_knearest[point_in * _K_ + i] = knearest[i];
                 }
             }
         }
