@@ -508,15 +508,15 @@ namespace voronoi {
 #else
         double cell_volume = 0.0;
         double cx = 0.0, cy = 0.0, cz = 0.0;
-        for (const auto& v : vertices) {
-            cx += v.x;
-            cy += v.y;
-            cz += v.z;
+        for (int i = 0; i < cell.nb_t; i++) {
+            cx += vertices[i].x;
+            cy += vertices[i].y;
+            cz += vertices[i].z;
         }
-        if (!vertices.empty()) {
-            cx /= vertices.size();
-            cy /= vertices.size();
-            cz /= vertices.size();
+        if (cell.nb_t > 0) {
+            cx /= cell.nb_t;
+            cy /= cell.nb_t;
+            cz /= cell.nb_t;
         } else {
             cx = cell.voro_seed.x;
             cy = cell.voro_seed.y;
