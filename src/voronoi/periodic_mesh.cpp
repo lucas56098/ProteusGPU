@@ -287,6 +287,9 @@ namespace voronoi {
                                  const PrimGradients* grads,
                                  POINT_TYPE*          v_mesh) {
 
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
             double vx_mesh = primvar->v[i].x;
             double vy_mesh = primvar->v[i].y;
