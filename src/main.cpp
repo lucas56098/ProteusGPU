@@ -28,7 +28,7 @@
 ==========================================================================
 A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics
 ==========================================================================
-Version: 0.4
+Version: 0.5
 Authors: Lucas Schleuss, Dylan Nelson
 Institution: Institute of Theoretical Astrophysics, Heidelberg University
 ========================================================================*/
