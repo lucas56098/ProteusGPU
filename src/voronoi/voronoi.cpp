@@ -161,8 +161,25 @@ namespace voronoi {
 
             bool cell_ok = false;
 
-            if (original_status == security_radius_not_reached) {
-                // security radius not reached: retry once with all seeds
+            // needs exact predicates or more ngb: retry with increasing perturbation to break degeneracy
+            int    max_perturb   = 5;
+            double perturb_scale = 1e-13;
+
+            for (int attempt = 0; attempt <= max_perturb; attempt++) {
+                if (attempt > 0) {
+                    // deterministic pseudo-random perturbation based on seed id and attempt
+                    unsigned int hash = (unsigned int)(i * 2654435761u + attempt * 40503u);
+                    for (int d = 0; d < DIMENSION; d++) {
+                        hash                               = hash * 1103515245u + 12345u;
+                        double r                           = ((double)(hash & 0xFFFF) / 32768.0 - 1.0); // [-1, 1]
+                        d_stored_points[DIMENSION * i + d] = (d == 0   ? seed_pos.x
+                                                              : d == 1 ? seed_pos.y
+                                                                       : seed_pos.z) +
+                                                             r * perturb_scale;
+                    }
+                    perturb_scale *= 10.0;
+                }
+
                 Status     fallback_status = success;
                 ConvexCell cell(i, d_stored_points, &fallback_status);
 
@@ -173,61 +190,21 @@ namespace voronoi {
                     if (fallback_status != success) break;
                 }
 
-                if (fallback_status == success) {
-                    extract_cell_to_vmesh(cell, mesh, (hsize_t)i, fallback_face_capacity);
-                    std::cout << "VORONOI: cell " << i << " fallback (all seeds) succeeded." << std::endl;
-                    cell_ok = true;
-                } else {
-                    std::cerr << "VORONOI: cell " << i
-                              << " fallback (all seeds) failed with status: " << fallback_status << std::endl;
+                // restore original position after perturbation
+                if (attempt > 0) {
+                    d_stored_points[DIMENSION * i + 0] = seed_pos.x;
+                    d_stored_points[DIMENSION * i + 1] = seed_pos.y;
+#ifdef dim_3D
+                    d_stored_points[DIMENSION * i + 2] = seed_pos.z;
+#endif
                 }
 
-            } else if (original_status == needs_exact_predicates) {
-                // needs exact predicates: retry with increasing perturbation to break degeneracy
-                int    max_perturb   = 5;
-                double perturb_scale = 1e-13;
-
-                for (int attempt = 0; attempt <= max_perturb; attempt++) {
-                    if (attempt > 0) {
-                        // deterministic pseudo-random perturbation based on seed id and attempt
-                        unsigned int hash = (unsigned int)(i * 2654435761u + attempt * 40503u);
-                        for (int d = 0; d < DIMENSION; d++) {
-                            hash                               = hash * 1103515245u + 12345u;
-                            double r                           = ((double)(hash & 0xFFFF) / 32768.0 - 1.0); // [-1, 1]
-                            d_stored_points[DIMENSION * i + d] = (d == 0   ? seed_pos.x
-                                                                  : d == 1 ? seed_pos.y
-                                                                           : seed_pos.z) +
-                                                                 r * perturb_scale;
-                        }
-                        perturb_scale *= 10.0;
-                    }
-
-                    Status     fallback_status = success;
-                    ConvexCell cell(i, d_stored_points, &fallback_status);
-
-                    for (size_t di = 0; di < dists.size(); di++) {
-                        int j = dists[di].second;
-                        cell.clip_by_plane(j);
-                        if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * j))) break;
-                        if (fallback_status != success) break;
-                    }
-
-                    // restore original position after perturbation
-                    if (attempt > 0) {
-                        d_stored_points[DIMENSION * i + 0] = seed_pos.x;
-                        d_stored_points[DIMENSION * i + 1] = seed_pos.y;
-#ifdef dim_3D
-                        d_stored_points[DIMENSION * i + 2] = seed_pos.z;
-#endif
-                    }
-
-                    if (fallback_status == success) {
-                        extract_cell_to_vmesh(cell, mesh, (hsize_t)i, fallback_face_capacity);
-                        std::cout << "VORONOI: cell " << i << " fallback (perturbed, attempt " << attempt
-                                  << ") succeeded." << std::endl;
-                        cell_ok = true;
-                        break;
-                    }
+                if (fallback_status == success) {
+                    extract_cell_to_vmesh(cell, mesh, (hsize_t)i, fallback_face_capacity);
+                    std::cout << "VORONOI: cell " << i << " fallback (perturbed, attempt " << attempt << ") succeeded."
+                              << std::endl;
+                    cell_ok = true;
+                    break;
                 }
             }
 
