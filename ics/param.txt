@@ -12,3 +12,5 @@ output_dt = 0.01
 CellShapingSpeed = 0.7
 CellShapingFactor = 0.2
 
+# Hydrodynamics
+CFL_frac = 0.3

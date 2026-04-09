@@ -55,7 +55,7 @@ int main(int argc, char* argv[]) {
 
     double t_sim = 0.0;
     double t_end = std::stof(input.getParameter("time_end"));
-    double CFL   = 0.4;
+    double CFL   = std::stof(input.getParameter("CFL_frac"));
     int    step  = 0;
 
     double output_dt    = std::stof(input.getParameter("output_dt"));
