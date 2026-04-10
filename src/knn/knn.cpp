@@ -88,9 +88,8 @@ namespace knn {
         }
 
         // -------- allocate memory buffers and copy data --------
-        knn->d_cell_offsets = (int*)realloc(cell_offsets, knn->N_cell_offsets * sizeof(int));
-
-        knn->d_cell_offset_dists = (double*)realloc(cell_offset_dists, knn->N_cell_offsets * sizeof(double));
+        knn->d_cell_offsets      = cell_offsets;
+        knn->d_cell_offset_dists = cell_offset_dists;
 
         POINT_TYPE* d_points = (POINT_TYPE*)malloc(len_pts * sizeof(POINT_TYPE));
         memcpy(d_points, pts, len_pts * sizeof(POINT_TYPE)); // input pts (temporary), freed after sorting into grid

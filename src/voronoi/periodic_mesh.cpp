@@ -52,7 +52,6 @@ namespace voronoi {
         (*n_ghosts)++;
     }
 
-    // for now only 2D
     VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points, VMesh* reuse) {
         PROFILE_START("MESH_TOTAL");
 
@@ -60,15 +59,28 @@ namespace voronoi {
         std::cout << "VORONOI: set up periodic mesh" << std::endl;
 #endif
 
-        // allocate new pts (that include ghosts)
-        hsize_t     max_ghost_points = (DIMENSION + 1) * num_points; // naive guess, will be shortened later
+        // pre-allocate VMesh with worst-case capacity on first call (no realloc for GPU compatibility)
+        // ghost estimate: for uniform points in [0,1]^D with buffer width buff,
+        // the ghost fraction is (1+2*buff)^D - 1. Apply 2x fudge factor for safety.
+        if (!reuse) {
+            double  ghost_frac     = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
+            hsize_t max_ghosts     = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
+            hsize_t max_n_total    = num_points + max_ghosts;
+            hsize_t max_face_count = max_n_total * _FACE_CAPACITY_MULT_;
+            reuse                  = allocate_vmesh(max_n_total, max_face_count);
+        }
+
+        // allocate temporary pts (hydro + ghosts) and ghost id mapping
+        // same geometric estimate with 2x fudge factor
+        double      ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
+        hsize_t     max_ghost_points = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
         POINT_TYPE* pts;
         pts = (POINT_TYPE*)malloc((num_points + max_ghost_points) * sizeof(POINT_TYPE));
 
         hsize_t  n_ghosts = 0;
         hsize_t  n_hydro  = num_points;
         hsize_t* original_ids;
-        original_ids = (hsize_t*)malloc(max_ghost_points * sizeof(hsize_t)); // naive guess, will be shortened later
+        original_ids = (hsize_t*)malloc(max_ghost_points * sizeof(hsize_t));
 
         // select points that get ghosts
         for (hsize_t i = 0; i < n_hydro; i++) {
@@ -190,6 +202,13 @@ namespace voronoi {
 #endif
         }
 
+        // verify ghost count fits in pre-allocated arrays
+        if (n_ghosts > max_ghost_points) {
+            std::cerr << "VORONOI: Error! ghost count " << n_ghosts << " exceeds estimated max " << max_ghost_points
+                      << ". Distribution is highly non-uniform." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
         // scale down... to [0,1]^2
         double scale = 1. / (1. + (2 * buff));
         for (hsize_t i = 0; i < n_hydro + n_ghosts; i++) {
@@ -201,14 +220,13 @@ namespace voronoi {
         }
 
         // compute mesh (reuse old mesh buffers if available to avoid fragmentation)
-        pts         = (POINT_TYPE*)realloc(pts, (n_hydro + n_ghosts) * sizeof(POINT_TYPE));
         VMesh* mesh = compute_mesh(pts, n_hydro + n_ghosts, reuse);
         free(pts);
 
         // set mesh ghost quantities (free old ghost_ids if reusing an existing mesh)
         mesh->n_hydro = n_hydro;
         free(mesh->ghost_ids);
-        mesh->ghost_ids = (hsize_t*)realloc(original_ids, n_ghosts * sizeof(hsize_t));
+        mesh->ghost_ids = original_ids;
 
         // scale mesh up
         scale = 1. + (2 * buff);

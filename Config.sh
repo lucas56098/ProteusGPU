@@ -31,6 +31,7 @@ RIEMANN_HLLC
 _K_=190                  # number of nearest neighbors
 _MAX_P_=64              # max number of clipping planes per Voronoi cell
 _MAX_T_=96              # max number of triangles per Voronoi cell
+_FACE_CAPACITY_MULT_=12 # max face array entries allocated per cell
 
 _KNN_BLOCK_SIZE_=32     # number of threads per block for KNN
 _VORO_BLOCK_SIZE_=16    # number of threads per block for Voronoi

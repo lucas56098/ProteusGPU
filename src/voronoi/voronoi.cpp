@@ -45,31 +45,13 @@ namespace voronoi {
 
         if (reuse) {
             mesh = reuse;
-            // grow per-cell arrays only if needed
+            // verify pre-allocated capacity is sufficient (no realloc for GPU compatibility)
             if ((hsize_t)n_pts > mesh->cell_capacity) {
-                mesh->seeds         = (double3*)realloc(mesh->seeds, n_pts * sizeof(double3));
-                mesh->com           = (double3*)realloc(mesh->com, n_pts * sizeof(double3));
-                mesh->volumes       = (double*)realloc(mesh->volumes, n_pts * sizeof(double));
-                mesh->face_counts   = (hsize_t*)realloc(mesh->face_counts, n_pts * sizeof(hsize_t));
-                mesh->face_ptr      = (hsize_t*)realloc(mesh->face_ptr, n_pts * sizeof(hsize_t));
-                mesh->cell_capacity = (hsize_t)n_pts;
+                std::cerr << "VORONOI: Error! cell count " << n_pts << " exceeds pre-allocated capacity "
+                          << mesh->cell_capacity << ". Increase ghost headroom." << std::endl;
+                exit(EXIT_FAILURE);
             }
-            // grow face arrays only if needed
-            if (initial_face_capacity > mesh->face_capacity) {
-                mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, initial_face_capacity * sizeof(int));
-                mesh->face_area     = (compact_t*)realloc(mesh->face_area, initial_face_capacity * sizeof(compact_t));
-#ifdef MOVING_MESH
-                mesh->f_mid_local =
-                    (compact_t*)realloc(mesh->f_mid_local, initial_face_capacity * (DIMENSION - 1) * sizeof(compact_t));
-#endif
-#ifdef DEBUG_MODE
-                mesh->edge_coords =
-                    (double*)realloc(mesh->edge_coords, initial_face_capacity * DIMENSION * 4 * sizeof(double));
-                mesh->edge_coords_offsets =
-                    (hsize_t*)realloc(mesh->edge_coords_offsets, initial_face_capacity * sizeof(hsize_t));
-#endif
-                mesh->face_capacity = initial_face_capacity;
-            }
+            // face capacity is checked after atomic reservation in the parallel loop
             // reset for new computation
             mesh->n_seeds   = (hsize_t)n_pts;
             mesh->num_faces = 0;
@@ -300,6 +282,15 @@ namespace voronoi {
                     my_offset = face_offset;
                     face_offset += (hsize_t)fc;
                 }
+
+                // check that reserved slot fits in pre-allocated capacity
+                if (my_offset + (hsize_t)fc > mesh->face_capacity) {
+                    std::cerr << "VORONOI: Error! face offset " << my_offset + (hsize_t)fc
+                              << " exceeds pre-allocated face capacity " << mesh->face_capacity
+                              << ". Increase _FACE_CAPACITY_MULT_ in Config.sh." << std::endl;
+                    exit(EXIT_FAILURE);
+                }
+
                 mesh->face_ptr[original_id] = my_offset;
 
                 // write face data at the reserved offset (non-overlapping, no contention)

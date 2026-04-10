@@ -697,20 +697,12 @@ namespace voronoi {
         return std::fabs(total_volume);
     }
 
-    // helper to grow face arrays when needed
+    // check that face arrays have sufficient pre-allocated capacity (no realloc for GPU compatibility)
     void ensure_face_capacity(VMesh* mesh, hsize_t needed) {
         if (needed <= mesh->face_capacity) return;
-        hsize_t new_capacity = mesh->face_capacity * 2;
-        if (new_capacity < needed) new_capacity = needed;
-        mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, new_capacity * sizeof(int));
-        mesh->face_area     = (compact_t*)realloc(mesh->face_area, new_capacity * sizeof(compact_t));
-#ifdef MOVING_MESH
-        mesh->f_mid_local = (compact_t*)realloc(mesh->f_mid_local, new_capacity * (DIMENSION - 1) * sizeof(compact_t));
-#endif
-#ifdef DEBUG_MODE
-        mesh->edge_coords_offsets = (hsize_t*)realloc(mesh->edge_coords_offsets, new_capacity * sizeof(hsize_t));
-#endif
-        mesh->face_capacity = new_capacity;
+        std::cerr << "VORONOI: Error! face count " << needed << " exceeds pre-allocated face capacity "
+                  << mesh->face_capacity << ". Increase _FACE_CAPACITY_MULT_ in Config.sh." << std::endl;
+        exit(EXIT_FAILURE);
     }
 
     bool
@@ -836,10 +828,9 @@ namespace voronoi {
     hsize_t edge_coords_capacity_global = 0;
     void    ensure_edge_coords_capacity(VMesh* mesh, hsize_t needed_verts) {
         if (needed_verts <= edge_coords_capacity_global) return;
-        hsize_t new_capacity = edge_coords_capacity_global * 2;
-        if (new_capacity < needed_verts) new_capacity = needed_verts;
-        mesh->edge_coords           = (double*)realloc(mesh->edge_coords, new_capacity * DIMENSION * sizeof(double));
-        edge_coords_capacity_global = new_capacity;
+        std::cerr << "VORONOI: Error! edge coord vertex count " << needed_verts << " exceeds pre-allocated capacity "
+                  << edge_coords_capacity_global << ". Increase _FACE_CAPACITY_MULT_ in Config.sh." << std::endl;
+        exit(EXIT_FAILURE);
     }
 #endif
 
