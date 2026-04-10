@@ -41,15 +41,15 @@ namespace hydro {
 
     // helper
 #ifdef MOVING_MESH
-    void get_vel_face(hsize_t      i,
-                      hsize_t      index_j,
-                      POINT_TYPE   v_mesh_i,
-                      POINT_TYPE   v_mesh_j,
-                      POINT_TYPE   f_mid,
-                      const VMesh* mesh,
-                      geom         g,
-                      POINT_TYPE*  vel_face,
-                      POINT_TYPE*  vel_face_turned);
+    void get_vel_face(hsize_t          i,
+                      hsize_t          index_j,
+                      POINT_TYPE       v_mesh_i,
+                      POINT_TYPE       v_mesh_j,
+                      const compact_t* f_mid_local,
+                      const VMesh*     mesh,
+                      geom             g,
+                      POINT_TYPE*      vel_face,
+                      POINT_TYPE*      vel_face_turned);
     void convert_state_to_local_frame(prim* st, POINT_TYPE vel_face);
     void convert_flux_to_lab_frame(prim* flux, POINT_TYPE vel_face_turned);
 #endif

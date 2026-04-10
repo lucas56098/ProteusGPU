@@ -13,6 +13,8 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <sys/resource.h>
+#include <sys/stat.h>
 
 #include <stdio.h>
 #include <vector>
@@ -115,6 +117,7 @@ int main(int argc, char* argv[]) {
 
     const double total_wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
     std::cout << "MAIN: Runtime = " << format_hms(total_wall_s) << std::endl;
+    print_max_memory_usage();
     std::cout << "MAIN: Done." << std::endl;
 
     PROFILE_END("TOTAL_RUNTIME");

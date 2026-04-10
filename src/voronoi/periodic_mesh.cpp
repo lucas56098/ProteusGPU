@@ -69,7 +69,7 @@ namespace voronoi {
     }
 
     // for now only 2D
-    VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points) {
+    VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points, VMesh* reuse) {
         PROFILE_START("MESH_TOTAL");
 
 #ifdef DEBUG_MODE
@@ -216,13 +216,14 @@ namespace voronoi {
 #endif
         }
 
-        // compute mesh
+        // compute mesh (reuse old mesh buffers if available to avoid fragmentation)
         pts         = (POINT_TYPE*)realloc(pts, (n_hydro + n_ghosts) * sizeof(POINT_TYPE));
-        VMesh* mesh = compute_mesh(pts, n_hydro + n_ghosts);
+        VMesh* mesh = compute_mesh(pts, n_hydro + n_ghosts, reuse);
         free(pts);
 
-        // set mesh ghost quantities
-        mesh->n_hydro   = n_hydro;
+        // set mesh ghost quantities (free old ghost_ids if reusing an existing mesh)
+        mesh->n_hydro = n_hydro;
+        free(mesh->ghost_ids);
         mesh->ghost_ids = (hsize_t*)realloc(original_ids, n_ghosts * sizeof(hsize_t));
 
         // scale mesh up
@@ -248,17 +249,13 @@ namespace voronoi {
         }
 
 #ifdef MOVING_MESH
-        for (hsize_t i = 0; i < mesh->num_faces; i++) {
-            mesh->f_mid[i].x = (mesh->f_mid[i].x - 0.5) * scale + 0.5;
-            mesh->f_mid[i].y = (mesh->f_mid[i].y - 0.5) * scale + 0.5;
-#ifdef dim_3D
-            mesh->f_mid[i].z = (mesh->f_mid[i].z - 0.5) * scale + 0.5;
-#endif
+        for (hsize_t i = 0; i < mesh->num_faces * (DIMENSION - 1); i++) {
+            mesh->f_mid_local[i] = (compact_t)((double)mesh->f_mid_local[i] * scale);
         }
 #endif
 
         for (hsize_t i = 0; i < mesh->num_faces; i++) {
-            mesh->face_area[i] = ascale * mesh->face_area[i];
+            mesh->face_area[i] = (compact_t)(ascale * (double)mesh->face_area[i]);
         }
 
 #ifdef DEBUG_MODE
@@ -274,7 +271,6 @@ namespace voronoi {
 #ifdef DEBUG_MODE
         std::cout << "VORONOI: periodic mesh should be created" << std::endl;
 #endif
-
         PROFILE_END("MESH_TOTAL");
 
         // return that mesh :D
@@ -391,9 +387,8 @@ namespace voronoi {
 
         hsize_t n_hydro = mesh->n_hydro;
 
-        free_vmesh(mesh);
-
-        VMesh* new_mesh = compute_periodic_mesh(pts, n_hydro);
+        // pass old mesh for buffer reuse instead of freeing and reallocating
+        VMesh* new_mesh = compute_periodic_mesh(pts, n_hydro, mesh);
 
         free(pts);
 

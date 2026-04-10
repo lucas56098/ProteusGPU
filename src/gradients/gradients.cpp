@@ -197,7 +197,7 @@ namespace gradients {
 
     // arepo-like face limiter for one scalar gradient
     inline void limit_single_gradient(
-        const double value, const double min_value, const double max_value, const POINT_TYPE& d, POINT_TYPE* grad) {
+        const double value, const double min_value, const double max_value, const POINT_TYPE& d, GRAD_TYPE* grad) {
         double dp  = point_dot(*grad, d);
         double fac = 1.0;
 

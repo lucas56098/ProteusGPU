@@ -34,13 +34,13 @@ struct prim {
 
 // gradient data per cell
 struct PrimGradients {
-    POINT_TYPE rho;
-    POINT_TYPE vx;
-    POINT_TYPE vy;
+    GRAD_TYPE rho;
+    GRAD_TYPE vx;
+    GRAD_TYPE vy;
 #ifdef dim_3D
-    POINT_TYPE vz;
+    GRAD_TYPE vz;
 #endif
-    POINT_TYPE E;
+    GRAD_TYPE E;
 };
 
 // geometry (normalized basis for face orientation)

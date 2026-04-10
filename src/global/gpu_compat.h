@@ -62,4 +62,26 @@ typedef double3 POINT_TYPE;
 typedef uchar3  VERT_TYPE;
 #endif
 
+// compact types for memory-sensitive arrays (gradients, face_area, f_mid)
+#ifdef CPU_DEBUG
+typedef struct {
+    float x, y;
+} float2;
+typedef struct {
+    float x, y, z;
+} float3;
+#endif
+
+#ifdef SAVE_MEMORY
+typedef float compact_t;
+#ifdef dim_2D
+typedef float2 GRAD_TYPE;
+#else
+typedef float3 GRAD_TYPE;
+#endif
+#else
+typedef double     compact_t;
+typedef POINT_TYPE GRAD_TYPE;
+#endif
+
 #endif // GPU_COMPAT_H

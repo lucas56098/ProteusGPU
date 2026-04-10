@@ -27,12 +27,6 @@ MOVING_MESH
 #RIEMANN_HLL
 RIEMANN_HLLC
 
-# Output types
-#WRITE_KNN_OUTPUT
-
-# Verification (bruteforce KNN check)
-#VERIFY
-
 # Compile-time constants for KNN and Voronoi
 _K_=190                  # number of nearest neighbors
 _MAX_P_=64              # max number of clipping planes per Voronoi cell

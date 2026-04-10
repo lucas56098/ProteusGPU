@@ -16,7 +16,7 @@ namespace gradients {
 
     // limiter used for spatial gradients
     inline void limit_single_gradient(
-        const double value, const double min_value, const double max_value, const POINT_TYPE& d, POINT_TYPE* grad);
+        const double value, const double min_value, const double max_value, const POINT_TYPE& d, GRAD_TYPE* grad);
 
     // helper
     inline prim get_state(hsize_t i, const VMesh* mesh, const primvars* primvar) {

@@ -79,7 +79,7 @@ inline double det4x4(double a11,
 
 // weighted least squares solvers
 #ifdef dim_2D
-inline bool solve_weighted_lsq_2d(double m00, double m01, double m11, double b0, double b1, POINT_TYPE* grad) {
+inline bool solve_weighted_lsq_2d(double m00, double m01, double m11, double b0, double b1, GRAD_TYPE* grad) {
     double det = m00 * m11 - m01 * m01;
     if (fabs(det) < 1e-14) { return false; }
 
@@ -87,21 +87,21 @@ inline bool solve_weighted_lsq_2d(double m00, double m01, double m11, double b0,
     double inv01 = -m01 / det;
     double inv11 = m00 / det;
 
-    grad->x = inv00 * b0 + inv01 * b1;
-    grad->y = inv01 * b0 + inv11 * b1;
+    grad->x = (compact_t)(inv00 * b0 + inv01 * b1);
+    grad->y = (compact_t)(inv01 * b0 + inv11 * b1);
     return true;
 }
 #else
-inline bool solve_weighted_lsq_3d(double      m00,
-                                  double      m01,
-                                  double      m02,
-                                  double      m11,
-                                  double      m12,
-                                  double      m22,
-                                  double      b0,
-                                  double      b1,
-                                  double      b2,
-                                  POINT_TYPE* grad) {
+inline bool solve_weighted_lsq_3d(double     m00,
+                                  double     m01,
+                                  double     m02,
+                                  double     m11,
+                                  double     m12,
+                                  double     m22,
+                                  double     b0,
+                                  double     b1,
+                                  double     b2,
+                                  GRAD_TYPE* grad) {
     double a11 = m00;
     double a12 = m01;
     double a13 = m02;
@@ -125,9 +125,9 @@ inline bool solve_weighted_lsq_3d(double      m00,
     double inv21 = (a12 * a31 - a11 * a32) / det;
     double inv22 = (a11 * a22 - a12 * a21) / det;
 
-    grad->x = inv00 * b0 + inv01 * b1 + inv02 * b2;
-    grad->y = inv10 * b0 + inv11 * b1 + inv12 * b2;
-    grad->z = inv20 * b0 + inv21 * b1 + inv22 * b2;
+    grad->x = (compact_t)(inv00 * b0 + inv01 * b1 + inv02 * b2);
+    grad->y = (compact_t)(inv10 * b0 + inv11 * b1 + inv12 * b2);
+    grad->z = (compact_t)(inv20 * b0 + inv21 * b1 + inv22 * b2);
     return true;
 }
 #endif
@@ -155,6 +155,33 @@ inline POINT_TYPE point_mul(double s, const POINT_TYPE& p) {
 #endif
     return out;
 }
+
+// overloads for GRAD_TYPE (active only when SAVE_MEMORY makes GRAD_TYPE != POINT_TYPE)
+#ifdef SAVE_MEMORY
+inline double point_dot(const GRAD_TYPE& a, const POINT_TYPE& b) {
+#ifdef dim_2D
+    return (double)a.x * b.x + (double)a.y * b.y;
+#else
+    return (double)a.x * b.x + (double)a.y * b.y + (double)a.z * b.z;
+#endif
+}
+
+inline double point_dot(const GRAD_TYPE& a, const GRAD_TYPE& b) {
+#ifdef dim_2D
+    return (double)a.x * (double)b.x + (double)a.y * (double)b.y;
+#else
+    return (double)a.x * (double)b.x + (double)a.y * (double)b.y + (double)a.z * (double)b.z;
+#endif
+}
+
+inline GRAD_TYPE point_mul(double s, const GRAD_TYPE& p) {
+#ifdef dim_2D
+    return {(compact_t)(s * p.x), (compact_t)(s * p.y)};
+#else
+    return {(compact_t)(s * p.x), (compact_t)(s * p.y), (compact_t)(s * p.z)};
+#endif
+}
+#endif
 
 // periodic boundary condition helpers (assumes boxsize 1)
 inline double wrap_periodic_delta(double d) {

@@ -153,7 +153,15 @@ namespace hydro {
                 POINT_TYPE vel_face, vel_face_turned;
                 POINT_TYPE vm_i = v_mesh[i];
                 POINT_TYPE vm_j = v_mesh[hydro_index(index_j, mesh)];
-                get_vel_face(i, index_j, vm_i, vm_j, mesh->f_mid[face_idx], mesh, g, &vel_face, &vel_face_turned);
+                get_vel_face(i,
+                             index_j,
+                             vm_i,
+                             vm_j,
+                             &mesh->f_mid_local[face_idx * (DIMENSION - 1)],
+                             mesh,
+                             g,
+                             &vel_face,
+                             &vel_face_turned);
 #else
                 (void)v_mesh;
 #endif
@@ -214,6 +222,7 @@ namespace hydro {
                 total_flux.E += flux_ij.E * face_area;
             }
 
+            // finite volume update of primvar
             double frac    = dt_update / mesh->volumes[i];
             double rho_old = prim_new->rho[i];
             double rho_new = rho_old - frac * total_flux.rho;
@@ -261,15 +270,15 @@ namespace hydro {
     }
 
 #ifdef MOVING_MESH
-    void get_vel_face(hsize_t      i,
-                      hsize_t      index_j,
-                      POINT_TYPE   v_mesh_i,
-                      POINT_TYPE   v_mesh_j,
-                      POINT_TYPE   f_mid,
-                      const VMesh* mesh,
-                      geom         g,
-                      POINT_TYPE*  vel_face,
-                      POINT_TYPE*  vel_face_turned) {
+    void get_vel_face(hsize_t          i,
+                      hsize_t          index_j,
+                      POINT_TYPE       v_mesh_i,
+                      POINT_TYPE       v_mesh_j,
+                      const compact_t* f_mid_local,
+                      const VMesh*     mesh,
+                      geom             g,
+                      POINT_TYPE*      vel_face,
+                      POINT_TYPE*      vel_face_turned) {
 
         double facv;
 
@@ -286,16 +295,26 @@ namespace hydro {
 
         vel_face->x = 0.5 * (v_mesh_i.x + v_mesh_j.x);
         vel_face->y = 0.5 * (v_mesh_i.y + v_mesh_j.y);
-        double cx   = f_mid.x - 0.5 * (mesh->seeds[i].x + mesh->seeds[index_j].x);
-        double cy   = f_mid.y - 0.5 * (mesh->seeds[i].y + mesh->seeds[index_j].y);
-#ifdef dim_3D
-        vel_face->z = 0.5 * (v_mesh_i.z + v_mesh_j.z);
-        double cz   = f_mid.z - 0.5 * (mesh->seeds[i].z + mesh->seeds[index_j].z);
+
+        // reconstruct offset from seed midpoint using local tangent-space coords
+#ifdef dim_2D
+        double alpha = (double)f_mid_local[0];
+        double cx    = alpha * g.m.x;
+        double cy    = alpha * g.m.y;
+#else
+        vel_face->z  = 0.5 * (v_mesh_i.z + v_mesh_j.z);
+        double alpha = (double)f_mid_local[0];
+        double beta  = (double)f_mid_local[1];
+        double cx    = alpha * g.m.x + beta * g.p.x;
+        double cy    = alpha * g.m.y + beta * g.p.y;
+        double cz    = alpha * g.m.z + beta * g.p.z;
 
         facv = (cx * (v_mesh_i.x - v_mesh_j.x) + cy * (v_mesh_i.y - v_mesh_j.y) + cz * (v_mesh_i.z - v_mesh_j.z)) / nn;
 
         double cc = sqrt(cx * cx + cy * cy + cz * cz);
-#else
+#endif
+
+#ifdef dim_2D
         facv      = (cx * (v_mesh_i.x - v_mesh_j.x) + cy * (v_mesh_i.y - v_mesh_j.y)) / nn;
         double cc = sqrt(cx * cx + cy * cy);
 #endif

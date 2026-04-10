@@ -20,9 +20,11 @@
 struct VMesh {
 
     // stored once
-    hsize_t n_seeds;   // number of cells
-    hsize_t n_hydro;   // number of hydro cells (n_ghost = n_seeds - n_hydro)
-    hsize_t num_faces; // total number of faces in the mesh
+    hsize_t n_seeds;       // number of cells
+    hsize_t n_hydro;       // number of hydro cells (n_ghost = n_seeds - n_hydro)
+    hsize_t num_faces;     // total number of faces in the mesh
+    hsize_t cell_capacity; // allocated capacity of per-cell arrays (>= n_seeds)
+    hsize_t face_capacity; // allocated capacity of face arrays (>= num_faces)
 
     // stored for all cells
     double3* seeds;       // seedpoints
@@ -32,10 +34,10 @@ struct VMesh {
     hsize_t* face_ptr;    // pointer to start of each cell's faces in the face arrays
 
     // stored for all faces
-    int*    neighbor_cell; // global id of neighboring cell for each face
-    double* face_area;     // edge length in 2D, face area in 3D
+    int*       neighbor_cell; // global id of neighboring cell for each face
+    compact_t* face_area;     // edge length in 2D, face area in 3D
 #ifdef MOVING_MESH
-    POINT_TYPE* f_mid; // midpoint of the faces
+    compact_t* f_mid_local; // (DIMENSION-1) tangent-space offsets per face from seed midpoint
 #endif
 #ifdef DEBUG_MODE
     double*  edge_coords;          // flat array of all face vertex coordinates (DIMENSION doubles per vertex)
@@ -54,27 +56,29 @@ namespace voronoi {
     VMesh* allocate_vmesh(hsize_t n_seeds, hsize_t initial_face_capacity);
     void   free_vmesh(VMesh* mesh);
 
-    // main mesh computation
-    VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points);
-    void   compute_cells(int N_seedpts, knn_problem* knn, std::vector<Status>& stat, VMesh* mesh);
+    // main mesh computation (pass reuse to recycle an existing mesh's buffers)
+    VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points, VMesh* reuse = nullptr);
+    void   compute_cells(int                  N_seedpts,
+                         knn_problem*         knn,
+                         std::vector<Status>& stat,
+                         VMesh*               mesh,
+                         const unsigned int*  sorted_to_original);
 
     // cpu fallback for cells that failed during knn-based construction
-    void cpu_fallback_failed_cells(int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh);
+    void cpu_fallback_failed_cells(
+        int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original);
 
 // kernels
 #ifdef CPU_DEBUG
-    void cpu_compute_cell(int           blocksPerGrid,
-                          int           threadsPerBlock,
-                          int           N_seedpts,
-                          double*       d_stored_points,
-                          unsigned int* d_knearests,
-                          Status*       gpu_stat,
-                          VMesh*        mesh,
-                          hsize_t&      face_capacity);
+    void cpu_compute_cell(int                 blocksPerGrid,
+                          int                 threadsPerBlock,
+                          int                 N_seedpts,
+                          double*             d_stored_points,
+                          const knn_problem*  knn,
+                          Status*             gpu_stat,
+                          VMesh*              mesh,
+                          const unsigned int* sorted_to_original);
 #endif
-
-    // restore original input pts order (after KNN sorted it...)
-    void unpermute_vmesh(VMesh* mesh, const unsigned int* sorted_to_original);
 
 } // namespace voronoi
 

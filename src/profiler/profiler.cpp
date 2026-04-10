@@ -1,4 +1,6 @@
 #include "profiler.h"
+#include "../global/gpu_compat.h"
+#include <sys/resource.h>
 
 unordered_map<string, chrono::high_resolution_clock::time_point> Profiler::m_StartTimes;
 unordered_map<string, long long>                                 Profiler::m_Timings;
@@ -33,4 +35,28 @@ void Profiler::PrintResults() {
     cout << "PARALLELIZED_TIME: " << (parallelizedTime / 1e6) << "s\n";
     cout << "PARALLEL_FRACTION: " << parallelFraction * 100.0 << " %\n";
     cout << "=========================\n";
+}
+
+// MEMORY: function to print out maximum memory usage
+void print_max_memory_usage() {
+
+    struct rusage usage;
+
+    // get resource usage statistics for the current process
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+
+        double rssBytes = 0.0;
+#if defined(__APPLE__) && defined(__MACH__)
+        rssBytes = static_cast<double>(usage.ru_maxrss); // macOS reports bytes
+#elif defined(__linux__)
+        rssBytes = static_cast<double>(usage.ru_maxrss) * 1024.0; // Linux reports KiB
+#else
+        rssBytes = static_cast<double>(usage.ru_maxrss); // fallback: assume bytes
+#endif
+
+        cout << "MAIN: maximum memory used: " << rssBytes / 1000000.0 << " MB" << endl;
+    } else {
+
+        cerr << "Error getting resource usage." << endl;
+    }
 }

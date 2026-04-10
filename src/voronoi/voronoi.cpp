@@ -17,7 +17,7 @@ namespace voronoi {
     // ----------------------------------------------
     // -------- main voronoi mesh generation --------
     // ----------------------------------------------
-    VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points) {
+    VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points, VMesh* reuse) {
 #ifdef DEBUG_MODE
         std::cout << "VORONOI: Computing Voronoi mesh..." << std::endl;
 #endif
@@ -34,37 +34,57 @@ namespace voronoi {
         std::cout << "KNN: problem initialized." << std::endl;
 #endif
 
-        // solve knn problem
-        knn::solve(knn);
-#ifdef DEBUG_MODE
-        std::cout << "\n";
-#endif
-#ifdef DEBUG_MODE
-        std::cout << "KNN: problem solved." << std::endl;
-#endif
-
-// optional verify and output file
-#ifdef VERIFY
-        if (!knn::verify(knn)) { exit(EXIT_FAILURE); }
-#endif
-#if defined(USE_HDF5) && defined(WRITE_KNN_OUTPUT)
-        knn::write_knn_output(knn);
-#endif
-
         PROFILE_END("KNN (par)");
         // -------- VORONOI MESH GENERATION --------
         PROFILE_START("VORONOI (par)");
 
-        // allocate Vmesh struct
+        // allocate or reuse Vmesh struct
         std::vector<Status> stat(n_pts, security_radius_not_reached);
         hsize_t             initial_face_capacity = (hsize_t)n_pts * 16;
-        VMesh*              mesh                  = allocate_vmesh((hsize_t)n_pts, initial_face_capacity);
+        VMesh*              mesh;
 
-        // compute voronoi cells from knn results
-        compute_cells(n_pts, knn, stat, mesh);
+        if (reuse) {
+            mesh = reuse;
+            // grow per-cell arrays only if needed
+            if ((hsize_t)n_pts > mesh->cell_capacity) {
+                mesh->seeds         = (double3*)realloc(mesh->seeds, n_pts * sizeof(double3));
+                mesh->com           = (double3*)realloc(mesh->com, n_pts * sizeof(double3));
+                mesh->volumes       = (double*)realloc(mesh->volumes, n_pts * sizeof(double));
+                mesh->face_counts   = (hsize_t*)realloc(mesh->face_counts, n_pts * sizeof(hsize_t));
+                mesh->face_ptr      = (hsize_t*)realloc(mesh->face_ptr, n_pts * sizeof(hsize_t));
+                mesh->cell_capacity = (hsize_t)n_pts;
+            }
+            // grow face arrays only if needed
+            if (initial_face_capacity > mesh->face_capacity) {
+                mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, initial_face_capacity * sizeof(int));
+                mesh->face_area     = (compact_t*)realloc(mesh->face_area, initial_face_capacity * sizeof(compact_t));
+#ifdef MOVING_MESH
+                mesh->f_mid_local =
+                    (compact_t*)realloc(mesh->f_mid_local, initial_face_capacity * (DIMENSION - 1) * sizeof(compact_t));
+#endif
+#ifdef DEBUG_MODE
+                mesh->edge_coords =
+                    (double*)realloc(mesh->edge_coords, initial_face_capacity * DIMENSION * 4 * sizeof(double));
+                mesh->edge_coords_offsets =
+                    (hsize_t*)realloc(mesh->edge_coords_offsets, initial_face_capacity * sizeof(hsize_t));
+#endif
+                mesh->face_capacity = initial_face_capacity;
+            }
+            // reset for new computation
+            mesh->n_seeds   = (hsize_t)n_pts;
+            mesh->num_faces = 0;
+            mesh->n_hydro   = 0;
+#ifdef DEBUG_MODE
+            mesh->num_edge_coord_verts = 0;
+#endif
+            memset(mesh->face_counts, 0, n_pts * sizeof(hsize_t));
+            memset(mesh->face_ptr, 0, n_pts * sizeof(hsize_t));
+        } else {
+            mesh = allocate_vmesh((hsize_t)n_pts, initial_face_capacity);
+        }
 
-        // reorder VMesh from sorted KNN order back to original input order
-        unpermute_vmesh(mesh, knn->d_permutation);
+        // compute voronoi cells from knn results, writing directly to original positions
+        compute_cells(n_pts, knn, stat, mesh, knn->d_permutation);
 
         PROFILE_END("VORONOI (par)");
 
@@ -74,10 +94,12 @@ namespace voronoi {
     }
 
     // compute voronoi cells from knn results and store in VMesh
-    void compute_cells(int N_seedpts, knn_problem* knn, std::vector<Status>& stat, VMesh* mesh) {
+    void compute_cells(int                  N_seedpts,
+                       knn_problem*         knn,
+                       std::vector<Status>& stat,
+                       VMesh*               mesh,
+                       const unsigned int*  sorted_to_original) {
 
-        // initial capacities for face arrays
-        hsize_t face_capacity = mesh->n_seeds * 16;
 #ifdef DEBUG_MODE
         extern hsize_t edge_coords_capacity_global;
         edge_coords_capacity_global = mesh->n_seeds * 16 * 4; // initial estimate
@@ -94,31 +116,24 @@ namespace voronoi {
                          threadsPerBlock,
                          N_seedpts,
                          (double*)knn->d_stored_points,
-                         knn->d_knearests,
+                         knn,
                          stat.data(),
                          mesh,
-                         face_capacity);
+                         sorted_to_original);
 #ifdef DEBUG_MODE
         std::cout << "\nVORONOI: cells computed" << std::endl;
 #endif
 
-        // shrink face arrays to actual size
-        if (mesh->num_faces > 0) {
-            mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, mesh->num_faces * sizeof(int));
-            mesh->face_area     = (double*)realloc(mesh->face_area, mesh->num_faces * sizeof(double));
-#ifdef DEBUG_MODE
-            mesh->edge_coords_offsets = (hsize_t*)realloc(mesh->edge_coords_offsets, mesh->num_faces * sizeof(hsize_t));
-            mesh->edge_coords =
-                (double*)realloc(mesh->edge_coords, mesh->num_edge_coord_verts * DIMENSION * sizeof(double));
-#endif
-        }
+        // face arrays are kept at face_capacity (no shrinkage) to avoid
+        // heap fragmentation from repeated realloc cycles in moving-mesh mode.
 
         // check if any cells failed and retry with cpu fallback
-        cpu_fallback_failed_cells(N_seedpts, (double*)knn->d_stored_points, stat.data(), mesh);
+        cpu_fallback_failed_cells(N_seedpts, (double*)knn->d_stored_points, stat.data(), mesh, sorted_to_original);
     }
 
     // cpu fallback for cells that failed during knn-based construction
-    void cpu_fallback_failed_cells(int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh) {
+    void cpu_fallback_failed_cells(
+        int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original) {
         int num_failed = 0;
         for (int i = 0; i < N_seedpts; i++) {
             if (stat[i] != success) { num_failed++; }
@@ -126,8 +141,6 @@ namespace voronoi {
         if (num_failed == 0) return;
 
         std::cout << "VORONOI: " << num_failed << " cells failed, retrying with fallback..." << std::endl;
-
-        hsize_t fallback_face_capacity = mesh->num_faces;
 
         for (int i = 0; i < N_seedpts; i++) {
             if (stat[i] == success) continue;
@@ -200,7 +213,14 @@ namespace voronoi {
                 }
 
                 if (fallback_status == success) {
-                    extract_cell_to_vmesh(cell, mesh, (hsize_t)i, fallback_face_capacity);
+                    hsize_t original_id = (hsize_t)sorted_to_original[i];
+                    hsize_t face_start  = mesh->num_faces;
+                    extract_cell_to_vmesh(cell, mesh, original_id);
+                    // convert neighbor IDs from sorted to original indexing
+                    for (hsize_t fi = face_start; fi < mesh->num_faces; fi++) {
+                        int& nid = mesh->neighbor_cell[fi];
+                        if (nid >= 0 && (hsize_t)nid < (hsize_t)N_seedpts) { nid = (int)sorted_to_original[nid]; }
+                    }
                     std::cout << "VORONOI: cell " << i << " fallback (perturbed, attempt " << attempt << ") succeeded."
                               << std::endl;
                     cell_ok = true;
@@ -213,43 +233,27 @@ namespace voronoi {
                 exit(EXIT_FAILURE);
             }
         }
-
-        // re-shrink face arrays after fallback
-        if (mesh->num_faces > 0) {
-            mesh->neighbor_cell = (int*)realloc(mesh->neighbor_cell, mesh->num_faces * sizeof(int));
-            mesh->face_area     = (double*)realloc(mesh->face_area, mesh->num_faces * sizeof(double));
-#ifdef MOVING_MESH
-            mesh->f_mid = (POINT_TYPE*)realloc(mesh->f_mid, mesh->num_faces * sizeof(POINT_TYPE));
-#endif
-#ifdef DEBUG_MODE
-            mesh->edge_coords_offsets = (hsize_t*)realloc(mesh->edge_coords_offsets, mesh->num_faces * sizeof(hsize_t));
-            mesh->edge_coords =
-                (double*)realloc(mesh->edge_coords, mesh->num_edge_coord_verts * DIMENSION * sizeof(double));
-#endif
-        }
+        // face arrays are kept at face_capacity (no shrinkage)
     }
 
 #ifdef CPU_DEBUG
     // cpu debug version of cell computation kernel
-    void cpu_compute_cell(int           blocksPerGrid,
-                          int           threadsPerBlock,
-                          int           N_seedpts,
-                          double*       d_stored_points,
-                          unsigned int* d_knearests,
-                          Status*       gpu_stat,
-                          VMesh*        mesh,
-                          hsize_t&      face_capacity) {
+    void cpu_compute_cell(int                 blocksPerGrid,
+                          int                 threadsPerBlock,
+                          int                 N_seedpts,
+                          double*             d_stored_points,
+                          const knn_problem*  knn,
+                          Status*             gpu_stat,
+                          VMesh*              mesh,
+                          const unsigned int* sorted_to_original) {
 
         (void)blocksPerGrid;
         (void)threadsPerBlock;
 
-        // per-cell extraction results for ALL cells
-        std::vector<CellExtractionResult> results(N_seedpts);
-        for (int i = 0; i < N_seedpts; i++) {
-            results[i].valid = false;
-        }
+        // face arrays are pre-allocated with generous capacity (n_pts * 16) by caller
+        hsize_t face_offset = 0;
 
-        // parallel region over all seed points
+        // ──── single pass (parallel): KNN + cell construction + atomic face-slot reservation ────
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(dynamic, _VORO_BLOCK_SIZE_)
 #endif
@@ -263,65 +267,54 @@ namespace voronoi {
             }
 #endif
 
-            // create and initalize convex cell
+            // inline KNN (computed once per cell)
+            unsigned int local_knn[_K_];
+            knn::knn_for_point(seed_id, knn, local_knn);
+
+            // construct Voronoi cell (once per cell)
             ConvexCell cell(seed_id, d_stored_points, &(gpu_stat[seed_id]));
 
-            // clip cell by _K_ nearest neighbor planes
             for (int v = 0; v < _K_; v++) {
-
-                unsigned int z = d_knearests[_K_ * seed_id + v];
+                unsigned int z = local_knn[v];
                 cell.clip_by_plane(z);
-
-                // security radius early exit
                 if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * z))) { break; }
-
-                // gpu stat failure return...
                 if (gpu_stat[seed_id] != success) { break; }
             }
-            // check if we are sure that the cell is correct
-            if (!cell.is_security_radius_reached(
-                    point_from_ptr(d_stored_points + DIMENSION * d_knearests[_K_ * (seed_id + 1) - 1]))) {
+            if (!cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * local_knn[_K_ - 1]))) {
                 gpu_stat[seed_id] = security_radius_not_reached;
             }
 
-            // extract per-cell data and face info into thread-local buffer
-            if (gpu_stat[seed_id] == success) { extract_cell_percell(cell, mesh, (hsize_t)seed_id, results[seed_id]); }
-        }
+            if (gpu_stat[seed_id] == success) {
+                hsize_t original_id = (hsize_t)sorted_to_original[seed_id];
 
-        // serial merge — set face_ptr/face_counts and copy face data into VMesh
-        for (int seed_id = 0; seed_id < N_seedpts; seed_id++) {
-            if (!results[seed_id].valid) continue;
+                // count faces and extract per-cell data (seeds, com, volumes)
+                int fc                         = extract_cell_percell_count(cell, mesh, original_id);
+                mesh->face_counts[original_id] = (hsize_t)fc;
 
-            mesh->face_ptr[seed_id]    = mesh->num_faces;
-            mesh->face_counts[seed_id] = (hsize_t)results[seed_id].face_count;
-            ensure_face_capacity(mesh, face_capacity, mesh->num_faces + results[seed_id].face_count);
-
-            for (int f = 0; f < results[seed_id].face_count; f++) {
-                hsize_t             fi  = mesh->num_faces;
-                const CellFaceInfo& cfi = results[seed_id].faces[f];
-
-                mesh->neighbor_cell[fi] = cfi.neighbor_id;
-                mesh->face_area[fi]     = cfi.face_area;
-#ifdef MOVING_MESH
-                mesh->f_mid[fi] = cfi.f_mid;
+                // atomically reserve a contiguous block of face slots (lock-free)
+                hsize_t my_offset;
+#ifdef USE_OPENMP
+#pragma omp atomic capture
 #endif
-#ifdef DEBUG_MODE
-                const auto& fv                = cfi.face_verts;
-                mesh->edge_coords_offsets[fi] = (hsize_t)fv.size();
-                ensure_edge_coords_capacity(mesh, mesh->num_edge_coord_verts + fv.size());
-                hsize_t ec = mesh->num_edge_coord_verts;
-                for (size_t vi = 0; vi < fv.size(); vi++) {
-                    mesh->edge_coords[(ec + vi) * DIMENSION + 0] = fv[vi].x;
-                    mesh->edge_coords[(ec + vi) * DIMENSION + 1] = fv[vi].y;
-#ifdef dim_3D
-                    mesh->edge_coords[(ec + vi) * DIMENSION + 2] = fv[vi].z;
-#endif
+                {
+                    my_offset = face_offset;
+                    face_offset += (hsize_t)fc;
                 }
-                mesh->num_edge_coord_verts += fv.size();
-#endif
-                mesh->num_faces++;
+                mesh->face_ptr[original_id] = my_offset;
+
+                // write face data at the reserved offset (non-overlapping, no contention)
+                extract_cell_percell_faces(cell, mesh, original_id);
+
+                // convert neighbor IDs from sorted to original indexing
+                hsize_t face_end = my_offset + (hsize_t)fc;
+                for (hsize_t fi = my_offset; fi < face_end; fi++) {
+                    int& nid = mesh->neighbor_cell[fi];
+                    if (nid >= 0 && nid < N_seedpts) { nid = (int)sorted_to_original[nid]; }
+                }
             }
         }
+
+        mesh->num_faces = face_offset;
     }
 #endif
 
@@ -329,11 +322,13 @@ namespace voronoi {
     // ------ mesh allocation and deallocation ------
     // ----------------------------------------------
     VMesh* allocate_vmesh(hsize_t n_seeds, hsize_t initial_face_capacity) {
-        VMesh* mesh     = (VMesh*)malloc(sizeof(VMesh));
-        mesh->n_seeds   = n_seeds;
-        mesh->num_faces = 0;
-        mesh->n_hydro   = 0;
-        mesh->ghost_ids = NULL;
+        VMesh* mesh         = (VMesh*)malloc(sizeof(VMesh));
+        mesh->n_seeds       = n_seeds;
+        mesh->num_faces     = 0;
+        mesh->cell_capacity = n_seeds;
+        mesh->face_capacity = initial_face_capacity;
+        mesh->n_hydro       = 0;
+        mesh->ghost_ids     = NULL;
 
         // per-cell arrays (known size)
         mesh->seeds       = (double3*)calloc(n_seeds, sizeof(double3));
@@ -344,10 +339,10 @@ namespace voronoi {
 
         // face arrays (initial capacity, grown dynamically during extraction)
         mesh->neighbor_cell = (int*)malloc(initial_face_capacity * sizeof(int));
-        mesh->face_area     = (double*)malloc(initial_face_capacity * sizeof(double));
+        mesh->face_area     = (compact_t*)malloc(initial_face_capacity * sizeof(compact_t));
 
 #ifdef MOVING_MESH
-        mesh->f_mid = (POINT_TYPE*)malloc(initial_face_capacity * sizeof(POINT_TYPE));
+        mesh->f_mid_local = (compact_t*)malloc(initial_face_capacity * (DIMENSION - 1) * sizeof(compact_t));
 #endif
 
 #ifdef DEBUG_MODE
@@ -372,7 +367,7 @@ namespace voronoi {
         free(mesh->neighbor_cell);
         free(mesh->face_area);
 #ifdef MOVING_MESH
-        free(mesh->f_mid);
+        free(mesh->f_mid_local);
 #endif
 #ifdef DEBUG_MODE
         free(mesh->edge_coords);
@@ -380,139 +375,6 @@ namespace voronoi {
 #endif
         free(mesh->ghost_ids);
         free(mesh);
-    }
-
-    // ----------------------------------------------
-    // ------ restore original input pts order ------
-    // ----------------------------------------------
-    void unpermute_vmesh(VMesh* mesh, const unsigned int* sorted_to_original) {
-        hsize_t n = mesh->n_seeds;
-
-        if (n == 0 || sorted_to_original == NULL) return;
-
-        // build inverse map: original id -> sorted id.
-        std::vector<int> original_to_sorted(n, -1);
-        for (hsize_t sorted = 0; sorted < n; sorted++) {
-            unsigned int original = sorted_to_original[sorted];
-            if (original < n) { original_to_sorted[original] = (int)sorted; }
-        }
-
-        // new cell-wise arrays in original input order.
-        double3* new_seeds       = (double3*)malloc(n * sizeof(double3));
-        double3* new_com         = (double3*)malloc(n * sizeof(double3));
-        double*  new_volumes     = (double*)malloc(n * sizeof(double));
-        hsize_t* new_face_counts = (hsize_t*)malloc(n * sizeof(hsize_t));
-        hsize_t* new_face_ptr    = (hsize_t*)malloc(n * sizeof(hsize_t));
-
-        // face arrays are rebuilt as contiguous blocks per (now unpermuted) cell.
-        int*    new_neighbor_cell = (int*)malloc(mesh->num_faces * sizeof(int));
-        double* new_face_area     = (double*)malloc(mesh->num_faces * sizeof(double));
-#ifdef MOVING_MESH
-        POINT_TYPE* new_f_mid = (POINT_TYPE*)malloc(mesh->num_faces * sizeof(POINT_TYPE));
-#endif
-
-#ifdef DEBUG_MODE
-        hsize_t* new_edge_coords_offsets = (hsize_t*)malloc(mesh->num_faces * sizeof(hsize_t));
-        double*  new_edge_coords         = (double*)malloc(mesh->num_edge_coord_verts * DIMENSION * sizeof(double));
-        // Prefix starts for the old flattened edge-coordinates buffer.
-        std::vector<hsize_t> old_edge_start(mesh->num_faces + 1, 0);
-        for (hsize_t fi = 0; fi < mesh->num_faces; fi++) {
-            old_edge_start[fi + 1] = old_edge_start[fi] + mesh->edge_coords_offsets[fi];
-        }
-        hsize_t new_edge_coord_cursor = 0;
-#endif
-
-        hsize_t face_cursor = 0;
-
-        for (hsize_t original = 0; original < n; original++) {
-            int sorted = original_to_sorted[original];
-            if (sorted < 0) continue;
-
-            hsize_t sorted_idx = (hsize_t)sorted;
-            hsize_t count      = mesh->face_counts[sorted_idx];
-            hsize_t start      = mesh->face_ptr[sorted_idx];
-
-            // per-cell scalars move to original slot; faces are appended at face_cursor.
-            new_seeds[original]       = mesh->seeds[sorted_idx];
-            new_com[original]         = mesh->com[sorted_idx];
-            new_volumes[original]     = mesh->volumes[sorted_idx];
-            new_face_counts[original] = count;
-            new_face_ptr[original]    = face_cursor;
-
-            for (hsize_t f = 0; f < count; f++) {
-                hsize_t old_fi = start + f;
-                hsize_t new_fi = face_cursor + f;
-
-                // neighbor ids are still in sorted indexing; convert back to original ids.
-                int sorted_neighbor = mesh->neighbor_cell[old_fi];
-                if (sorted_neighbor >= 0 && (hsize_t)sorted_neighbor < n) {
-                    new_neighbor_cell[new_fi] = (int)sorted_to_original[sorted_neighbor];
-                } else {
-                    new_neighbor_cell[new_fi] = sorted_neighbor;
-                }
-
-                new_face_area[new_fi] = mesh->face_area[old_fi];
-
-#ifdef MOVING_MESH
-                new_f_mid[new_fi] = mesh->f_mid[old_fi];
-#endif
-
-#ifdef DEBUG_MODE
-                hsize_t verts_in_face           = mesh->edge_coords_offsets[old_fi];
-                hsize_t old_edge_coord_cursor   = old_edge_start[old_fi];
-                new_edge_coords_offsets[new_fi] = verts_in_face;
-
-                // copy the variable-length face vertex block in flat storage.
-                for (hsize_t vi = 0; vi < verts_in_face; vi++) {
-                    new_edge_coords[(new_edge_coord_cursor + vi) * DIMENSION + 0] =
-                        mesh->edge_coords[(old_edge_coord_cursor + vi) * DIMENSION + 0];
-                    new_edge_coords[(new_edge_coord_cursor + vi) * DIMENSION + 1] =
-                        mesh->edge_coords[(old_edge_coord_cursor + vi) * DIMENSION + 1];
-#ifdef dim_3D
-                    new_edge_coords[(new_edge_coord_cursor + vi) * DIMENSION + 2] =
-                        mesh->edge_coords[(old_edge_coord_cursor + vi) * DIMENSION + 2];
-#endif
-                }
-                new_edge_coord_cursor += verts_in_face;
-#endif
-            }
-
-            face_cursor += count;
-        }
-
-        // swap in rebuilt arrays.
-        free(mesh->seeds);
-        free(mesh->com);
-        free(mesh->volumes);
-        free(mesh->face_counts);
-        free(mesh->face_ptr);
-        free(mesh->neighbor_cell);
-        free(mesh->face_area);
-#ifdef MOVING_MESH
-        free(mesh->f_mid);
-#endif
-
-#ifdef DEBUG_MODE
-        free(mesh->edge_coords_offsets);
-        free(mesh->edge_coords);
-#endif
-
-        mesh->seeds         = new_seeds;
-        mesh->com           = new_com;
-        mesh->volumes       = new_volumes;
-        mesh->face_counts   = new_face_counts;
-        mesh->face_ptr      = new_face_ptr;
-        mesh->neighbor_cell = new_neighbor_cell;
-        mesh->face_area     = new_face_area;
-#ifdef MOVING_MESH
-        mesh->f_mid = new_f_mid;
-#endif
-
-#ifdef DEBUG_MODE
-        mesh->edge_coords_offsets  = new_edge_coords_offsets;
-        mesh->edge_coords          = new_edge_coords;
-        mesh->num_edge_coord_verts = new_edge_coord_cursor;
-#endif
     }
 
 } // namespace voronoi

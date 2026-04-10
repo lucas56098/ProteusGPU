@@ -42,4 +42,6 @@ inline std::string format_hms(double seconds) {
     return os.str();
 }
 
+void print_max_memory_usage();
+
 #endif // PROFILER_H
