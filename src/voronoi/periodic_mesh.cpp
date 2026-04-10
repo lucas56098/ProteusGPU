@@ -2,6 +2,7 @@
 #include "../begrun/begrun.h"
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
+#include "../hydro/riemann.h"
 #include "../io/input.h"
 #include "../io/output.h"
 #include "../knn/knn.h"
@@ -10,27 +11,10 @@
 #include <climits>
 #include <cmath>
 #include <iostream>
-#include <stdio.h>
-#include <vector>
 
 namespace voronoi {
 
     constexpr double PI = 3.14159265358979323846;
-
-    inline double positive_pressure(const primvars* primvar, hsize_t i) {
-        const double rho = primvar->rho[i];
-        if (rho <= 0.0) return 0.0;
-
-#ifdef dim_2D
-        const double v2 = primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y;
-#else
-        const double v2 =
-            primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y + primvar->v[i].z * primvar->v[i].z;
-#endif
-        const double kinetic = 0.5 * rho * v2;
-        const double p       = (_gamma_ - 1.0) * (primvar->E[i] - kinetic);
-        return (p > 0.0) ? p : 0.0;
-    }
 
     // checks if pt is in box given by xa, xb, ya, ...
     inline bool is_in(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za, double zb) {
@@ -351,10 +335,11 @@ namespace voronoi {
                 }
 
                 if (fraction > 0.0) {
-                    const double rho = primvar->rho[i];
-                    const double p   = positive_pressure(primvar, i);
+                    const double rho     = primvar->rho[i];
+                    prim         state_i = get_state(i, mesh, primvar);
+                    const double p       = std::max(0.0, hydro::get_P_ideal_gas(&state_i));
                     if (rho > 0.0 && p > 0.0) {
-                        const double ci = std::sqrt(_gamma_ * p / rho);
+                        const double ci = std::sqrt(gamma_eos * p / rho);
                         vx_mesh += fraction * ci * dx / di;
                         vy_mesh += fraction * ci * dy / di;
 #ifdef dim_3D

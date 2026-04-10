@@ -20,21 +20,6 @@ struct MeshHeader {
     int    k;
     int    nmax;
     int    seed;
-#ifdef DEBUG_MODE
-    bool store_edge_coords = true;
-#else
-    bool store_edge_coords = false;
-#endif
-};
-
-struct MeshFaceData {
-    std::vector<int>    neighbor_cell;
-    std::vector<double> area;
-#ifdef DEBUG_MODE
-    std::vector<double>  edge_coords;         // all edge coords concatenated
-    std::vector<hsize_t> edge_coords_dims;    // [totalVertices, dimension]
-    std::vector<int>     edge_coords_offsets; // Number of vertices per face
-#endif
 };
 
 struct MeshCellData {
@@ -43,7 +28,6 @@ struct MeshCellData {
     std::vector<hsize_t> seeds_dims; // [numCells, dimension]
     std::vector<double>  volumes;
     std::vector<int>     face_counts; // number of faces per cell
-    MeshFaceData         faces;
 };
 
 struct KNNData {

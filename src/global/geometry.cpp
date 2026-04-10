@@ -2,21 +2,12 @@
 #include "math_utils.h"
 #include <cmath>
 
-// computes the normal vector for a face between two seedpoints
-double3 compute_face_normal(double3 seed_i, double3 seed_j) {
-    double dx  = wrap_periodic_delta(seed_j.x - seed_i.x);
-    double dy  = wrap_periodic_delta(seed_j.y - seed_i.y);
-    double dz  = wrap_periodic_delta(seed_j.z - seed_i.z);
-    double len = sqrt(dx * dx + dy * dy + dz * dz);
-    return {dx / len, dy / len, dz / len};
-}
-
-// returns geometry (normalized basis)
-geom compute_geom(double3 normal) {
+// computes orthonormal basis {n, m, p} from a raw (unnormalized) direction vector
+geom compute_geom(double3 delta) {
     geom g;
 
-    double nn = sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
-    g.n       = {normal.x / nn, normal.y / nn, normal.z / nn};
+    double nn = sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+    g.n       = {delta.x / nn, delta.y / nn, delta.z / nn};
 
     if (g.n.x != 0.0 || g.n.y != 0.0) {
         g.m = {-g.n.y, g.n.x, 0.0};

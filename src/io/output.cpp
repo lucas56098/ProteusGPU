@@ -51,11 +51,6 @@ void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
     meshData.header.k         = _K_;
     meshData.header.nmax      = _MAX_P_;
     meshData.header.seed      = 0;
-#ifdef DEBUG_MODE
-    meshData.header.store_edge_coords = true;
-#else
-    meshData.header.store_edge_coords = false;
-#endif
 
     meshData.seeds_dims = {(hsize_t)n_pts, DIMENSION};
 
@@ -132,12 +127,6 @@ bool OutputHandler::writeSnapshot(
     H5Awrite(attr_seed, H5T_NATIVE_INT, &meshData.header.seed);
     H5Aclose(attr_seed);
 
-    hid_t attr_store =
-        H5Acreate(header_group, "store_edge_coords", H5T_NATIVE_HBOOL, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
-    hbool_t store_bool = meshData.header.store_edge_coords ? 1 : 0;
-    H5Awrite(attr_store, H5T_NATIVE_HBOOL, &store_bool);
-    H5Aclose(attr_store);
-
     hid_t attr_time = H5Acreate(header_group, "time", H5T_NATIVE_DOUBLE, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
     H5Awrite(attr_time, H5T_NATIVE_DOUBLE, &t_sim);
     H5Aclose(attr_time);
@@ -200,81 +189,6 @@ bool OutputHandler::writeSnapshot(
         H5Sclose(dataspace_1d);
     }
 
-    // create faces subgroup
-    hid_t faces_group = H5Gcreate(cells_group, "faces", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (faces_group < 0) {
-        std::cerr << "OUTPUT: Error! Could not create faces group" << std::endl;
-        H5Gclose(cells_group);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    // write neighbor_cell
-    if (!meshData.faces.neighbor_cell.empty()) {
-        hsize_t dims_1d[1]   = {meshData.faces.neighbor_cell.size()};
-        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t   dataset_id   = H5Dcreate(
-            faces_group, "neighbor_cell", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (dataset_id >= 0) {
-            H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.neighbor_cell.data());
-            H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-            std::cout << "OUTPUT: neighbor_cell: " << meshData.faces.neighbor_cell.size() << " faces" << std::endl;
-#endif
-        }
-        H5Sclose(dataspace_1d);
-    }
-
-    // write area
-    if (!meshData.faces.area.empty()) {
-        hsize_t dims_1d[1]   = {meshData.faces.area.size()};
-        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t   dataset_id =
-            H5Dcreate(faces_group, "area", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (dataset_id >= 0) {
-            H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.area.data());
-            H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-            std::cout << "OUTPUT: area: " << meshData.faces.area.size() << " areas" << std::endl;
-#endif
-        }
-        H5Sclose(dataspace_1d);
-    }
-
-// write edge_coords if storing them (DEBUG_MODE only)
-#ifdef DEBUG_MODE
-    if (meshData.header.store_edge_coords && !meshData.faces.edge_coords.empty() &&
-        meshData.faces.edge_coords_dims.size() == 2) {
-        hid_t dataspace = H5Screate_simple(2, meshData.faces.edge_coords_dims.data(), NULL);
-        hid_t dataset_id =
-            H5Dcreate(faces_group, "edge_coords", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (dataset_id >= 0) {
-            H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.edge_coords.data());
-            H5Dclose(dataset_id);
-            std::cout << "OUTPUT: edge_coords: " << meshData.faces.edge_coords_dims[0] << " x "
-                      << meshData.faces.edge_coords_dims[1] << std::endl;
-        }
-        H5Sclose(dataspace);
-    }
-
-    // write edge_coords_offsets if storing edge coords
-    if (meshData.header.store_edge_coords && !meshData.faces.edge_coords_offsets.empty()) {
-        hsize_t dims_1d[1]   = {meshData.faces.edge_coords_offsets.size()};
-        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t   dataset_id   = H5Dcreate(
-            faces_group, "edge_coords_offsets", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (dataset_id >= 0) {
-            H5Dwrite(
-                dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.faces.edge_coords_offsets.data());
-            H5Dclose(dataset_id);
-            std::cout << "OUTPUT: edge_coords_offsets: " << meshData.faces.edge_coords_offsets.size() << " offsets"
-                      << std::endl;
-        }
-        H5Sclose(dataspace_1d);
-    }
-#endif
-
-    H5Gclose(faces_group);
     H5Gclose(cells_group);
 
     // create hydro group

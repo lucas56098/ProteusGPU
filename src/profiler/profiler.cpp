@@ -2,39 +2,39 @@
 #include "../global/gpu_compat.h"
 #include <sys/resource.h>
 
-unordered_map<string, chrono::high_resolution_clock::time_point> Profiler::m_StartTimes;
-unordered_map<string, long long>                                 Profiler::m_Timings;
+std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> Profiler::m_StartTimes;
+std::unordered_map<std::string, long long>                                      Profiler::m_Timings;
 
-void Profiler::StartTimer(const string& name) {
-    m_StartTimes[name] = chrono::high_resolution_clock::now();
+void Profiler::StartTimer(const std::string& name) {
+    m_StartTimes[name] = std::chrono::high_resolution_clock::now();
 }
 
-void Profiler::EndTimer(const string& name) {
-    auto endTime   = chrono::high_resolution_clock::now();
+void Profiler::EndTimer(const std::string& name) {
+    auto endTime   = std::chrono::high_resolution_clock::now();
     auto startTime = m_StartTimes[name];
-    m_Timings[name] += chrono::duration_cast<chrono::microseconds>(endTime - startTime).count();
+    m_Timings[name] += std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
 }
 
 void Profiler::PrintResults() {
-    cout << "\n=== Profiling Results (Wall Clock Time) ===\n";
+    std::cout << "\n=== Profiling Results (Wall Clock Time) ===\n";
     long long totalRuntime     = 0;
     long long parallelizedTime = 0;
 
     for (const auto& entry : m_Timings) {
         double timeInSeconds = entry.second / 1e6;
-        cout << "[PROFILE] " << entry.first << " took " << timeInSeconds << "s\n";
+        std::cout << "[PROFILE] " << entry.first << " took " << timeInSeconds << "s\n";
 
-        if (entry.first.find("(par)") != string::npos) { parallelizedTime += entry.second; }
+        if (entry.first.find("(par)") != std::string::npos) { parallelizedTime += entry.second; }
 
         if (entry.first == "TOTAL_RUNTIME") { totalRuntime = entry.second; }
     }
 
     double parallelFraction = 0.0;
     if (totalRuntime > 0) { parallelFraction = static_cast<double>(parallelizedTime) / totalRuntime; }
-    cout << "\nTOTAL_RUNTIME: " << (totalRuntime / 1e6) << "s\n";
-    cout << "PARALLELIZED_TIME: " << (parallelizedTime / 1e6) << "s\n";
-    cout << "PARALLEL_FRACTION: " << parallelFraction * 100.0 << " %\n";
-    cout << "=========================\n";
+    std::cout << "\nTOTAL_RUNTIME: " << (totalRuntime / 1e6) << "s\n";
+    std::cout << "PARALLELIZED_TIME: " << (parallelizedTime / 1e6) << "s\n";
+    std::cout << "PARALLEL_FRACTION: " << parallelFraction * 100.0 << " %\n";
+    std::cout << "=========================\n";
 }
 
 // MEMORY: function to print out maximum memory usage
@@ -54,9 +54,9 @@ void print_max_memory_usage() {
         rssBytes = static_cast<double>(usage.ru_maxrss); // fallback: assume bytes
 #endif
 
-        cout << "MAIN: maximum memory used: " << rssBytes / 1000000.0 << " MB" << endl;
+        std::cout << "MAIN: maximum memory used: " << rssBytes / 1000000.0 << " MB" << std::endl;
     } else {
 
-        cerr << "Error getting resource usage." << endl;
+        std::cerr << "Error getting resource usage." << std::endl;
     }
 }

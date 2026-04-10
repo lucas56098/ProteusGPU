@@ -50,14 +50,16 @@ namespace voronoi {
     double
          compute_cell_volume_centroid_3d(ConvexCell& cell, const double4* vertices, double& cx, double& cy, double& cz);
     void ensure_face_capacity(VMesh* mesh, hsize_t needed);
-    bool collect_face_vertices(ConvexCell& cell, int p, const double4* vertices, std::vector<double4>& face_verts);
-    double compute_face_measure(std::vector<double4>& face_verts, double4 seed, double* cell_volume);
-    void   store_face_data(VMesh*                      mesh,
-                           const std::vector<double4>& face_verts,
-                           int                         neighbor_id,
-                           double                      face_measure,
-                           double4                     seed,
-                           double4                     neighbor);
+    bool
+    collect_face_vertices(ConvexCell& cell, int p, const double4* vertices, double4* face_verts, int* n_face_verts);
+    double compute_face_measure(double4* face_verts, int n_face_verts, double4 seed, double* cell_volume);
+    void   store_face_data(VMesh*         mesh,
+                           const double4* face_verts,
+                           int            n_face_verts,
+                           int            neighbor_id,
+                           double         face_measure,
+                           double4        seed,
+                           double4        neighbor);
 
 #ifdef CPU_DEBUG
     // two-pass parallel extraction:

@@ -45,14 +45,29 @@ namespace hydro {
     // persistent mesh velocity buffer
     static POINT_TYPE* s_v_mesh = nullptr;
 
+    // persistent buffers for hydro_step (allocated once, reused every timestep)
+    static primvars       s_prim_new    = {};
+    static PrimGradients* s_grads       = nullptr;
+    static double*        s_old_volumes = nullptr;
+
+    void free_hydro_buffers() {
+        free_prim_buffer(&s_prim_new);
+        free(s_grads);
+        s_grads = nullptr;
+        free(s_old_volumes);
+        s_old_volumes = nullptr;
+        free(s_v_mesh);
+        s_v_mesh = nullptr;
+    }
+
     // main hydro routine (RK2 step including mesh movement and updated states)
     VMesh* hydro_step(double dt, VMesh* mesh, primvars* primvar) {
 
         // buffers allocated once, reused every timestep (n_hydro is constant)
-        static primvars       prim_new    = {};
-        static PrimGradients* grads       = nullptr;
-        static double*        old_volumes = nullptr;
-        POINT_TYPE*&          v_mesh      = s_v_mesh;
+        primvars&       prim_new    = s_prim_new;
+        PrimGradients*& grads       = s_grads;
+        double*&        old_volumes = s_old_volumes;
+        POINT_TYPE*&    v_mesh      = s_v_mesh;
 
         if (!grads) {
             allocate_prim_buffer(mesh->n_hydro, &prim_new);
@@ -145,8 +160,10 @@ namespace hydro {
                 PrimGradients grad_j   = grads[hydro_index(index_j, mesh)];
 
                 // get normal and geometry
-                double3 normal = compute_face_normal(mesh->seeds[i], mesh->seeds[index_j]);
-                geom    g      = compute_geom(normal);
+                double3 delta = {wrap_periodic_delta(mesh->seeds[index_j].x - mesh->seeds[i].x),
+                                 wrap_periodic_delta(mesh->seeds[index_j].y - mesh->seeds[i].y),
+                                 wrap_periodic_delta(mesh->seeds[index_j].z - mesh->seeds[i].z)};
+                geom    g     = compute_geom(delta);
 
 #ifdef MOVING_MESH
                 // compute face velocity
@@ -197,9 +214,9 @@ namespace hydro {
 
                 // calc flux using riemann solver
 #ifdef RIEMANN_HLL
-                prim flux_ij = riemann_hll(state_l, state_r);
+                flux_t flux_ij = riemann_hll(state_l, state_r);
 #else
-                prim flux_ij = riemann_hllc(state_l, state_r);
+                flux_t flux_ij = riemann_hllc(state_l, state_r);
 #endif
 
 #ifdef MOVING_MESH
@@ -345,7 +362,7 @@ namespace hydro {
 #ifdef dim_3D
         v2_old += st->v.z * st->v.z;
 #endif
-        double P = (_gamma_ - 1.0) * (st->E - 0.5 * st->rho * v2_old);
+        double P = (gamma_eos - 1.0) * (st->E - 0.5 * st->rho * v2_old);
         if (P < 0.0) P = 0.0;
 
         // transform velocities
@@ -360,10 +377,10 @@ namespace hydro {
 #ifdef dim_3D
         v2_new += st->v.z * st->v.z;
 #endif
-        st->E = P / (_gamma_ - 1.0) + 0.5 * st->rho * v2_new;
+        st->E = P / (gamma_eos - 1.0) + 0.5 * st->rho * v2_new;
     }
 
-    void convert_flux_to_lab_frame(prim* flux, POINT_TYPE vel_face_turned) {
+    void convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned) {
         double momx = flux->v.x;
         double momy = flux->v.y;
 
@@ -397,7 +414,7 @@ namespace hydro {
         v2 += state->v.z * state->v.z;
 #endif
         double ekin = 0.5 * state->rho * v2;
-        double emin = ekin + p_floor / (_gamma_ - 1.0);
+        double emin = ekin + p_floor / (gamma_eos - 1.0);
         if (state->E < emin) { state->E = emin; }
     }
 
@@ -450,7 +467,7 @@ namespace hydro {
 #endif
 
             double P   = get_P_ideal_gas(&state_i);
-            double c_i = sqrt(_gamma_ * P / state_i.rho);
+            double c_i = sqrt(gamma_eos * P / state_i.rho);
 
 #ifdef dim_2D
             double R_i = sqrt(mesh->volumes[i] / M_PI);

@@ -3,22 +3,24 @@
 
 namespace hydro {
 
-    prim riemann_hll(prim st_l, prim st_r) {
+    flux_t riemann_hll(prim st_l, prim st_r) {
 
         // calc f_l and f_r
-        prim f_l = get_flux(&st_l);
-        prim f_r = get_flux(&st_r);
+        flux_t f_l = get_flux(&st_l);
+        flux_t f_r = get_flux(&st_r);
 
-        // cache pressure
-        double P_l = get_P_ideal_gas(&st_l);
-        double P_r = get_P_ideal_gas(&st_r);
+        // cache pressure (clamp to zero for numerical safety)
+        double P_l = std::max(0.0, get_P_ideal_gas(&st_l));
+        double P_r = std::max(0.0, get_P_ideal_gas(&st_r));
 
         // wave speeds
-        double SL = std::min(st_l.v.x - sqrt((_gamma_ * P_l) / st_l.rho), st_r.v.x - sqrt((_gamma_ * P_r) / st_r.rho));
-        double SR = std::max(st_l.v.x + sqrt((_gamma_ * P_l) / st_l.rho), st_r.v.x + sqrt((_gamma_ * P_r) / st_r.rho));
+        double SL =
+            std::min(st_l.v.x - sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x - sqrt((gamma_eos * P_r) / st_r.rho));
+        double SR =
+            std::max(st_l.v.x + sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x + sqrt((gamma_eos * P_r) / st_r.rho));
 
         // calc HLL flux
-        prim flux;
+        flux_t flux;
 
         if (SL >= 0) {
             flux = f_l;
@@ -40,26 +42,28 @@ namespace hydro {
         return flux;
     }
 
-    prim riemann_hllc(prim st_l, prim st_r) {
+    flux_t riemann_hllc(prim st_l, prim st_r) {
 
         // calc f_l and f_r
-        prim f_l = get_flux(&st_l);
-        prim f_r = get_flux(&st_r);
+        flux_t f_l = get_flux(&st_l);
+        flux_t f_r = get_flux(&st_r);
 
-        // cache pressure
-        double P_l = get_P_ideal_gas(&st_l);
-        double P_r = get_P_ideal_gas(&st_r);
+        // cache pressure (clamp to zero for numerical safety)
+        double P_l = std::max(0.0, get_P_ideal_gas(&st_l));
+        double P_r = std::max(0.0, get_P_ideal_gas(&st_r));
 
         // wave speeds
-        double SL = std::min(st_l.v.x - sqrt((_gamma_ * P_l) / st_l.rho), st_r.v.x - sqrt((_gamma_ * P_r) / st_r.rho));
-        double SR = std::max(st_l.v.x + sqrt((_gamma_ * P_l) / st_l.rho), st_r.v.x + sqrt((_gamma_ * P_r) / st_r.rho));
+        double SL =
+            std::min(st_l.v.x - sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x - sqrt((gamma_eos * P_r) / st_r.rho));
+        double SR =
+            std::max(st_l.v.x + sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x + sqrt((gamma_eos * P_r) / st_r.rho));
 
         // calculate S_star
         double S_star = (P_r - P_l + st_l.rho * st_l.v.x * (SL - st_l.v.x) - st_r.rho * st_r.v.x * (SR - st_r.v.x)) /
                         (st_l.rho * (SL - st_l.v.x) - st_r.rho * (SR - st_r.v.x));
 
         // HLLC solver for F
-        prim flux;
+        flux_t flux;
         if (0 <= SL) {
             flux = f_l;
         } else if (SL <= 0 && 0 <= S_star) {
@@ -93,12 +97,12 @@ namespace hydro {
         return flux;
     }
 
-    prim get_flux(prim* state) {
+    flux_t get_flux(const prim* state) {
 
         double P = get_P_ideal_gas(state);
 
         // calc flux
-        prim flux;
+        flux_t flux;
 
         flux.rho = state->rho * state->v.x;
         flux.v.x = state->rho * state->v.x * state->v.x + P;
@@ -111,11 +115,11 @@ namespace hydro {
         return flux;
     }
 
-    double get_P_ideal_gas(prim* state) {
+    double get_P_ideal_gas(const prim* state) {
 #ifdef dim_2D
-        return (_gamma_ - 1) * (state->E - (0.5 * state->rho * (state->v.x * state->v.x + state->v.y * state->v.y)));
+        return (gamma_eos - 1) * (state->E - (0.5 * state->rho * (state->v.x * state->v.x + state->v.y * state->v.y)));
 #else
-        return (_gamma_ - 1) *
+        return (gamma_eos - 1) *
                (state->E -
                 (0.5 * state->rho * (state->v.x * state->v.x + state->v.y * state->v.y + state->v.z * state->v.z)));
 #endif

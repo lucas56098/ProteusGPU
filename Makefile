@@ -42,6 +42,7 @@ else
 	OPENMP_MESSAGE = OpenMP disabled
 endif
 
+CXXFLAGS += -MMD -MP
 INCLUDES = -Isrc -Isrc/global
 
 # directories
@@ -209,6 +210,9 @@ $(OUTPUT_DIR):
 run: $(TARGET)
 	@echo "Running application..."
 	@./$(TARGET)
+
+# automatic header dependencies
+-include $(OBJECTS:.o=.d)
 
 # clean build files
 clean:

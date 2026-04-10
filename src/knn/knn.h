@@ -19,6 +19,7 @@
 typedef struct knn_problem {
     int           len_pts;             // number of input points
     int           N_grid;              // grid resolution
+    int           Npow;                // N_grid^DIMENSION (total grid cells)
     int           N_cell_offsets;      // actual number of cells in the offset grid
     int*          d_cell_offsets;      // cell offsets (sorted by rings), Nmax*Nmax*Nmax*Nmax
     double*       d_cell_offset_dists; // stores min dist to the cells in the rings

@@ -32,6 +32,9 @@ struct prim {
     double E = 0;
 };
 
+// flux_t: alias for prim when used to hold flux values (F_rho, F_mv, F_E)
+using flux_t = prim;
+
 // gradient data per cell
 struct PrimGradients {
     GRAD_TYPE rho;

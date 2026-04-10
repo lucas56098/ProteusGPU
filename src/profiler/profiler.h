@@ -7,7 +7,6 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
-using namespace std;
 
 #ifdef ENABLE_PROFILING
 #define PROFILE_START(name) Profiler::StartTimer(name)
@@ -21,13 +20,13 @@ using namespace std;
 
 class Profiler {
   public:
-    static void StartTimer(const string& name);
-    static void EndTimer(const string& name);
+    static void StartTimer(const std::string& name);
+    static void EndTimer(const std::string& name);
     static void PrintResults();
 
   private:
-    static unordered_map<string, chrono::high_resolution_clock::time_point> m_StartTimes;
-    static unordered_map<string, long long>                                 m_Timings;
+    static std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> m_StartTimes;
+    static std::unordered_map<std::string, long long>                                      m_Timings;
 };
 
 inline std::string format_hms(double seconds) {

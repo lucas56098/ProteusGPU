@@ -1,26 +1,18 @@
 #ifndef FINITE_VOLUME_SOLVER_H
 #define FINITE_VOLUME_SOLVER_H
 
-#include "../begrun/begrun.h"
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
-#include "../io/input.h"
-#include "../io/output.h"
-#include "../knn/knn.h"
 #include "../voronoi/periodic_mesh.h"
 #include "../voronoi/voronoi.h"
-#include "riemann.h"
-#include <climits>
 #include <cmath>
-#include <iostream>
-#include <stdio.h>
-#include <vector>
 
 namespace hydro {
 
     // init hydrostruct from IC data
     primvars* init(int n_hydro);
     void      free_prim(primvars** primvar);
+    void      free_hydro_buffers();
 
     // RK2 hydro stepping
     VMesh* hydro_step(double dt, VMesh* mesh, primvars* primvar);
@@ -51,26 +43,11 @@ namespace hydro {
                       POINT_TYPE*      vel_face,
                       POINT_TYPE*      vel_face_turned);
     void convert_state_to_local_frame(prim* st, POINT_TYPE vel_face);
-    void convert_flux_to_lab_frame(prim* flux, POINT_TYPE vel_face_turned);
+    void convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned);
 #endif
-    void        rotate_to_face(prim* state, geom* g);
-    void        rotate_from_face(prim* state, geom* g);
-    void        keep_state_physical(prim* state);
-    inline prim get_state(hsize_t i, const VMesh* mesh, const primvars* primvar) {
-
-        prim    state_i;
-        hsize_t index = hydro_index(i, mesh);
-
-        state_i.rho = primvar->rho[index];
-        state_i.v.x = primvar->v[index].x;
-        state_i.v.y = primvar->v[index].y;
-#ifdef dim_3D
-        state_i.v.z = primvar->v[index].z;
-#endif
-        state_i.E = primvar->E[index];
-
-        return state_i;
-    }
+    void rotate_to_face(prim* state, geom* g);
+    void rotate_from_face(prim* state, geom* g);
+    void keep_state_physical(prim* state);
 
     inline void allocate_prim_buffer(hsize_t n_hydro, primvars* primvar) {
         primvar->rho = (double*)malloc(n_hydro * sizeof(double));

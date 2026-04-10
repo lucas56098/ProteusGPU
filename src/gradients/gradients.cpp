@@ -129,21 +129,33 @@ namespace gradients {
             solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_E_0, b_E_1, b_E_2, &grads[i].E);
 #endif
 
-            // limit gradients using all local faces
+            // limit gradients: find minimum alpha across all faces, then apply once
+            double alpha_rho = 1.0, alpha_vx = 1.0, alpha_vy = 1.0, alpha_E = 1.0;
+#ifdef dim_3D
+            double alpha_vz = 1.0;
+#endif
             for (hsize_t fj = 0; fj < face_count; fj++) {
                 hsize_t    face_idx     = face_start + fj;
                 hsize_t    neighbor_raw = (hsize_t)mesh->neighbor_cell[face_idx];
                 POINT_TYPE dx           = point_diff(mesh->seeds[neighbor_raw], mesh->seeds[i]);
                 POINT_TYPE d            = point_mul(0.5, dx);
 
-                limit_single_gradient(state_i.rho, min_rho, max_rho, d, &grads[i].rho);
-                limit_single_gradient(state_i.v.x, min_vx, max_vx, d, &grads[i].vx);
-                limit_single_gradient(state_i.v.y, min_vy, max_vy, d, &grads[i].vy);
+                alpha_rho = std::min(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads[i].rho));
+                alpha_vx  = std::min(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads[i].vx));
+                alpha_vy  = std::min(alpha_vy, limit_single_gradient(state_i.v.y, min_vy, max_vy, d, grads[i].vy));
 #ifdef dim_3D
-                limit_single_gradient(state_i.v.z, min_vz, max_vz, d, &grads[i].vz);
+                alpha_vz = std::min(alpha_vz, limit_single_gradient(state_i.v.z, min_vz, max_vz, d, grads[i].vz));
 #endif
-                limit_single_gradient(state_i.E, min_E, max_E, d, &grads[i].E);
+                alpha_E = std::min(alpha_E, limit_single_gradient(state_i.E, min_E, max_E, d, grads[i].E));
             }
+
+            grads[i].rho = point_mul(alpha_rho, grads[i].rho);
+            grads[i].vx  = point_mul(alpha_vx, grads[i].vx);
+            grads[i].vy  = point_mul(alpha_vy, grads[i].vy);
+#ifdef dim_3D
+            grads[i].vz = point_mul(alpha_vz, grads[i].vz);
+#endif
+            grads[i].E = point_mul(alpha_E, grads[i].E);
         }
 
         PROFILE_END("GRADIENTS (par)");
@@ -165,11 +177,11 @@ namespace gradients {
 #endif
 
         // pressure and its spatial derivatives
-        const double P     = (_gamma_ - 1.0) * (state_i.E - 0.5 * state_i.rho * v2);
-        const double dP_dx = (_gamma_ - 1.0) * (grad_i.E.x - 0.5 * (v2 * grad_i.rho.x + 2.0 * state_i.rho * kinx));
-        const double dP_dy = (_gamma_ - 1.0) * (grad_i.E.y - 0.5 * (v2 * grad_i.rho.y + 2.0 * state_i.rho * kiny));
+        const double P     = (gamma_eos - 1.0) * (state_i.E - 0.5 * state_i.rho * v2);
+        const double dP_dx = (gamma_eos - 1.0) * (grad_i.E.x - 0.5 * (v2 * grad_i.rho.x + 2.0 * state_i.rho * kinx));
+        const double dP_dy = (gamma_eos - 1.0) * (grad_i.E.y - 0.5 * (v2 * grad_i.rho.y + 2.0 * state_i.rho * kiny));
 #ifdef dim_3D
-        const double dP_dz = (_gamma_ - 1.0) * (grad_i.E.z - 0.5 * (v2 * grad_i.rho.z + 2.0 * state_i.rho * kinz));
+        const double dP_dz = (gamma_eos - 1.0) * (grad_i.E.z - 0.5 * (v2 * grad_i.rho.z + 2.0 * state_i.rho * kinz));
 #endif
 
         // compute drho/dt
@@ -195,10 +207,13 @@ namespace gradients {
 #endif
     }
 
-    // arepo-like face limiter for one scalar gradient
-    inline void limit_single_gradient(
-        const double value, const double min_value, const double max_value, const POINT_TYPE& d, GRAD_TYPE* grad) {
-        double dp  = point_dot(*grad, d);
+    // arepo-like face limiter: returns limiting factor for one scalar at one face
+    inline double limit_single_gradient(const double      value,
+                                        const double      min_value,
+                                        const double      max_value,
+                                        const POINT_TYPE& d,
+                                        const GRAD_TYPE&  grad) {
+        double dp  = point_dot(grad, d);
         double fac = 1.0;
 
         if (dp > 0.0) {
@@ -222,7 +237,7 @@ namespace gradients {
         if (fac < 0.0) { fac = 0.0; }
         if (fac > 1.0) { fac = 1.0; }
 
-        *grad = point_mul(fac, *grad);
+        return fac;
     }
 
 } // namespace gradients

@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <vector>
 
 // CONSTRUCTION SITE: nothing works yet :D
 
@@ -20,6 +19,7 @@ namespace knn {
 
         knn->len_pts             = len_pts;
         knn->N_grid              = std::max(1, (int)round(pow(len_pts / 3.1f, 1.0f / (float)DIMENSION)));
+        knn->Npow                = (int)pow(knn->N_grid, DIMENSION);
         knn->d_cell_offsets      = NULL;
         knn->d_cell_offset_dists = NULL;
         knn->d_permutation       = NULL;
@@ -95,7 +95,7 @@ namespace knn {
         POINT_TYPE* d_points = (POINT_TYPE*)malloc(len_pts * sizeof(POINT_TYPE));
         memcpy(d_points, pts, len_pts * sizeof(POINT_TYPE)); // input pts (temporary), freed after sorting into grid
 
-        int Npow        = pow(knn->N_grid, DIMENSION);
+        int Npow        = knn->Npow;
         knn->d_counters = (int*)calloc(Npow, sizeof(int)); // pts per grid cell
         knn->d_ptrs     = (int*)calloc(Npow, sizeof(int)); // cell ptrs to start in d_stored_points
 
@@ -129,7 +129,7 @@ namespace knn {
         // -------- reserve memory ranges for each cell --------
         {
             int threadsPerBlock = 4;
-            int blocksPerGrid   = (pow(knn->N_grid, DIMENSION) + threadsPerBlock - 1) / threadsPerBlock;
+            int blocksPerGrid   = (knn->Npow + threadsPerBlock - 1) / threadsPerBlock;
 
 #ifdef CPU_DEBUG
             cpu_reserve(blocksPerGrid, threadsPerBlock, knn->N_grid, knn->d_counters, knn->d_globcounter, knn->d_ptrs);
@@ -139,7 +139,7 @@ namespace knn {
         // -------- store points in their cell-organized locations -------
         {
             // reset counters: we'll reuse them for atomic allocation within each cell's range
-            memset(knn->d_counters, 0x00, pow(knn->N_grid, DIMENSION) * sizeof(int));
+            memset(knn->d_counters, 0x00, knn->Npow * sizeof(int));
 
             int threadsPerBlock = 256;
             int blocksPerGrid   = (len_pts + threadsPerBlock - 1) / threadsPerBlock;
@@ -177,11 +177,14 @@ namespace knn {
     // uses d_counters to reserve memory ranges for each cell, stores in d_ptrs
     void cpu_reserve(
         int blocksPerGrid, int threadsPerBlock, int N_grid, const int* d_counters, int* d_globcounter, int* d_ptrs) {
+        int Npow_local = 1;
+        for (int d = 0; d < DIMENSION; d++)
+            Npow_local *= N_grid;
         for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
             for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
                 int id = threadsPerBlock * blockId + threadId;
 
-                if (id < pow(N_grid, DIMENSION)) {
+                if (id < Npow_local) {
                     int count = d_counters[id]; // read how many points are in this cell
                     if (count > 0) {
                         d_ptrs[id] = atomicAdd(d_globcounter, count); // store starting pos in ptrs
@@ -245,6 +248,7 @@ namespace knn {
 
         const POINT_TYPE* d_stored_points     = knn->d_stored_points;
         int               N_grid              = knn->N_grid;
+        int               Npow_local          = knn->Npow;
         const int*        d_ptrs              = knn->d_ptrs;
         const int*        d_counters          = knn->d_counters;
         int               N_cell_offsets      = knn->N_cell_offsets;
@@ -267,7 +271,7 @@ namespace knn {
 
             int cell = cell_in + d_cell_offsets[search_cell_index];
 
-            if (cell >= 0 && cell < (int)pow(N_grid, DIMENSION)) {
+            if (cell >= 0 && cell < Npow_local) {
                 int cell_base = d_ptrs[cell];
                 int num       = d_counters[cell];
 
@@ -315,7 +319,7 @@ namespace knn {
     }
 
     void heapsort(unsigned int* keys, double* vals, int size) {
-        while (size) {
+        while (size > 1) {
             swap_on_device(vals[0], vals[size - 1]);
             swap_on_device(keys[0], keys[size - 1]);
             heapify(keys, vals, 0, --size);

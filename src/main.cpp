@@ -16,9 +16,6 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 
-#include <stdio.h>
-#include <vector>
-
 /*========================================================================
           _____           _                    _____ _____  _    _
          |  __ \         | |                  / ____|  __ \| |  | |
@@ -56,11 +53,11 @@ int main(int argc, char* argv[]) {
     std::cout << "HYDRO: started" << std::endl;
 
     double t_sim = 0.0;
-    double t_end = std::stof(input.getParameter("time_end"));
-    double CFL   = std::stof(input.getParameter("CFL_frac"));
+    double t_end = input.getParameterDouble("time_end");
+    double CFL   = input.getParameterDouble("CFL_frac");
     int    step  = 0;
 
-    double output_dt    = std::stof(input.getParameter("output_dt"));
+    double output_dt    = input.getParameterDouble("output_dt");
     double t_nextoutput = t_sim + output_dt;
     int    snap_num = 0, next_log = 1;
 
@@ -98,7 +95,7 @@ int main(int argc, char* argv[]) {
 
 // write output
 #ifdef USE_HDF5
-        if (t_sim >= t_nextoutput || t_sim == t_end) {
+        if (t_sim >= t_nextoutput || t_sim >= t_end) {
 
             output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
 
@@ -114,6 +111,7 @@ int main(int argc, char* argv[]) {
     // delete mesh & hydro
     voronoi::free_vmesh(mesh);
     hydro::free_prim(&primvar);
+    hydro::free_hydro_buffers();
 
     const double total_wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
     std::cout << "MAIN: Runtime = " << format_hms(total_wall_s) << std::endl;

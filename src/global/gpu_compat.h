@@ -45,9 +45,19 @@ struct int3 {
 };
 
 inline int atomicAdd(int* addr, int val) {
+#ifdef USE_OPENMP
+    int old;
+#pragma omp atomic capture
+    {
+        old = *addr;
+        *addr += val;
+    }
+    return old;
+#else
     int old = *addr;
     *addr += val;
     return old;
+#endif
 }
 #endif
 

@@ -5,8 +5,7 @@
 #include "gpu_compat.h"
 #include "structs.h"
 
-// compute face normal and geometry basis
-double3 compute_face_normal(double3 seed_i, double3 seed_j);
-geom    compute_geom(double3 normal);
+// compute orthonormal basis from raw (unnormalized) direction vector
+geom compute_geom(double3 delta);
 
 #endif // GEOMETRY_H

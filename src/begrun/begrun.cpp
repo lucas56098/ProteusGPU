@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
-#include <stdio.h>
 #include <thread>
 
 namespace begrun {

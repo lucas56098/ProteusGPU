@@ -1,17 +1,8 @@
 #ifndef PERIODIC_MESH_H
 #define PERIODIC_MESH_H
 
-#include "../begrun/begrun.h"
 #include "../global/allvars.h"
-#include "../io/input.h"
-#include "../io/output.h"
-#include "../knn/knn.h"
 #include "../voronoi/voronoi.h"
-#include <climits>
-#include <cmath>
-#include <iostream>
-#include <stdio.h>
-#include <vector>
 
 namespace voronoi {
 
