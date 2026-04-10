@@ -35,3 +35,6 @@ _MAX_T_=96              # max number of triangles per Voronoi cell
 _KNN_BLOCK_SIZE_=32     # number of threads per block for KNN
 _VORO_BLOCK_SIZE_=16    # number of threads per block for Voronoi
 _OMP_HYDRO_THREADS_=16 # number of threads for hydro solver
+
+# Use float instead of double for gradients, face_area, f_mid (reduces memory)
+SAVE_MEMORY
