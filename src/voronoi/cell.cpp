@@ -870,7 +870,7 @@ namespace voronoi {
             double total_area = 0.0;
             double cx = 0, cy = 0, cz = 0;
 
-            for (size_t i = 1; i + 1 < face_verts.size(); i++) {
+            for (size_t i = 1; i + 1 < (size_t)n_face_verts; i++) {
                 double4 v0 = face_verts[0];
                 double4 v1 = face_verts[i];
                 double4 v2 = face_verts[i + 1];
