@@ -37,10 +37,12 @@ int main(int argc, char* argv[]) {
 
     const auto wall_start = std::chrono::steady_clock::now();
 
-    // say hi and fill/prepare structs
-    begrun::begrun(argc, argv);
+    // say hi, load params, load IC or restart snapshot
+    begrun::StartState state    = begrun::begrun(argc, argv);
+    double             t_sim    = state.t_sim;
+    int                snap_num = state.snap_num;
 
-    // init hydro values
+    // init hydro values from icData (either fresh IC or restarted snapshot)
     primvars* primvar = hydro::init(icData.seedpos_dims[0]);
 
     // compute voronoi mesh
@@ -50,21 +52,27 @@ int main(int argc, char* argv[]) {
     begrun::free_initial_conditions();
 
     // start timestep loop
-    std::cout << "HYDRO: started" << std::endl;
+    if (t_sim > 0.0) {
+        std::cout << "HYDRO: restarted from t = " << t_sim << " (snap_num = " << snap_num << ")" << std::endl;
+    } else {
+        std::cout << "HYDRO: started" << std::endl;
+    }
 
-    double t_sim = 0.0;
-    double t_end = input.getParameterDouble("time_end");
-    double CFL   = input.getParameterDouble("CFL_frac");
-    int    step  = 0;
+    const double t_start = t_sim;
+    double       t_end   = input.getParameterDouble("time_end");
+    double       CFL     = input.getParameterDouble("CFL_frac");
+    int          step    = 0;
 
     double output_dt    = input.getParameterDouble("output_dt");
     double t_nextoutput = t_sim + output_dt;
-    int    snap_num = 0, next_log = 1;
+    int    next_log     = 1;
 
-// write first snapshot at t=0
+// write first snapshot at t=0 (only for fresh starts)
 #ifdef USE_HDF5
-    output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
-    snap_num += 1;
+    if (snap_num == 0) {
+        output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
+        snap_num += 1;
+    }
 #endif
 
     PROFILE_START("HYDRO_MAIN");
@@ -84,8 +92,8 @@ int main(int argc, char* argv[]) {
         if (step >= next_log || t_sim >= t_end) {
             const double elapsed_s =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
-            std::cout << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
-                      << "  ETA = " << format_hms((t_sim > 0.0) ? elapsed_s * (t_end - t_sim) / t_sim : 0.0)
+            std::cout << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt << "  ETA = "
+                      << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
                       << std::endl;
             const int guess = (elapsed_s > 1e-12) ? static_cast<int>(std::round(3.0 * step / elapsed_s)) : 1;
             const int bucket =

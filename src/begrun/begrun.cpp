@@ -5,13 +5,14 @@
 #include "../profiler/profiler.h"
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 
 namespace begrun {
 
     // initalize Proteus
-    void begrun(int argc, char* argv[]) {
+    StartState begrun(int argc, char* argv[]) {
 
         PROFILE_START("BEGRUN");
 
@@ -37,12 +38,33 @@ namespace begrun {
         // load param.txt
         input = loadInputFiles(argc, argv);
 
-        // read IC file
-        if (!input.readICFile(input.getParameter("ic_file"), icData)) { exit(EXIT_FAILURE); }
+        // parse restart flag: ./ProteusGPU [param.txt] [0|1]
+        // 0 = fresh start (default), 1 = restart from latest snapshot
+        int restart_flag = (argc > 2) ? std::atoi(argv[2]) : 0;
 
-        // adapt buff for periodic bc to IC resolution (naive, will have to be improved later)
-        buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) *
-               4; // for approx unform grid this would be 4 layers of ghost points...
+        StartState state = {0.0, 0};
+
+        if (restart_flag == 1) {
+            // find and load latest snapshot
+            std::string out_dir  = input.getParameter("output_directory");
+            int         latest_n = InputHandler::findLatestSnapshot(out_dir);
+            if (latest_n < 0) {
+                std::cerr << "RESTART: Error! No snapshots found in " << out_dir << std::endl;
+                exit(EXIT_FAILURE);
+            }
+
+            std::string snap_path = out_dir + "snapshot_" + std::to_string(latest_n) + ".hdf5";
+            std::cout << "RESTART: Loading snapshot " << snap_path << std::endl;
+
+            if (!input.readSnapshotFile(snap_path, icData, state.t_sim)) { exit(EXIT_FAILURE); }
+            state.snap_num = latest_n + 1;
+        } else {
+            // fresh start: load IC file
+            if (!input.readICFile(input.getParameter("ic_file"), icData)) { exit(EXIT_FAILURE); }
+        }
+
+        // adapt buff for periodic bc to resolution
+        buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) * 4;
 #ifdef MOVING_MESH
         // read mesh regularization parameters
         CellShapingSpeed  = input.getParameterDouble("CellShapingSpeed");
@@ -56,6 +78,7 @@ namespace begrun {
         if (!output.initialize()) { exit(EXIT_FAILURE); }
 
         PROFILE_END("BEGRUN");
+        return state;
     }
 
     void free_initial_conditions() {

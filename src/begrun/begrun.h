@@ -14,9 +14,16 @@
 
 namespace begrun {
 
-    // called in main
-    void begrun(int argc, char* argv[]);
-    void free_initial_conditions();
+    // simulation start state returned by begrun
+    struct StartState {
+        double t_sim;
+        int    snap_num;
+    };
+
+    // called in main: ./ProteusGPU [param.txt] [restart_flag]
+    // restart_flag: 0 = fresh start (default), 1 = restart from latest snapshot
+    StartState begrun(int argc, char* argv[]);
+    void       free_initial_conditions();
 
     // helpers
     void         print_banner();

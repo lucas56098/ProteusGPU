@@ -1,6 +1,7 @@
 #include "input.h"
 #include "../global/allvars.h"
 #include <algorithm>
+#include <dirent.h>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -109,7 +110,33 @@ bool InputHandler::getParameterBool(const std::string& key) const {
                              "' to bool (expected: true/false/1/0/yes/no/on/off)");
 }
 
+// check if a parameter exists
+bool InputHandler::hasParameter(const std::string& key) const {
+    return parameters.find(key) != parameters.end();
+}
+
 #ifdef USE_HDF5
+
+// find the latest snapshot_N.hdf5 in a directory, return N (or -1 if none found)
+int InputHandler::findLatestSnapshot(const std::string& dir) {
+    DIR* d = opendir(dir.c_str());
+    if (!d) return -1;
+    int            max_num = -1;
+    struct dirent* entry;
+    while ((entry = readdir(d)) != NULL) {
+        std::string name(entry->d_name);
+        if (name.size() > 14 && name.substr(0, 9) == "snapshot_" && name.substr(name.size() - 5) == ".hdf5") {
+            std::string num_str = name.substr(9, name.size() - 14);
+            try {
+                int num = std::stoi(num_str);
+                if (num > max_num) max_num = num;
+            } catch (...) {}
+        }
+    }
+    closedir(d);
+    return max_num;
+}
+
 // opens IC.hdf5 file and reads initial conditions into ICData struct
 // will get extended if additional fields get added to IC file ...
 bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
@@ -295,6 +322,138 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     H5Fclose(file_id);
 
     std::cout << "INPUT: IC file loaded successfully!" << std::endl;
+    return true;
+}
+
+// read a snapshot file into ICData for restart (seeds from cells/seeds, hydro from hydro/)
+bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData, double& t_sim) {
+
+    std::ifstream f(filename);
+    if (!f.good()) {
+        std::cerr << "INPUT: Error! Snapshot file [" << filename << "] does not exist!" << std::endl;
+        return false;
+    }
+
+    hid_t file_id = H5Fopen(filename.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (file_id < 0) {
+        std::cerr << "INPUT: Error! Could not open snapshot file: " << filename << std::endl;
+        return false;
+    }
+
+    // read header/time
+    hid_t header_group = H5Gopen(file_id, "header", H5P_DEFAULT);
+    if (header_group < 0) {
+        std::cerr << "INPUT: Error! Could not open header group in snapshot" << std::endl;
+        H5Fclose(file_id);
+        return false;
+    }
+
+    hid_t attr_dim = H5Aopen(header_group, "dimension", H5P_DEFAULT);
+    if (attr_dim >= 0) {
+        H5Aread(attr_dim, H5T_NATIVE_INT, &icData.header.dimension);
+        H5Aclose(attr_dim);
+    }
+
+#ifdef dim_2D
+    if (icData.header.dimension != 2)
+#else
+    if (icData.header.dimension != 3)
+#endif
+    {
+        std::cerr << "INPUT: Error! Snapshot dimension mismatch! Snapshot: " << icData.header.dimension
+                  << "D, compiled: " << DIMENSION << "D" << std::endl;
+        H5Gclose(header_group);
+        H5Fclose(file_id);
+        return false;
+    }
+
+    hid_t attr_time = H5Aopen(header_group, "time", H5P_DEFAULT);
+    if (attr_time >= 0) {
+        H5Aread(attr_time, H5T_NATIVE_DOUBLE, &t_sim);
+        H5Aclose(attr_time);
+    } else {
+        std::cerr << "INPUT: Error! Could not read time attribute from snapshot" << std::endl;
+        H5Gclose(header_group);
+        H5Fclose(file_id);
+        return false;
+    }
+    H5Gclose(header_group);
+
+    // read cells/seeds -> icData.seedpos
+    hid_t cells_group = H5Gopen(file_id, "cells", H5P_DEFAULT);
+    if (cells_group < 0) {
+        std::cerr << "INPUT: Error! Could not open cells group in snapshot" << std::endl;
+        H5Fclose(file_id);
+        return false;
+    }
+
+    hid_t dataset_id = H5Dopen(cells_group, "seeds", H5P_DEFAULT);
+    if (dataset_id < 0) {
+        std::cerr << "INPUT: Error! Could not open seeds dataset in snapshot" << std::endl;
+        H5Gclose(cells_group);
+        H5Fclose(file_id);
+        return false;
+    }
+
+    hid_t dataspace_id = H5Dget_space(dataset_id);
+    icData.seedpos_dims.resize(2);
+    H5Sget_simple_extent_dims(dataspace_id, icData.seedpos_dims.data(), NULL);
+    hsize_t totalElements = icData.seedpos_dims[0] * icData.seedpos_dims[1];
+    icData.seedpos.resize(totalElements);
+    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.seedpos.data());
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+    H5Gclose(cells_group);
+
+    // read hydro/rho
+    hid_t hydro_group = H5Gopen(file_id, "hydro", H5P_DEFAULT);
+    if (hydro_group < 0) {
+        std::cerr << "INPUT: Error! Could not open hydro group in snapshot" << std::endl;
+        H5Fclose(file_id);
+        return false;
+    }
+
+    hsize_t n = icData.seedpos_dims[0];
+
+    dataset_id = H5Dopen(hydro_group, "rho", H5P_DEFAULT);
+    if (dataset_id < 0) {
+        std::cerr << "INPUT: Error! Could not open rho dataset in snapshot" << std::endl;
+        H5Gclose(hydro_group);
+        H5Fclose(file_id);
+        return false;
+    }
+    icData.rho.resize(n);
+    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.rho.data());
+    H5Dclose(dataset_id);
+
+    // read hydro/vel
+    dataset_id = H5Dopen(hydro_group, "vel", H5P_DEFAULT);
+    if (dataset_id < 0) {
+        std::cerr << "INPUT: Error! Could not open vel dataset in snapshot" << std::endl;
+        H5Gclose(hydro_group);
+        H5Fclose(file_id);
+        return false;
+    }
+    icData.vel.resize(n * DIMENSION);
+    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.vel.data());
+    H5Dclose(dataset_id);
+
+    // read hydro/Energy
+    dataset_id = H5Dopen(hydro_group, "Energy", H5P_DEFAULT);
+    if (dataset_id < 0) {
+        std::cerr << "INPUT: Error! Could not open Energy dataset in snapshot" << std::endl;
+        H5Gclose(hydro_group);
+        H5Fclose(file_id);
+        return false;
+    }
+    icData.Energy.resize(n);
+    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.Energy.data());
+    H5Dclose(dataset_id);
+
+    H5Gclose(hydro_group);
+    H5Fclose(file_id);
+
+    std::cout << "INPUT: Snapshot loaded successfully! (" << n << " cells, t = " << t_sim << ")" << std::endl;
     return true;
 }
 #endif
