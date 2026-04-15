@@ -69,9 +69,7 @@ namespace begrun {
         buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) * 4;
 
 #ifdef MOVING_MESH
-        // read mesh regularization parameters
-        CellShapingSpeed  = input.getParameterDouble("CellShapingSpeed");
-        CellShapingFactor = input.getParameterDouble("CellShapingFactor");
+        // mesh regularization parameters (compile-time constants from Config.sh)
         std::cout << "BEGRUN: CellShapingSpeed  = " << CellShapingSpeed << std::endl;
         std::cout << "BEGRUN: CellShapingFactor = " << CellShapingFactor << std::endl;
 #endif

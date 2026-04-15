@@ -17,10 +17,14 @@ USE_HDF5                    # HDF5 for IC and output (mandatory)
 # hydro
 ################################################################
 
-MOVING_MESH                 # enable moving mesh hydrodynamics
+MOVING_MESH                         # enable moving mesh hydrodynamics
+_CELL_SHAPING_SPEED_=0.7            # mesh regularization speed fraction
+_CELL_SHAPING_FACTOR_=0.2           # regularization threshold in cell radii
 
-#RIEMANN_HLL                # use HLL riemann solver
-RIEMANN_HLLC                # use HLLC riemann solver
+_GAMMA_EOS_=1.6666666666666667      # adiabatic index
+
+#RIEMANN_HLL                        # use HLL riemann solver
+RIEMANN_HLLC                        # use HLLC riemann solver
 
 ################################################################
 # parallelization

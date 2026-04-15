@@ -10,8 +10,8 @@ namespace voronoi {
 
     // --- Cell volume/area and centroid ---
     double compute_cell_area_centroid_2d(const double4* vertices, int nb_t, double& cx, double& cy);
-    double
-    compute_cell_volume_centroid_3d(ConvexCell& cell, const double4* vertices, double& cx, double& cy, double& cz);
+    double compute_cell_volume_centroid_3d(
+        const ConvexCell& cell, const double4* vertices, double& cx, double& cy, double& cz);
 
     // --- Face geometry ---
     double compute_face_measure(double4* face_verts, int n_face_verts, double4 seed, double* cell_volume);
@@ -32,7 +32,7 @@ namespace voronoi {
             double4 e1     = minus4(face_verts[i], face_verts[0]);
             double4 e2     = minus4(face_verts[i + 1], face_verts[0]);
             double4 cr     = cross3(e1, e2);
-            double  t_area = 0.5 * std::sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z);
+            double  t_area = 0.5 * sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z);
             cx += t_area * (face_verts[0].x + face_verts[i].x + face_verts[i + 1].x) / 3.0;
             cy += t_area * (face_verts[0].y + face_verts[i].y + face_verts[i + 1].y) / 3.0;
             cz += t_area * (face_verts[0].z + face_verts[i].z + face_verts[i + 1].z) / 3.0;

@@ -1,6 +1,5 @@
 #include "geometry.h"
 #include "cell.h"
-#include <algorithm>
 #include <cmath>
 #include <iostream>
 
@@ -17,24 +16,36 @@ namespace voronoi {
         mx /= nb_t;
         my /= nb_t;
 
-        // sort by angle using cross-product comparison (avoids expensive atan2)
+        // sort by angle using cross-product comparison (insertion sort — GPU safe)
         int order[_MAX_T_];
         for (int i = 0; i < nb_t; i++) {
             order[i] = i;
         }
-        std::sort(order, order + nb_t, [&](int a, int b) {
-            double ax = vertices[a].x - mx, ay = vertices[a].y - my;
-            double bx = vertices[b].x - mx, by = vertices[b].y - my;
-            // half-plane: positive y (or positive x when y==0) comes first
-            int ha = (ay > 0.0) || (ay == 0.0 && ax > 0.0) ? 0 : 1;
-            int hb = (by > 0.0) || (by == 0.0 && bx > 0.0) ? 0 : 1;
-            if (ha != hb) return ha < hb;
-            // same half-plane: use cross product for ordering
-            double cross = ax * by - ay * bx;
-            if (cross != 0.0) return cross > 0.0;
-            // collinear: closer point first
-            return (ax * ax + ay * ay) < (bx * bx + by * by);
-        });
+        for (int i = 1; i < nb_t; i++) {
+            int    key = order[i];
+            double kx = vertices[key].x - mx, ky = vertices[key].y - my;
+            int    hk = (ky > 0.0) || (ky == 0.0 && kx > 0.0) ? 0 : 1;
+            int    j  = i - 1;
+            while (j >= 0) {
+                int    oj  = order[j];
+                double ojx = vertices[oj].x - mx, ojy = vertices[oj].y - my;
+                int    hj = (ojy > 0.0) || (ojy == 0.0 && ojx > 0.0) ? 0 : 1;
+                bool   should_swap;
+                if (hj != hk) {
+                    should_swap = hj > hk;
+                } else {
+                    double cross = ojx * ky - ojy * kx;
+                    if (cross != 0.0)
+                        should_swap = cross < 0.0;
+                    else
+                        should_swap = (ojx * ojx + ojy * ojy) > (kx * kx + ky * ky);
+                }
+                if (!should_swap) break;
+                order[j + 1] = order[j];
+                j--;
+            }
+            order[j + 1] = key;
+        }
 
         double area2  = 0.0;
         double Cx_num = 0.0;
@@ -52,18 +63,18 @@ namespace voronoi {
             Cy_num += (yi + yj) * cross;
         }
 
-        if (std::fabs(area2) > 1e-14) {
+        if (fabs(area2) > 1e-14) {
             cx = Cx_num / (3.0 * area2);
             cy = Cy_num / (3.0 * area2);
         }
 
-        return 0.5 * std::fabs(area2);
+        return 0.5 * fabs(area2);
     }
 #endif
 
     // compute exact volume and centroid of a 3D Voronoi cell via tetrahedral decomposition
-    double
-    compute_cell_volume_centroid_3d(ConvexCell& cell, const double4* vertices, double& cx, double& cy, double& cz) {
+    double compute_cell_volume_centroid_3d(
+        const ConvexCell& cell, const double4* vertices, double& cx, double& cy, double& cz) {
         double total_volume = 0.0;
         double wx = 0.0, wy = 0.0, wz = 0.0;
 
@@ -88,7 +99,13 @@ namespace voronoi {
             fc.y /= n_fv;
             fc.z /= n_fv;
             double4 outward = minus4(fc, cell.voro_seed);
-            if (dot3(face_cross, outward) < 0) std::reverse(face_verts, face_verts + n_fv);
+            if (dot3(face_cross, outward) < 0) {
+                for (int lo = 0, hi = n_fv - 1; lo < hi; lo++, hi--) {
+                    double4 tmp    = face_verts[lo];
+                    face_verts[lo] = face_verts[hi];
+                    face_verts[hi] = tmp;
+                }
+            }
 
             // decompose face into triangles, form tets with seed as apex
             for (int i = 1; i + 1 < n_fv; i++) {
@@ -106,7 +123,7 @@ namespace voronoi {
             }
         }
 
-        if (std::fabs(total_volume) > 1e-30) {
+        if (fabs(total_volume) > 1e-30) {
             cx = wx / total_volume;
             cy = wy / total_volume;
             cz = wz / total_volume;
@@ -116,7 +133,7 @@ namespace voronoi {
             cz = cell.voro_seed.z;
         }
 
-        return std::fabs(total_volume);
+        return fabs(total_volume);
     }
 
     // compute face measure (length in 2D, area in 3D)
@@ -128,7 +145,7 @@ namespace voronoi {
         (void)cell_volume;
         double dx    = face_verts[1].x - face_verts[0].x;
         double dy    = face_verts[1].y - face_verts[0].y;
-        face_measure = std::sqrt(dx * dx + dy * dy);
+        face_measure = sqrt(dx * dx + dy * dy);
 #else
         // ensure face vertices are oriented consistently (outward from seed)
         {
@@ -145,7 +162,13 @@ namespace voronoi {
             centroid.y /= n_face_verts;
             centroid.z /= n_face_verts;
             double4 outward = minus4(centroid, seed);
-            if (dot3(face_cross, outward) < 0) { std::reverse(face_verts, face_verts + n_face_verts); }
+            if (dot3(face_cross, outward) < 0) {
+                for (int lo = 0, hi = n_face_verts - 1; lo < hi; lo++, hi--) {
+                    double4 tmp    = face_verts[lo];
+                    face_verts[lo] = face_verts[hi];
+                    face_verts[hi] = tmp;
+                }
+            }
         }
 
         // face area via fan triangulation from vertex 0
@@ -154,7 +177,7 @@ namespace voronoi {
             double4 edge1 = minus4(face_verts[i], v0);
             double4 edge2 = minus4(face_verts[i + 1], v0);
             double4 cr    = cross3(edge1, edge2);
-            face_measure += 0.5 * std::sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z);
+            face_measure += 0.5 * sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z);
         }
 
         // contribute to cell volume using divergence theorem

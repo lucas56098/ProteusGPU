@@ -18,8 +18,12 @@ namespace voronoi {
         return reinterpret_cast<uchar*>(&(triangles[t]))[i];
     }
 
+    inline uchar ith_plane(const VERT_TYPE* triangles, uchar t, int i) {
+        return reinterpret_cast<const uchar*>(&(triangles[t]))[i];
+    }
+
     // returns true if vertex at index t_idx references plane p
-    static inline bool vert_references_plane(VERT_TYPE* triangles, int t_idx, uchar p) {
+    static inline bool vert_references_plane(const VERT_TYPE* triangles, int t_idx, uchar p) {
         for (int d = 0; d < DIMENSION; d++) {
             if (ith_plane(triangles, (uchar)t_idx, d) == p) return true;
         }
@@ -110,7 +114,9 @@ namespace voronoi {
         while (i < nb_t) { // for all vertices of the cell
             if (vert_is_in_conflict(triangle[i], eqn)) {
                 nb_t--;
-                std::swap(triangle[i], triangle[nb_t]);
+                VERT_TYPE tmp  = triangle[i];
+                triangle[i]    = triangle[nb_t];
+                triangle[nb_t] = tmp;
                 nb_r++;
             } else {
                 i++;
@@ -169,12 +175,12 @@ namespace voronoi {
 #ifdef dim_2D
         double det = det3x3(pi1.x, pi2.x, eqn.x, pi1.y, pi2.y, eqn.y, pi1.w, pi2.w, eqn.w);
 
-        double maxx = std::max({std::fabs(pi1.x), std::fabs(pi2.x), std::fabs(eqn.x)});
-        double maxy = std::max({std::fabs(pi1.y), std::fabs(pi2.y), std::fabs(eqn.y)});
-        double maxw = std::max({std::fabs(pi1.w), std::fabs(pi2.w), std::fabs(eqn.w)});
+        double maxx = fmax(fmax(fabs(pi1.x), fabs(pi2.x)), fabs(eqn.x));
+        double maxy = fmax(fmax(fabs(pi1.y), fabs(pi2.y)), fabs(eqn.y));
+        double maxw = fmax(fmax(fabs(pi1.w), fabs(pi2.w)), fabs(eqn.w));
 
         // bound for 3x3 determinant with entries from rows (x, y, w)
-        double max_max = std::max({maxx, maxy, maxw});
+        double max_max = fmax(fmax(maxx, maxy), maxw);
         double eps     = 1e-14 * maxx * maxy * maxw;
         eps *= max_max;
 #else
@@ -198,9 +204,9 @@ namespace voronoi {
                             pi3.w,
                             eqn.w);
 
-        double maxx = std::max({std::fabs(pi1.x), std::fabs(pi2.x), std::fabs(pi3.x), std::fabs(eqn.x)});
-        double maxy = std::max({std::fabs(pi1.y), std::fabs(pi2.y), std::fabs(pi3.y), std::fabs(eqn.y)});
-        double maxz = std::max({std::fabs(pi1.z), std::fabs(pi2.z), std::fabs(pi3.z), std::fabs(eqn.z)});
+        double maxx = fmax(fmax(fabs(pi1.x), fabs(pi2.x)), fmax(fabs(pi3.x), fabs(eqn.x)));
+        double maxy = fmax(fmax(fabs(pi1.y), fabs(pi2.y)), fmax(fabs(pi3.y), fabs(eqn.y)));
+        double maxz = fmax(fmax(fabs(pi1.z), fabs(pi2.z)), fmax(fabs(pi3.z), fabs(eqn.z)));
 
         double eps = 1e-14 * maxx * maxy * maxz;
         double min_max, max_max;
@@ -208,7 +214,7 @@ namespace voronoi {
         eps *= (max_max * max_max);
 #endif
 
-        if (std::fabs(det) < eps) { *status = needs_exact_predicates; }
+        if (fabs(det) < eps) { *status = needs_exact_predicates; }
 
         return (det > 0.0);
     }
@@ -326,8 +332,10 @@ namespace voronoi {
             }
 
             // remove triangle from R, and restart iterating on R
-            std::swap(triangle[t], triangle[nb_t + nb_r - 1]);
-            t = nb_t;
+            VERT_TYPE tmp             = triangle[t];
+            triangle[t]               = triangle[nb_t + nb_r - 1];
+            triangle[nb_t + nb_r - 1] = tmp;
+            t                         = nb_t;
             nb_r--;
         }
 #endif
@@ -357,7 +365,7 @@ namespace voronoi {
     // --------------------------------------------
     // ---------- security radius check -----------
     // --------------------------------------------
-    bool ConvexCell::is_security_radius_reached(double4 last_neig) {
+    bool ConvexCell::is_security_radius_reached(double4 last_neig) const {
         // finds furthest voro vertex distance2
         double v_dist = 0;
 
@@ -365,7 +373,7 @@ namespace voronoi {
             double4 pc   = compute_vertex_point(triangle[i]);
             double4 diff = minus4(pc, voro_seed);
             double  d2   = dot3(diff, diff); // works for 2D since z=0
-            v_dist       = std::max(d2, v_dist);
+            v_dist       = fmax(d2, v_dist);
         }
 
         // compare to new neighbors distance2
@@ -402,14 +410,9 @@ namespace voronoi {
     // --------------------------------------------
 
     // pass 1: extract per-cell data (seeds/com/volumes) and return face count
-    int extract_cell_data(ConvexCell& cell, VMesh* mesh, hsize_t cell_index) {
+    int extract_cell_data(const ConvexCell& cell, const double4* vertices, VMesh* mesh, hsize_t cell_index) {
         double3 seed            = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
         mesh->seeds[cell_index] = seed;
-
-        double4 vertices[_MAX_T_];
-        for (int i = 0; i < cell.nb_t; i++) {
-            vertices[i] = cell.compute_vertex_point(cell.triangle[i], true);
-        }
 
 #ifdef dim_2D
         double cx                 = cell.voro_seed.x;
@@ -434,12 +437,7 @@ namespace voronoi {
     }
 
     // pass 2: write face data into VMesh at face_ptr offset
-    void extract_cell_faces(ConvexCell& cell, VMesh* mesh, hsize_t cell_index) {
-        double4 vertices[_MAX_T_];
-        for (int i = 0; i < cell.nb_t; i++) {
-            vertices[i] = cell.compute_vertex_point(cell.triangle[i], true);
-        }
-
+    void extract_cell_faces(const ConvexCell& cell, const double4* vertices, VMesh* mesh, hsize_t cell_index) {
         hsize_t fi = mesh->face_ptr[cell_index];
 
         double4 face_verts[_MAX_T_];
@@ -462,8 +460,8 @@ namespace voronoi {
         exit(EXIT_FAILURE);
     }
 
-    bool
-    collect_face_vertices(ConvexCell& cell, int p, const double4* vertices, double4* face_verts, int* n_face_verts) {
+    bool collect_face_vertices(
+        const ConvexCell& cell, int p, const double4* vertices, double4* face_verts, int* n_face_verts) {
         // find vertices that reference plane p (stack array)
         int face_vert_indices[_MAX_T_];
         int n_fvi = 0;

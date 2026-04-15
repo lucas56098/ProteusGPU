@@ -180,14 +180,14 @@ namespace knn {
         int i = (int)floor(point.x * (double)N_grid); // assumes boxsize = 1.0
         int j = (int)floor(point.y * (double)N_grid); // assumes boxsize = 1.0
 
-        i = std::max(0, std::min(i, N_grid - 1));
-        j = std::max(0, std::min(j, N_grid - 1));
+        i = imax(0, imin(i, N_grid - 1));
+        j = imax(0, imin(j, N_grid - 1));
 
 #ifdef dim_2D
         return i + j * N_grid;
 #else
         int k = (int)floor(point.z * (double)N_grid); // assumes boxsize = 1.0
-        k     = std::max(0, std::min(k, N_grid - 1));
+        k     = imax(0, imin(k, N_grid - 1));
         return i + j * N_grid + k * N_grid * N_grid;
 #endif
     }

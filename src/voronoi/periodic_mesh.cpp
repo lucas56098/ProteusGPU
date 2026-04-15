@@ -16,12 +16,6 @@ namespace voronoi {
 
     constexpr double PI = 3.14159265358979323846;
 
-    // s_pts and s_move_pts are owned by voronoi.cpp (allocated in allocate_mesh)
-    extern POINT_TYPE* s_pts;
-    extern hsize_t     s_pts_cap;
-    extern POINT_TYPE* s_move_pts;
-    extern hsize_t     s_move_cap;
-
     // checks if pt is in box given by xa, xb, ya, ...
     inline bool is_in(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za = 0.0, double zb = 1.0) {
 #ifdef dim_2D
@@ -73,7 +67,7 @@ namespace voronoi {
         double  ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         hsize_t max_ghost_points = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
 
-        POINT_TYPE* pts      = s_pts;
+        POINT_TYPE* pts      = mesh->scratch_pts;
         hsize_t     n_ghosts = 0;
         hsize_t     n_hydro  = num_points;
 
@@ -86,118 +80,28 @@ namespace voronoi {
             // copy original point to pts
             pts[i] = pts_data[i];
 
-#ifdef dim_2D
-            // check if point is in any of those regions... if so add the corresponding ghost
-            // edges
-            if (is_in(pts[i], 0., 0. + buff, 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., 0.);
-            } // region 1
-            if (is_in(pts[i], 0., 1., 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., -1.);
-            } // region 2
-            if (is_in(pts[i], 1. - buff, 1., 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., 0.);
-            } // region 3
-            if (is_in(pts[i], 0., 1., 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., 1.);
-            } // region 4
-            // corners
-            if (is_in(pts[i], 0., buff, 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., 1.);
-            } // region 5
-            if (is_in(pts[i], 0., buff, 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., -1.);
-            } // region 6
-            if (is_in(pts[i], 1. - buff, 1., 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., -1.);
-            } // region 7
-            if (is_in(pts[i], 1. - buff, 1., 0, buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., 1.);
-            } // region 8
+            // table-driven ghost generation: iterate over all 3^D - 1 shift combinations
+            for (int sx = -1; sx <= 1; sx++) {
+                for (int sy = -1; sy <= 1; sy++) {
+#ifdef dim_3D
+                    for (int sz = -1; sz <= 1; sz++) {
 #else
-            // check if point is in any of those regions... if so add the corresponding ghost
-            // faces
-            if (is_in(pts[i], 0., 1., 0., 1., 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., 0., 1.);
-            } // 1
-            if (is_in(pts[i], 0., buff, 0., 1., 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., 0., 0.);
-            } // 2
-            if (is_in(pts[i], 0., 1., 1. - buff, 1., 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., -1., 0.);
-            } // 3
-            if (is_in(pts[i], 1. - buff, 1., 0., 1., 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., 0., 0.);
-            } // 4
-            if (is_in(pts[i], 0., 1., 0., buff, 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., 1., 0.);
-            } // 5
-            if (is_in(pts[i], 0., 1., 0., 1., 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., 0., -1.);
-            } // 6
-            // edges
-            if (is_in(pts[i], 0., 1., 0., buff, 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., 1., 1.);
-            } // 1
-            if (is_in(pts[i], 0., buff, 0., 1, 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., 0., 1.);
-            } // 2
-            if (is_in(pts[i], 0., 1., 1. - buff, 1., 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., -1., 1.);
-            } // 3
-            if (is_in(pts[i], 1. - buff, 1., 0., 1., 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., 0., 1.);
-            } // 4
-            if (is_in(pts[i], 0., buff, 0., buff, 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., 1., 0.);
-            } // 5
-            if (is_in(pts[i], 0., buff, 1. - buff, 1., 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., -1., 0.);
-            } // 6
-            if (is_in(pts[i], 1. - buff, 1., 1. - buff, 1., 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., -1., 0.);
-            } // 7
-            if (is_in(pts[i], 1. - buff, 1., 0., buff, 0., 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., 1., 0.);
-            } // 8
-            if (is_in(pts[i], 0., buff, 0., 1., 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., 0., -1.);
-            } // 9
-            if (is_in(pts[i], 0., 1., 1. - buff, 1., 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., -1., -1.);
-            } // 10
-            if (is_in(pts[i], 1. - buff, 1., 0., 1., 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., 0., -1.);
-            } // 11
-            if (is_in(pts[i], 0., 1., 0., buff, 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 0., 1., -1.);
-            } // 12
-            // corners
-            if (is_in(pts[i], 0., buff, 0., buff, 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., 1., 1.);
-            } // 1
-            if (is_in(pts[i], 0., buff, 1. - buff, 1., 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., -1., 1.);
-            } // 2
-            if (is_in(pts[i], 1. - buff, 1., 1. - buff, 1., 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., -1., 1.);
-            } // 3
-            if (is_in(pts[i], 1. - buff, 1., 0., buff, 0., buff)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., 1., 1.);
-            } // 4
-            if (is_in(pts[i], 0., buff, 0., buff, 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., 1., -1.);
-            } // 5
-            if (is_in(pts[i], 0., buff, 1. - buff, 1., 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, 1., -1., -1.);
-            } // 6
-            if (is_in(pts[i], 1. - buff, 1., 1. - buff, 1., 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., -1., -1.);
-            } // 7
-            if (is_in(pts[i], 1. - buff, 1., 0., buff, 1. - buff, 1.)) {
-                add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, -1., 1., -1.);
-            } // 8
+                    {
+                        int sz = 0;
 #endif
+                        if (sx == 0 && sy == 0 && sz == 0) continue;
+                        // shift → region: +1 means near low wall [0,buff], -1 near high [1-buff,1], 0 full [0,1]
+                        double xa = (sx == 1) ? 0.0 : (sx == -1) ? 1.0 - buff : 0.0;
+                        double xb = (sx == 1) ? buff : 1.0;
+                        double ya = (sy == 1) ? 0.0 : (sy == -1) ? 1.0 - buff : 0.0;
+                        double yb = (sy == 1) ? buff : 1.0;
+                        double za = (sz == 1) ? 0.0 : (sz == -1) ? 1.0 - buff : 0.0;
+                        double zb = (sz == 1) ? buff : 1.0;
+                        if (is_in(pts[i], xa, xb, ya, yb, za, zb))
+                            add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, (double)sx, (double)sy, (double)sz);
+                    }
+                }
+            }
         }
 
         // verify ghost count fits in pre-allocated arrays
@@ -275,9 +179,9 @@ namespace voronoi {
 
             // effective cell radius
 #ifdef dim_2D
-            const double Ri = std::sqrt(std::max(mesh->volumes[i], 0.0) / PI);
+            const double Ri = sqrt(fmax(mesh->volumes[i], 0.0) / PI);
 #else
-            const double Ri = std::cbrt(3.0 * std::max(mesh->volumes[i], 0.0) / (4.0 * PI));
+            const double Ri = cbrt(3.0 * fmax(mesh->volumes[i], 0.0) / (4.0 * PI));
 #endif
 
             // displacement from seed to COM
@@ -290,17 +194,17 @@ namespace voronoi {
             // mesh aims for roughly equal-mass cells
             if (grads != nullptr && Ri > 0.0) {
 #ifdef dim_3D
-                const double dgrad = std::sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y +
-                                               grads->rho[i].z * grads->rho[i].z);
+                const double dgrad = sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y +
+                                          grads->rho[i].z * grads->rho[i].z);
 #else
-                const double dgrad = std::sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y);
+                const double dgrad = sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y);
 #endif
                 if (dgrad > 0.0) {
                     const double scale = primvar->rho[i] / dgrad;
                     const double tmp   = 3.0 * Ri + scale;
                     const double disc  = tmp * tmp - 8.0 * Ri * Ri;
                     if (disc > 0.0) {
-                        const double x_off = (tmp - std::sqrt(disc)) / 4.0;
+                        const double x_off = (tmp - sqrt(disc)) / 4.0;
                         if (x_off < 0.25 * Ri) {
                             dx += x_off * grads->rho[i].x / dgrad;
                             dy += x_off * grads->rho[i].y / dgrad;
@@ -314,9 +218,9 @@ namespace voronoi {
 
             // distance to target
 #ifdef dim_3D
-            const double di = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const double di = sqrt(dx * dx + dy * dy + dz * dz);
 #else
-            const double di = std::sqrt(dx * dx + dy * dy);
+            const double di = sqrt(dx * dx + dy * dy);
 #endif
 
             // ramp: kicks in at 0.75 * F * R, full strength at F * R
@@ -333,9 +237,9 @@ namespace voronoi {
                 if (fraction > 0.0) {
                     const double rho     = primvar->rho[i];
                     hydro::prim  state_i = get_state(i, mesh, primvar);
-                    const double p       = std::max(0.0, hydro::get_P_ideal_gas(&state_i));
+                    const double p       = fmax(0.0, hydro::get_P_ideal_gas(&state_i));
                     if (rho > 0.0 && p > 0.0) {
-                        const double ci = std::sqrt(gamma_eos * p / rho);
+                        const double ci = sqrt(gamma_eos * p / rho);
                         vx_mesh += fraction * ci * dx / di;
                         vy_mesh += fraction * ci * dy / di;
 #ifdef dim_3D
@@ -356,7 +260,7 @@ namespace voronoi {
     // move the mesh with the given mesh point velocities
     void move_mesh(VMesh* mesh, double dt) {
 
-        POINT_TYPE* pts     = s_move_pts;
+        POINT_TYPE* pts     = mesh->scratch_move;
         hsize_t     n_hydro = mesh->n_hydro;
 
         for (hsize_t i = 0; i < n_hydro; i++) {

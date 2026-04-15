@@ -44,6 +44,16 @@ struct VMesh {
 
     // ghost mapping
     hsize_t* ghost_ids; // ghost index -> original hydro index
+
+    // per-cell status (reused each timestep)
+    voronoi::Status* cell_status; // cell construction status flags
+
+    // scratch buffers (allocated once, reused each timestep)
+    POINT_TYPE*  scratch_pts;      // ghost-augmented point buffer
+    hsize_t      scratch_pts_cap;  // capacity of scratch_pts
+    POINT_TYPE*  scratch_move;     // moved seed positions buffer
+    hsize_t      scratch_move_cap; // capacity of scratch_move
+    knn_problem* knn;              // KNN data structure
 };
 
 namespace voronoi {
@@ -59,11 +69,8 @@ namespace voronoi {
 
     // ---- internal (used by compute_periodic_mesh) ----
     void compute_mesh(VMesh* mesh, POINT_TYPE* pts_data, int num_points);
-    void compute_cells(int                  N_seedpts,
-                       knn_problem*         knn,
-                       std::vector<Status>& stat,
-                       VMesh*               mesh,
-                       const unsigned int*  sorted_to_original);
+    void
+    compute_cells(int N_seedpts, knn_problem* knn, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original);
     void cpu_fallback_failed_cells(
         int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original);
 

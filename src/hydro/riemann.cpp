@@ -10,14 +10,12 @@ namespace hydro {
         flux_t f_r = get_flux(&st_r);
 
         // cache pressure (clamp to zero for numerical safety)
-        double P_l = std::max(0.0, get_P_ideal_gas(&st_l));
-        double P_r = std::max(0.0, get_P_ideal_gas(&st_r));
+        double P_l = fmax(0.0, get_P_ideal_gas(&st_l));
+        double P_r = fmax(0.0, get_P_ideal_gas(&st_r));
 
         // wave speeds
-        double SL =
-            std::min(st_l.v.x - sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x - sqrt((gamma_eos * P_r) / st_r.rho));
-        double SR =
-            std::max(st_l.v.x + sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x + sqrt((gamma_eos * P_r) / st_r.rho));
+        double SL = fmin(st_l.v.x - sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x - sqrt((gamma_eos * P_r) / st_r.rho));
+        double SR = fmax(st_l.v.x + sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x + sqrt((gamma_eos * P_r) / st_r.rho));
 
         // calc HLL flux
         flux_t flux;
@@ -49,14 +47,12 @@ namespace hydro {
         flux_t f_r = get_flux(&st_r);
 
         // cache pressure (clamp to zero for numerical safety)
-        double P_l = std::max(0.0, get_P_ideal_gas(&st_l));
-        double P_r = std::max(0.0, get_P_ideal_gas(&st_r));
+        double P_l = fmax(0.0, get_P_ideal_gas(&st_l));
+        double P_r = fmax(0.0, get_P_ideal_gas(&st_r));
 
         // wave speeds
-        double SL =
-            std::min(st_l.v.x - sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x - sqrt((gamma_eos * P_r) / st_r.rho));
-        double SR =
-            std::max(st_l.v.x + sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x + sqrt((gamma_eos * P_r) / st_r.rho));
+        double SL = fmin(st_l.v.x - sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x - sqrt((gamma_eos * P_r) / st_r.rho));
+        double SR = fmax(st_l.v.x + sqrt((gamma_eos * P_l) / st_l.rho), st_r.v.x + sqrt((gamma_eos * P_r) / st_r.rho));
 
         // calculate S_star
         double S_star = (P_r - P_l + st_l.rho * st_l.v.x * (SL - st_l.v.x) - st_r.rho * st_r.v.x * (SR - st_r.v.x)) /

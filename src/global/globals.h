@@ -11,9 +11,11 @@ class OutputHandler;
 extern InputHandler  input;
 extern ICData        icData;
 extern OutputHandler output;
-extern double        buff;              // buffer for the periodic bc (box will be 1 + 2*buff long)
-extern double        gamma_eos;         // ideal gas constant
-extern double        CellShapingSpeed;  // regularization speed fraction
-extern double        CellShapingFactor; // regularization threshold in units of cell radius
+extern double        buff; // buffer for the periodic bc (box will be 1 + 2*buff long)
+
+// compile-time physics constants (set via -D flags from Config.sh)
+constexpr double gamma_eos         = (double)_GAMMA_EOS_;
+constexpr double CellShapingSpeed  = (double)_CELL_SHAPING_SPEED_;
+constexpr double CellShapingFactor = (double)_CELL_SHAPING_FACTOR_;
 
 #endif // GLOBALS_H

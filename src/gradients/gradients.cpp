@@ -101,18 +101,18 @@ namespace gradients {
 #endif
 
                 // set min, max values
-                min_rho = std::min(min_rho, state_j.rho);
-                max_rho = std::max(max_rho, state_j.rho);
-                min_vx  = std::min(min_vx, state_j.v.x);
-                max_vx  = std::max(max_vx, state_j.v.x);
-                min_vy  = std::min(min_vy, state_j.v.y);
-                max_vy  = std::max(max_vy, state_j.v.y);
+                min_rho = fmin(min_rho, state_j.rho);
+                max_rho = fmax(max_rho, state_j.rho);
+                min_vx  = fmin(min_vx, state_j.v.x);
+                max_vx  = fmax(max_vx, state_j.v.x);
+                min_vy  = fmin(min_vy, state_j.v.y);
+                max_vy  = fmax(max_vy, state_j.v.y);
 #ifdef dim_3D
-                min_vz = std::min(min_vz, state_j.v.z);
-                max_vz = std::max(max_vz, state_j.v.z);
+                min_vz = fmin(min_vz, state_j.v.z);
+                max_vz = fmax(max_vz, state_j.v.z);
 #endif
-                min_E = std::min(min_E, state_j.E);
-                max_E = std::max(max_E, state_j.E);
+                min_E = fmin(min_E, state_j.E);
+                max_E = fmax(max_E, state_j.E);
             }
 
             // solve gradient system (g = M^-1 b)
@@ -140,13 +140,13 @@ namespace gradients {
                 POINT_TYPE dx           = point_diff(mesh->seeds[neighbor_raw], mesh->seeds[i]);
                 POINT_TYPE d            = point_mul(0.5, dx);
 
-                alpha_rho = std::min(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));
-                alpha_vx  = std::min(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads->vx[i]));
-                alpha_vy  = std::min(alpha_vy, limit_single_gradient(state_i.v.y, min_vy, max_vy, d, grads->vy[i]));
+                alpha_rho = fmin(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));
+                alpha_vx  = fmin(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads->vx[i]));
+                alpha_vy  = fmin(alpha_vy, limit_single_gradient(state_i.v.y, min_vy, max_vy, d, grads->vy[i]));
 #ifdef dim_3D
-                alpha_vz = std::min(alpha_vz, limit_single_gradient(state_i.v.z, min_vz, max_vz, d, grads->vz[i]));
+                alpha_vz = fmin(alpha_vz, limit_single_gradient(state_i.v.z, min_vz, max_vz, d, grads->vz[i]));
 #endif
-                alpha_E = std::min(alpha_E, limit_single_gradient(state_i.E, min_E, max_E, d, grads->E[i]));
+                alpha_E = fmin(alpha_E, limit_single_gradient(state_i.E, min_E, max_E, d, grads->E[i]));
             }
 
             grads->rho[i] = point_mul(alpha_rho, grads->rho[i]);

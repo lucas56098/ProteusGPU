@@ -66,6 +66,14 @@ inline int atomicAdd(int* addr, int val) {
 }
 #endif
 
+// GPU-safe integer min/max (fmin/fmax are for doubles)
+inline int imin(int a, int b) {
+    return a < b ? a : b;
+}
+inline int imax(int a, int b) {
+    return a > b ? a : b;
+}
+
 // typedefs
 // point and vertex types
 #ifdef dim_2D

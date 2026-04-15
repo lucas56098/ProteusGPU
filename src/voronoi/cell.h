@@ -39,20 +39,20 @@ namespace voronoi {
         void new_vertex(uchar i, uchar j, uchar k = 0);
 
         // security radius check
-        bool    is_security_radius_reached(double4 last_neig);
+        bool    is_security_radius_reached(double4 last_neig) const;
         double4 compute_vertex_point(VERT_TYPE v, bool persp_divide = true) const;
     };
 
     // put convex cell into VMesh struct
     void ensure_face_capacity(VMesh* mesh, hsize_t needed);
-    bool
-    collect_face_vertices(ConvexCell& cell, int p, const double4* vertices, double4* face_verts, int* n_face_verts);
+    bool collect_face_vertices(
+        const ConvexCell& cell, int p, const double4* vertices, double4* face_verts, int* n_face_verts);
 
-    // two-pass extraction
+    // two-pass extraction (caller pre-computes vertices once, passes to both)
     // pass 1: extract per-cell data (seeds/com/volumes) and return face count
-    int extract_cell_data(ConvexCell& cell, VMesh* mesh, hsize_t cell_index);
+    int extract_cell_data(const ConvexCell& cell, const double4* vertices, VMesh* mesh, hsize_t cell_index);
     // pass 2: write face data into VMesh at face_ptr[cell_index] offset
-    void extract_cell_faces(ConvexCell& cell, VMesh* mesh, hsize_t cell_index);
+    void extract_cell_faces(const ConvexCell& cell, const double4* vertices, VMesh* mesh, hsize_t cell_index);
     // write a single face at index fi (no num_faces increment)
     void write_face(VMesh*         mesh,
                     hsize_t        fi,

@@ -4,7 +4,6 @@
 
 #include "gpu_compat.h"
 #include "structs.h"
-#include <algorithm>
 #include <cmath>
 
 // vector math helpers for voronoi mesh generation and hydro
@@ -135,8 +134,8 @@ inline bool solve_weighted_lsq_3d(double     m00,
 
 // min/max helpers
 inline void get_minmax3(double& m, double& M, double x1, double x2, double x3) {
-    m = std::min(std::min(x1, x2), x3);
-    M = std::max(std::max(x1, x2), x3);
+    m = fmin(fmin(x1, x2), x3);
+    M = fmax(fmax(x1, x2), x3);
 }
 
 // periodic boundary condition helper (assumes boxsize 1)

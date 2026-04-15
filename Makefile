@@ -18,7 +18,7 @@ endif
 DEBUG_MODE_ENABLED := $(findstring DEBUG_MODE,$(CONFIG_DEFINES))
 
 # Base compiler flags
-CXXFLAGS = -Wall -Wextra -std=c++11
+CXXFLAGS = -Wall -Wextra -std=c++14
 
 # Check for DEBUG_MODE and set optimization flags
 ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)

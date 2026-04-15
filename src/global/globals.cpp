@@ -5,8 +5,4 @@
 InputHandler  input;
 ICData        icData;
 OutputHandler output;
-double        buff      = 0.5; // will be reduced once IC loaded
-double        gamma_eos = 5. / 3.;
-
-double CellShapingSpeed;
-double CellShapingFactor;
+double        buff = 0.5; // will be reduced once IC loaded

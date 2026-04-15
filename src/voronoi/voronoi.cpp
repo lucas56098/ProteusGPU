@@ -14,13 +14,6 @@
 
 namespace voronoi {
 
-    // Persistent state (allocated once in allocate_mesh, freed in free_mesh)
-    static knn_problem* s_knn      = nullptr;
-    POINT_TYPE*         s_pts      = nullptr; // scratch buffer for ghost-augmented points
-    hsize_t             s_pts_cap  = 0;
-    POINT_TYPE*         s_move_pts = nullptr; // scratch buffer for moved seed positions
-    hsize_t             s_move_cap = 0;
-
     VMesh* allocate_mesh(hsize_t n_hydro) {
 
         // worst-case ghost estimate with 2x safety margin
@@ -55,6 +48,9 @@ namespace voronoi {
         // ghost mapping
         mesh->ghost_ids = (hsize_t*)malloc(max_ghosts * sizeof(hsize_t));
 
+        // per-cell status flags (reused each timestep)
+        mesh->cell_status = (Status*)malloc(max_n_total * sizeof(Status));
+
         // moving mesh per-cell arrays (zero-initialized for first dt_CFL call)
 #ifdef MOVING_MESH
         mesh->v_mesh      = (POINT_TYPE*)calloc(n_hydro, sizeof(POINT_TYPE));
@@ -62,15 +58,15 @@ namespace voronoi {
 #endif
 
         // scratch buffers for ghost-augmented point arrays
-        s_pts     = (POINT_TYPE*)malloc(max_n_total * sizeof(POINT_TYPE));
-        s_pts_cap = max_n_total;
+        mesh->scratch_pts     = (POINT_TYPE*)malloc(max_n_total * sizeof(POINT_TYPE));
+        mesh->scratch_pts_cap = max_n_total;
 
         // scratch buffer for moved seed positions (only n_hydro needed)
-        s_move_pts = (POINT_TYPE*)malloc(n_hydro * sizeof(POINT_TYPE));
-        s_move_cap = n_hydro;
+        mesh->scratch_move     = (POINT_TYPE*)malloc(n_hydro * sizeof(POINT_TYPE));
+        mesh->scratch_move_cap = n_hydro;
 
         // KNN cache
-        s_knn = knn::init_once((int)n_hydro);
+        mesh->knn = knn::init_once((int)n_hydro);
 
         return mesh;
     }
@@ -93,17 +89,18 @@ namespace voronoi {
             free(mesh->old_volumes);
 #endif
             free(mesh->ghost_ids);
+            free(mesh->cell_status);
             free(mesh);
         }
 
-        free(s_pts);
-        s_pts     = nullptr;
-        s_pts_cap = 0;
-        free(s_move_pts);
-        s_move_pts = nullptr;
-        s_move_cap = 0;
+        free(mesh->scratch_pts);
+        mesh->scratch_pts     = nullptr;
+        mesh->scratch_pts_cap = 0;
+        free(mesh->scratch_move);
+        mesh->scratch_move     = nullptr;
+        mesh->scratch_move_cap = 0;
 
-        if (s_knn) { knn::knn_free(&s_knn); }
+        if (mesh->knn) { knn::knn_free(&mesh->knn); }
     }
 
     // computes the mesh
@@ -114,7 +111,7 @@ namespace voronoi {
 
         // -------- KNN --------
         PROFILE_START("KNN (par)");
-        knn::prepare(s_knn, (const POINT_TYPE*)pts_data, num_points);
+        knn::prepare(mesh->knn, (const POINT_TYPE*)pts_data, num_points);
 #ifdef DEBUG_MODE
         std::cout << "KNN: problem initialized." << std::endl;
 #endif
@@ -138,18 +135,16 @@ namespace voronoi {
         memset(mesh->face_ptr, 0, num_points * sizeof(hsize_t));
 
         // compute voronoi cells
-        std::vector<Status> stat(num_points, security_radius_not_reached);
-        compute_cells(num_points, s_knn, stat, mesh, s_knn->d_permutation);
+        for (int i = 0; i < num_points; i++)
+            mesh->cell_status[i] = security_radius_not_reached;
+        compute_cells(num_points, mesh->knn, mesh->cell_status, mesh, mesh->knn->d_permutation);
 
         PROFILE_END("VORONOI (par)");
     }
 
     // compute voronoi cells from knn results and store in VMesh
-    void compute_cells(int                  N_seedpts,
-                       knn_problem*         knn,
-                       std::vector<Status>& stat,
-                       VMesh*               mesh,
-                       const unsigned int*  sorted_to_original) {
+    void
+    compute_cells(int N_seedpts, knn_problem* knn, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original) {
 
         // compute cell kernel
         int threadsPerBlock = _VORO_BLOCK_SIZE_;
@@ -163,7 +158,7 @@ namespace voronoi {
                          N_seedpts,
                          (double*)knn->d_stored_points,
                          knn,
-                         stat.data(),
+                         stat,
                          mesh,
                          sorted_to_original);
 #ifdef DEBUG_MODE
@@ -174,7 +169,7 @@ namespace voronoi {
         // heap fragmentation from repeated realloc cycles in moving-mesh mode.
 
         // check if any cells failed and retry with cpu fallback
-        cpu_fallback_failed_cells(N_seedpts, (double*)knn->d_stored_points, stat.data(), mesh, sorted_to_original);
+        cpu_fallback_failed_cells(N_seedpts, (double*)knn->d_stored_points, stat, mesh, sorted_to_original);
     }
 
     // cpu fallback for cells that failed during knn-based construction
@@ -260,12 +255,15 @@ namespace voronoi {
 
                 if (fallback_status == success) {
                     hsize_t original_id = (hsize_t)sorted_to_original[i];
-                    int     fc          = extract_cell_data(cell, mesh, original_id);
+                    double4 vertices[_MAX_T_];
+                    for (int vi = 0; vi < cell.nb_t; vi++)
+                        vertices[vi] = cell.compute_vertex_point(cell.triangle[vi], true);
+                    int fc = extract_cell_data(cell, vertices, mesh, original_id);
                     ensure_face_capacity(mesh, mesh->num_faces + fc);
                     hsize_t face_start             = mesh->num_faces;
                     mesh->face_ptr[original_id]    = face_start;
                     mesh->face_counts[original_id] = (hsize_t)fc;
-                    extract_cell_faces(cell, mesh, original_id);
+                    extract_cell_faces(cell, vertices, mesh, original_id);
                     mesh->num_faces += (hsize_t)fc;
                     // convert neighbor IDs from sorted to original indexing
                     for (hsize_t fi = face_start; fi < face_start + (hsize_t)fc; fi++) {
@@ -302,13 +300,15 @@ namespace voronoi {
         (void)threadsPerBlock;
 
         // face arrays are pre-allocated with generous capacity (n_pts * 16) by caller
-        hsize_t face_offset = 0;
+        hsize_t face_offset        = 0;
+        int     face_overflow_flag = 0;
 
         // ──── single pass (parallel): KNN + cell construction + atomic face-slot reservation ────
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(dynamic, _VORO_BLOCK_SIZE_)
 #endif
         for (int seed_id = 0; seed_id < N_seedpts; seed_id++) {
+            if (face_overflow_flag) continue;
 #ifdef DEBUG_MODE
             if (seed_id % 10000 == 0 || seed_id == N_seedpts - 1) {
 #ifdef USE_OPENMP
@@ -338,8 +338,13 @@ namespace voronoi {
             if (gpu_stat[seed_id] == success) {
                 hsize_t original_id = (hsize_t)sorted_to_original[seed_id];
 
+                // compute vertices once, used by both extract passes
+                double4 vertices[_MAX_T_];
+                for (int vi = 0; vi < cell.nb_t; vi++)
+                    vertices[vi] = cell.compute_vertex_point(cell.triangle[vi], true);
+
                 // count faces and extract per-cell data (seeds, com, volumes)
-                int fc                         = extract_cell_data(cell, mesh, original_id);
+                int fc                         = extract_cell_data(cell, vertices, mesh, original_id);
                 mesh->face_counts[original_id] = (hsize_t)fc;
 
                 // atomically reserve a contiguous block of face slots (lock-free)
@@ -354,16 +359,14 @@ namespace voronoi {
 
                 // check that reserved slot fits in pre-allocated capacity
                 if (my_offset + (hsize_t)fc > mesh->face_capacity) {
-                    std::cerr << "VORONOI: Error! face offset " << my_offset + (hsize_t)fc
-                              << " exceeds pre-allocated face capacity " << mesh->face_capacity
-                              << ". Increase _FACE_CAPACITY_MULT_ in Config.sh." << std::endl;
-                    exit(EXIT_FAILURE);
+                    face_overflow_flag = 1;
+                    continue;
                 }
 
                 mesh->face_ptr[original_id] = my_offset;
 
                 // write face data at the reserved offset (non-overlapping, no contention)
-                extract_cell_faces(cell, mesh, original_id);
+                extract_cell_faces(cell, vertices, mesh, original_id);
 
                 // convert neighbor IDs from sorted to original indexing
                 hsize_t face_end = my_offset + (hsize_t)fc;
@@ -375,6 +378,12 @@ namespace voronoi {
         }
 
         mesh->num_faces = face_offset;
+
+        if (face_overflow_flag) {
+            std::cerr << "VORONOI: Error! face offset exceeds pre-allocated face capacity " << mesh->face_capacity
+                      << ". Increase _FACE_CAPACITY_MULT_ in Config.sh." << std::endl;
+            exit(EXIT_FAILURE);
+        }
     }
 #endif
 
