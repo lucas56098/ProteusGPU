@@ -6,9 +6,9 @@
 namespace gradients {
 
     // compute spatial gradients
-    void compute_prim_gradients(const VMesh* mesh, const primvars* primvar, PrimGradients* grads) {
+    void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
         PROFILE_START("GRADIENTS (par)");
-        memset(grads, 0, mesh->n_hydro * sizeof(PrimGradients));
+        zero_grad(grads);
 
         // loop over all hydro cells
 #ifdef USE_OPENMP
@@ -17,7 +17,7 @@ namespace gradients {
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
 
             // load state (previously qi_rho...)
-            prim state_i = get_state(i, mesh, primvar);
+            hydro::prim state_i = get_state(i, mesh, primvar);
 
             // weighted least-squares matrix and rhs vectors
 #ifdef dim_2D
@@ -71,8 +71,8 @@ namespace gradients {
 #endif
 
                 // get neighbor state
-                prim state_j = get_state(neighbor_h, mesh, primvar);
-                prim d_state;
+                hydro::prim state_j = get_state(neighbor_h, mesh, primvar);
+                hydro::prim d_state;
                 d_state.rho = state_j.rho - state_i.rho;
                 d_state.v.x = state_j.v.x - state_i.v.x;
                 d_state.v.y = state_j.v.y - state_i.v.y;
@@ -117,16 +117,16 @@ namespace gradients {
 
             // solve gradient system (g = M^-1 b)
 #ifdef dim_2D
-            solve_weighted_lsq_2d(m00, m01, m11, b_rho_0, b_rho_1, &grads[i].rho);
-            solve_weighted_lsq_2d(m00, m01, m11, b_vx_0, b_vx_1, &grads[i].vx);
-            solve_weighted_lsq_2d(m00, m01, m11, b_vy_0, b_vy_1, &grads[i].vy);
-            solve_weighted_lsq_2d(m00, m01, m11, b_E_0, b_E_1, &grads[i].E);
+            solve_weighted_lsq_2d(m00, m01, m11, b_rho_0, b_rho_1, &grads->rho[i]);
+            solve_weighted_lsq_2d(m00, m01, m11, b_vx_0, b_vx_1, &grads->vx[i]);
+            solve_weighted_lsq_2d(m00, m01, m11, b_vy_0, b_vy_1, &grads->vy[i]);
+            solve_weighted_lsq_2d(m00, m01, m11, b_E_0, b_E_1, &grads->E[i]);
 #else
-            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_rho_0, b_rho_1, b_rho_2, &grads[i].rho);
-            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vx_0, b_vx_1, b_vx_2, &grads[i].vx);
-            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vy_0, b_vy_1, b_vy_2, &grads[i].vy);
-            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vz_0, b_vz_1, b_vz_2, &grads[i].vz);
-            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_E_0, b_E_1, b_E_2, &grads[i].E);
+            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_rho_0, b_rho_1, b_rho_2, &grads->rho[i]);
+            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vx_0, b_vx_1, b_vx_2, &grads->vx[i]);
+            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vy_0, b_vy_1, b_vy_2, &grads->vy[i]);
+            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vz_0, b_vz_1, b_vz_2, &grads->vz[i]);
+            solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_E_0, b_E_1, b_E_2, &grads->E[i]);
 #endif
 
             // limit gradients: find minimum alpha across all faces, then apply once
@@ -140,29 +140,29 @@ namespace gradients {
                 POINT_TYPE dx           = point_diff(mesh->seeds[neighbor_raw], mesh->seeds[i]);
                 POINT_TYPE d            = point_mul(0.5, dx);
 
-                alpha_rho = std::min(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads[i].rho));
-                alpha_vx  = std::min(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads[i].vx));
-                alpha_vy  = std::min(alpha_vy, limit_single_gradient(state_i.v.y, min_vy, max_vy, d, grads[i].vy));
+                alpha_rho = std::min(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));
+                alpha_vx  = std::min(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads->vx[i]));
+                alpha_vy  = std::min(alpha_vy, limit_single_gradient(state_i.v.y, min_vy, max_vy, d, grads->vy[i]));
 #ifdef dim_3D
-                alpha_vz = std::min(alpha_vz, limit_single_gradient(state_i.v.z, min_vz, max_vz, d, grads[i].vz));
+                alpha_vz = std::min(alpha_vz, limit_single_gradient(state_i.v.z, min_vz, max_vz, d, grads->vz[i]));
 #endif
-                alpha_E = std::min(alpha_E, limit_single_gradient(state_i.E, min_E, max_E, d, grads[i].E));
+                alpha_E = std::min(alpha_E, limit_single_gradient(state_i.E, min_E, max_E, d, grads->E[i]));
             }
 
-            grads[i].rho = point_mul(alpha_rho, grads[i].rho);
-            grads[i].vx  = point_mul(alpha_vx, grads[i].vx);
-            grads[i].vy  = point_mul(alpha_vy, grads[i].vy);
+            grads->rho[i] = point_mul(alpha_rho, grads->rho[i]);
+            grads->vx[i]  = point_mul(alpha_vx, grads->vx[i]);
+            grads->vy[i]  = point_mul(alpha_vy, grads->vy[i]);
 #ifdef dim_3D
-            grads[i].vz = point_mul(alpha_vz, grads[i].vz);
+            grads->vz[i] = point_mul(alpha_vz, grads->vz[i]);
 #endif
-            grads[i].E = point_mul(alpha_E, grads[i].E);
+            grads->E[i] = point_mul(alpha_E, grads->E[i]);
         }
 
         PROFILE_END("GRADIENTS (par)");
     }
 
     // compute dW/dt ("time gradients") based on states and gradients
-    void time_gradient(prim state_i, PrimGradients grad_i, prim* dWdt) {
+    void time_gradient(hydro::prim state_i, PrimGradient grad_i, hydro::prim* dWdt) {
 
         // precomputed helpers
         double v2   = point_dot(state_i.v, state_i.v);

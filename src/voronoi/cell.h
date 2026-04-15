@@ -2,7 +2,6 @@
 #define CELL_H
 
 #include "../global/allvars.h"
-#include "../global/geometry.h"
 #include "../io/input.h"
 #include "../io/output.h"
 #include "../knn/knn.h"

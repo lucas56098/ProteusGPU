@@ -138,7 +138,6 @@ int InputHandler::findLatestSnapshot(const std::string& dir) {
 }
 
 // opens IC.hdf5 file and reads initial conditions into ICData struct
-// will get extended if additional fields get added to IC file ...
 bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
 
     // check that file exists

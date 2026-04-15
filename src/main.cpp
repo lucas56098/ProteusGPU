@@ -32,18 +32,19 @@ Authors: Lucas Schleuss, Dylan Nelson
 Institution: Institute of Theoretical Astrophysics, Heidelberg University
 ========================================================================*/
 
+// main routine
 int main(int argc, char* argv[]) {
     PROFILE_START("TOTAL_RUNTIME");
 
     const auto wall_start = std::chrono::steady_clock::now();
 
-    // say hi, load params, load IC or restart snapshot
+    // load input parameters and IC
     begrun::StartState state    = begrun::begrun(argc, argv);
     double             t_sim    = state.t_sim;
     int                snap_num = state.snap_num;
 
-    // init hydro values from icData (either fresh IC or restarted snapshot)
-    primvars* primvar = hydro::init(icData.seedpos_dims[0]);
+    // init hydro primvars from IC
+    hydro::primvars* primvar = hydro::init(icData.seedpos_dims[0]);
 
     // compute voronoi mesh
     VMesh* mesh = voronoi::compute_periodic_mesh((POINT_TYPE*)icData.seedpos.data(), icData.seedpos_dims[0]);
@@ -51,13 +52,13 @@ int main(int argc, char* argv[]) {
     // free IC data no longer needed
     begrun::free_initial_conditions();
 
-    // start timestep loop
     if (t_sim > 0.0) {
         std::cout << "HYDRO: restarted from t = " << t_sim << " (snap_num = " << snap_num << ")" << std::endl;
     } else {
         std::cout << "HYDRO: started" << std::endl;
     }
 
+    // init simulation parameters
     const double t_start = t_sim;
     double       t_end   = input.getParameterDouble("time_end");
     double       CFL     = input.getParameterDouble("CFL_frac");
@@ -67,53 +68,43 @@ int main(int argc, char* argv[]) {
     double t_nextoutput = t_sim + output_dt;
     int    next_log     = 1;
 
-// write first snapshot at t=0 (only for fresh starts)
 #ifdef USE_HDF5
     if (snap_num == 0) {
+        // write snapshot at t=0 (if not restarted)
         output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
         snap_num += 1;
     }
 #endif
 
+    // main hydro loop
     PROFILE_START("HYDRO_MAIN");
     while (t_sim < t_end) {
+
+        // CFL timestep
         double dt = hydro::dt_CFL(CFL, mesh, primvar);
 
-        // go at most to next output time
+        // limit dt to next snapshot/t_end
         if (t_sim + dt > t_nextoutput) { dt = t_nextoutput - t_sim; }
-
-        // make sure we exactly hit t_end
         if (t_sim + dt > t_end) { dt = t_end - t_sim; }
 
+        // hydro step
         mesh = hydro::hydro_step(dt, mesh, primvar);
         t_sim += dt;
         step++;
 
-        if (step >= next_log || t_sim >= t_end) {
-            const double elapsed_s =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
-            std::cout << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt << "  ETA = "
-                      << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
-                      << std::endl;
-            const int guess = (elapsed_s > 1e-12) ? static_cast<int>(std::round(3.0 * step / elapsed_s)) : 1;
-            const int bucket =
-                static_cast<int>(std::pow(10.0, std::floor(std::log10(static_cast<double>(guess > 1 ? guess : 1)))));
-            next_log = ((step / bucket) + 1) * bucket;
-        }
+        // print log info
+        if (step >= next_log || t_sim >= t_end) { print_log(step, wall_start, t_sim, dt, t_start, t_end, &next_log); }
 
-// write output
 #ifdef USE_HDF5
+        // write snapshot
         if (t_sim >= t_nextoutput || t_sim >= t_end) {
-
             output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
-
             t_nextoutput += output_dt;
             snap_num += 1;
         }
 #endif
     }
     PROFILE_END("HYDRO_MAIN");
-
     std::cout << "HYDRO: Finished after " << step << " steps at t = " << t_sim << std::endl;
 
     // delete mesh & hydro
@@ -121,8 +112,9 @@ int main(int argc, char* argv[]) {
     hydro::free_prim(&primvar);
     hydro::free_hydro_buffers();
 
+    // final printouts
     const double total_wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
-    std::cout << "MAIN: Runtime = " << format_hms(total_wall_s) << std::endl;
+    std::cout << "MAIN: Runtime = " << total_wall_s << " seconds" << std::endl;
     print_max_memory_usage();
     std::cout << "MAIN: Done." << std::endl;
 

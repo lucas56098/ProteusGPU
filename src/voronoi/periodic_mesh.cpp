@@ -280,10 +280,10 @@ namespace voronoi {
     }
 
     // compute mesh-point velocities (gas velocity + CM drift regularization) to roughly preserve mass
-    void compute_mesh_velocities(const VMesh*         mesh,
-                                 const primvars*      primvar,
-                                 const PrimGradients* grads,
-                                 POINT_TYPE*          v_mesh) {
+    void compute_mesh_velocities(const VMesh*                    mesh,
+                                 const hydro::primvars*          primvar,
+                                 const gradients::PrimGradients* grads,
+                                 POINT_TYPE*                     v_mesh) {
 
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
@@ -312,10 +312,10 @@ namespace voronoi {
             // mesh aims for roughly equal-mass cells
             if (grads != nullptr && Ri > 0.0) {
 #ifdef dim_3D
-                const double dgrad = std::sqrt(grads[i].rho.x * grads[i].rho.x + grads[i].rho.y * grads[i].rho.y +
-                                               grads[i].rho.z * grads[i].rho.z);
+                const double dgrad = std::sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y +
+                                               grads->rho[i].z * grads->rho[i].z);
 #else
-                const double dgrad = std::sqrt(grads[i].rho.x * grads[i].rho.x + grads[i].rho.y * grads[i].rho.y);
+                const double dgrad = std::sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y);
 #endif
                 if (dgrad > 0.0) {
                     const double scale = primvar->rho[i] / dgrad;
@@ -324,10 +324,10 @@ namespace voronoi {
                     if (disc > 0.0) {
                         const double x_off = (tmp - std::sqrt(disc)) / 4.0;
                         if (x_off < 0.25 * Ri) {
-                            dx += x_off * grads[i].rho.x / dgrad;
-                            dy += x_off * grads[i].rho.y / dgrad;
+                            dx += x_off * grads->rho[i].x / dgrad;
+                            dy += x_off * grads->rho[i].y / dgrad;
 #ifdef dim_3D
-                            dz += x_off * grads[i].rho.z / dgrad;
+                            dz += x_off * grads->rho[i].z / dgrad;
 #endif
                         }
                     }
@@ -354,7 +354,7 @@ namespace voronoi {
 
                 if (fraction > 0.0) {
                     const double rho     = primvar->rho[i];
-                    prim         state_i = get_state(i, mesh, primvar);
+                    hydro::prim  state_i = get_state(i, mesh, primvar);
                     const double p       = std::max(0.0, hydro::get_P_ideal_gas(&state_i));
                     if (rho > 0.0 && p > 0.0) {
                         const double ci = std::sqrt(gamma_eos * p / rho);

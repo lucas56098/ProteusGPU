@@ -16,17 +16,20 @@ namespace hydro {
 
     // RK2 hydro stepping
     VMesh* hydro_step(double dt, VMesh* mesh, primvars* primvar);
-    void   apply_flux_update(double               dt_update,
-                             double               dt_extrap,
-                             const VMesh*         mesh,
-                             const primvars*      prim_old,
-                             const PrimGradients* grads,
-                             const POINT_TYPE*    v_mesh,
-                             primvars*            prim_new);
+    void   apply_flux_update(double                          dt_update,
+                             double                          dt_extrap,
+                             const VMesh*                    mesh,
+                             const primvars*                 prim_old,
+                             const gradients::PrimGradients* grads,
+                             const POINT_TYPE*               v_mesh,
+                             primvars*                       prim_new);
 
     // spatial and time extrapolation of states
-    void apply_spatial_extrapolation(const prim state, const PrimGradients gradient, POINT_TYPE dx, prim* st_extrap);
-    void apply_time_extrapolation(prim state_i, PrimGradients grad_i, double dt_extrap, prim* st_extrap);
+    void apply_spatial_extrapolation(const prim                    state,
+                                     const gradients::PrimGradient gradient,
+                                     POINT_TYPE                    dx,
+                                     prim*                         st_extrap);
+    void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap);
 
     // cfl criterion
     double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar);

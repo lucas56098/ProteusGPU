@@ -7,10 +7,10 @@
 
 #ifdef USE_HDF5
 #include "hdf5.h"
+
 // structs to hold IC data read from HDF5 file
 struct ICHeader {
-    int dimension; // 2D or 3D
-    // additional information might be added here later
+    int dimension;
 };
 
 struct ICData {

@@ -2,6 +2,7 @@
 #define OUTPUT_H
 
 #include "../global/allvars.h"
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -54,16 +55,27 @@ class OutputHandler {
 
 #ifdef USE_HDF5
     // wrapper to convert mesh into meshData and then store snapshot
-    void snapshot(int snap_num, VMesh* mesh, const primvars* primvar, int n_hydro, double t_sim);
+    void snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int n_hydro, double t_sim);
 
     // convert VMesh (for hydro computation) to MeshCellData (for output)
     void vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData);
 
     // write snapshot (mesh and hydro data) to HDF5 file
-    bool writeSnapshot(
-        const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim);
+    bool writeSnapshot(const std::string&     filename,
+                       const MeshCellData&    meshData,
+                       const hydro::primvars* primvar,
+                       int                    n_hydro,
+                       double                 t_sim);
 
 #endif
 };
+
+void print_log(int                                   step,
+               std::chrono::steady_clock::time_point wall,
+               double                                t_sim,
+               double                                dt,
+               double                                t_start,
+               double                                t_end,
+               int*                                  next_log);
 
 #endif // OUTPUT_H

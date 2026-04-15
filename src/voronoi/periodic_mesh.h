@@ -19,8 +19,10 @@ namespace voronoi {
 
     VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points, VMesh* reuse = nullptr);
 
-    void
-    compute_mesh_velocities(const VMesh* mesh, const primvars* primvar, const PrimGradients* grads, POINT_TYPE* v_mesh);
+    void   compute_mesh_velocities(const VMesh*                    mesh,
+                                   const hydro::primvars*          primvar,
+                                   const gradients::PrimGradients* grads,
+                                   POINT_TYPE*                     v_mesh);
     VMesh* move_mesh(VMesh* mesh, const POINT_TYPE* v_mesh, double dt);
 
 } // namespace voronoi

@@ -6,8 +6,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-// has to be improved once we are at a point that there actually is something to store...
-
 OutputHandler::OutputHandler(const std::string& outputDir) : outputDirectory(outputDir) {}
 
 bool OutputHandler::initialize() {
@@ -27,7 +25,7 @@ bool OutputHandler::initialize() {
 
 #ifdef USE_HDF5
 // wrapper to convert Vmesh to meshData and then write the snapshot file
-void OutputHandler::snapshot(int snap_num, VMesh* mesh, const primvars* primvar, int n_hydro, double t_sim) {
+void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int n_hydro, double t_sim) {
     PROFILE_START("SNAPSHOTS");
 
     MeshCellData meshData;
@@ -41,12 +39,11 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const primvars* primvar,
 }
 
 void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
-    // int n_pts = (int)mesh->n_seeds;
     int n_pts = (int)mesh->n_hydro;
 
     // header
     meshData.header.dimension = DIMENSION;
-    meshData.header.extent    = 1.0; // think about if we want to include the buff here?
+    meshData.header.extent    = 1.0;
     meshData.header.n         = n_pts;
     meshData.header.k         = _K_;
     meshData.header.nmax      = _MAX_P_;
@@ -77,8 +74,11 @@ void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
     }
 }
 
-bool OutputHandler::writeSnapshot(
-    const std::string& filename, const MeshCellData& meshData, const primvars* primvar, int n_hydro, double t_sim) {
+bool OutputHandler::writeSnapshot(const std::string&     filename,
+                                  const MeshCellData&    meshData,
+                                  const hydro::primvars* primvar,
+                                  int                    n_hydro,
+                                  double                 t_sim) {
     std::string fullPath = outputDirectory + filename;
 
     std::cout << "OUTPUT: Writing mesh to: " << fullPath << std::endl;
@@ -262,6 +262,26 @@ bool OutputHandler::writeSnapshot(
     std::cout << "OUTPUT: Mesh file written successfully to: " << fullPath << std::endl;
 #endif
     return success;
+}
+
+// prints current step, t, dt and ETA
+void print_log(int                                                                                            step,
+               const std::chrono::time_point<std::chrono::_V2::steady_clock,
+                                             std::chrono::duration<long long int, std::ratio<1, 1000000000>>> wall,
+               double                                                                                         t_sim,
+               double                                                                                         dt,
+               double                                                                                         t_start,
+               double                                                                                         t_end,
+               int* next_log) {
+
+    const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count();
+    std::cout << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
+              << "  ETA = " << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
+              << std::endl;
+    const int guess = (elapsed_s > 1e-12) ? static_cast<int>(std::round(3.0 * step / elapsed_s)) : 1;
+    const int bucket =
+        static_cast<int>(std::pow(10.0, std::floor(std::log10(static_cast<double>(guess > 1 ? guess : 1)))));
+    *next_log = ((step / bucket) + 1) * bucket;
 }
 
 #endif

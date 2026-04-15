@@ -3,6 +3,7 @@
 #pragma once
 
 #include "gpu_compat.h"
+#include "structs.h"
 #include <algorithm>
 #include <cmath>
 
@@ -138,6 +139,13 @@ inline void get_minmax3(double& m, double& M, double x1, double x2, double x3) {
     M = std::max(std::max(x1, x2), x3);
 }
 
+// periodic boundary condition helper (assumes boxsize 1)
+inline double wrap_periodic_delta(double d) {
+    if (d > 0.5) d -= 1.0;
+    if (d < -0.5) d += 1.0;
+    return d;
+}
+
 // POINT_TYPE math
 inline double point_dot(const POINT_TYPE& a, const POINT_TYPE& b) {
 #ifdef dim_2D
@@ -152,6 +160,15 @@ inline POINT_TYPE point_mul(double s, const POINT_TYPE& p) {
     POINT_TYPE out = {s * p.x, s * p.y};
 #else
     POINT_TYPE out = {s * p.x, s * p.y, s * p.z};
+#endif
+    return out;
+}
+
+inline POINT_TYPE point_diff(const double3& a, const double3& b) {
+#ifdef dim_2D
+    POINT_TYPE out = {wrap_periodic_delta(a.x - b.x), wrap_periodic_delta(a.y - b.y)};
+#else
+    POINT_TYPE out = {wrap_periodic_delta(a.x - b.x), wrap_periodic_delta(a.y - b.y), wrap_periodic_delta(a.z - b.z)};
 #endif
     return out;
 }
@@ -183,20 +200,25 @@ inline GRAD_TYPE point_mul(double s, const GRAD_TYPE& p) {
 }
 #endif
 
-// periodic boundary condition helpers (assumes boxsize 1)
-inline double wrap_periodic_delta(double d) {
-    if (d > 0.5) d -= 1.0;
-    if (d < -0.5) d += 1.0;
-    return d;
-}
+// computes orthonormal basis {n, m, p} from a raw (unnormalized) direction vector
+inline geom compute_geom(double3 delta) {
+    geom g;
 
-inline POINT_TYPE point_diff(const double3& a, const double3& b) {
-#ifdef dim_2D
-    POINT_TYPE out = {wrap_periodic_delta(a.x - b.x), wrap_periodic_delta(a.y - b.y)};
-#else
-    POINT_TYPE out = {wrap_periodic_delta(a.x - b.x), wrap_periodic_delta(a.y - b.y), wrap_periodic_delta(a.z - b.z)};
-#endif
-    return out;
+    double nn = sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+    g.n       = {delta.x / nn, delta.y / nn, delta.z / nn};
+
+    if (g.n.x != 0.0 || g.n.y != 0.0) {
+        g.m = {-g.n.y, g.n.x, 0.0};
+    } else {
+        g.m = {1.0, 0.0, 0.0};
+    }
+
+    double mm = sqrt(g.m.x * g.m.x + g.m.y * g.m.y + g.m.z * g.m.z);
+    g.m       = {g.m.x / mm, g.m.y / mm, g.m.z / mm};
+
+    g.p = {g.n.y * g.m.z - g.n.z * g.m.y, g.n.z * g.m.x - g.n.x * g.m.z, g.n.x * g.m.y - g.n.y * g.m.x};
+
+    return g;
 }
 
 #endif // MATH_UTILS_H

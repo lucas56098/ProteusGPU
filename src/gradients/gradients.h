@@ -9,10 +9,10 @@
 namespace gradients {
 
     // compute and free gradients
-    void compute_prim_gradients(const VMesh* mesh, const primvars* primvar, PrimGradients* grads);
+    void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads);
 
     // calc dW/dt ("time gradients") based on states and gradients
-    void time_gradient(prim state_i, PrimGradients grad_i, prim* dWdt);
+    void time_gradient(hydro::prim state_i, PrimGradient grad_i, hydro::prim* dWdt);
 
     // limiter used for spatial gradients (returns limiting factor for one variable at one face)
     inline double limit_single_gradient(

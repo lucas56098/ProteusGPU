@@ -46,14 +46,13 @@ namespace hydro {
     static POINT_TYPE* s_v_mesh = nullptr;
 
     // persistent buffers for hydro_step (allocated once, reused every timestep)
-    static primvars       s_prim_new    = {};
-    static PrimGradients* s_grads       = nullptr;
-    static double*        s_old_volumes = nullptr;
+    static primvars                 s_prim_new    = {};
+    static gradients::PrimGradients s_grads       = {};
+    static double*                  s_old_volumes = nullptr;
 
     void free_hydro_buffers() {
         free_prim_buffer(&s_prim_new);
-        free(s_grads);
-        s_grads = nullptr;
+        gradients::free_grad(&s_grads);
         free(s_old_volumes);
         s_old_volumes = nullptr;
         free(s_v_mesh);
@@ -64,14 +63,14 @@ namespace hydro {
     VMesh* hydro_step(double dt, VMesh* mesh, primvars* primvar) {
 
         // buffers allocated once, reused every timestep (n_hydro is constant)
-        primvars&       prim_new    = s_prim_new;
-        PrimGradients*& grads       = s_grads;
-        double*&        old_volumes = s_old_volumes;
-        POINT_TYPE*&    v_mesh      = s_v_mesh;
+        primvars&                 prim_new    = s_prim_new;
+        gradients::PrimGradients& grads       = s_grads;
+        double*&                  old_volumes = s_old_volumes;
+        POINT_TYPE*&              v_mesh      = s_v_mesh;
 
-        if (!grads) {
+        if (!grads.rho) {
             allocate_prim_buffer(mesh->n_hydro, &prim_new);
-            grads = (PrimGradients*)malloc(mesh->n_hydro * sizeof(PrimGradients));
+            gradients::allocate_grad(mesh->n_hydro, &grads);
 #ifdef MOVING_MESH
             v_mesh      = (POINT_TYPE*)malloc(mesh->n_hydro * sizeof(POINT_TYPE));
             old_volumes = (double*)malloc(mesh->n_hydro * sizeof(double));
@@ -86,14 +85,14 @@ namespace hydro {
         std::memcpy(prim_new.E, primvar->E, mesh->n_hydro * sizeof(double));
 
         // compute gradients from old state on old mesh
-        gradients::compute_prim_gradients(mesh, primvar, grads);
+        gradients::compute_prim_gradients(mesh, primvar, &grads);
 
 #ifdef MOVING_MESH
-        voronoi::compute_mesh_velocities(mesh, primvar, grads, v_mesh);
+        voronoi::compute_mesh_velocities(mesh, primvar, &grads, v_mesh);
 #endif
 
         // first half update (no time extrapolation)
-        apply_flux_update(0.5 * dt, 0.0, mesh, primvar, grads, v_mesh, &prim_new);
+        apply_flux_update(0.5 * dt, 0.0, mesh, primvar, &grads, v_mesh, &prim_new);
 
 #ifdef MOVING_MESH
         // store old volume
@@ -110,11 +109,11 @@ namespace hydro {
         }
 
         // compute gradients for second half
-        gradients::compute_prim_gradients(mesh, primvar, grads);
+        gradients::compute_prim_gradients(mesh, primvar, &grads);
 #endif
 
         // second half update (full dt time extrapolation)
-        apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, v_mesh, &prim_new);
+        apply_flux_update(0.5 * dt, dt, mesh, primvar, &grads, v_mesh, &prim_new);
 
         // final copy: primvar = prim_new
         std::memcpy(primvar->rho, prim_new.rho, mesh->n_hydro * sizeof(double));
@@ -125,13 +124,13 @@ namespace hydro {
     }
 
     // apply one part of RK2 flux update (either with dt_extrap = 0 or dt)
-    void apply_flux_update(double               dt_update,
-                           double               dt_extrap,
-                           const VMesh*         mesh,
-                           const primvars*      prim_old,
-                           const PrimGradients* grads,
-                           const POINT_TYPE*    v_mesh,
-                           primvars*            prim_new) {
+    void apply_flux_update(double                          dt_update,
+                           double                          dt_extrap,
+                           const VMesh*                    mesh,
+                           const primvars*                 prim_old,
+                           const gradients::PrimGradients* grads,
+                           const POINT_TYPE*               v_mesh,
+                           primvars*                       prim_new) {
 
         PROFILE_START("HYDRO_STEP (par)");
         const bool do_time_extrap = (dt_extrap != 0.0);
@@ -145,8 +144,8 @@ namespace hydro {
             const hsize_t face_base = mesh->face_ptr[i];
 
             // get state of cell i
-            prim          state_i = get_state(i, mesh, prim_old);
-            PrimGradients grad_i  = grads[i];
+            prim                    state_i = get_state(i, mesh, prim_old);
+            gradients::PrimGradient grad_i  = grads->load(i);
 
             prim total_flux;
 
@@ -154,10 +153,10 @@ namespace hydro {
             for (hsize_t j = 0; j < mesh->face_counts[i]; j++) {
 
                 // get state of cell j
-                int           face_idx = face_base + j;
-                hsize_t       index_j  = mesh->neighbor_cell[face_idx];
-                prim          state_j  = get_state(index_j, mesh, prim_old);
-                PrimGradients grad_j   = grads[hydro_index(index_j, mesh)];
+                int                     face_idx = face_base + j;
+                hsize_t                 index_j  = mesh->neighbor_cell[face_idx];
+                prim                    state_j  = get_state(index_j, mesh, prim_old);
+                gradients::PrimGradient grad_j   = grads->load(hydro_index(index_j, mesh));
 
                 // get normal and geometry
                 double3 delta = {wrap_periodic_delta(mesh->seeds[index_j].x - mesh->seeds[i].x),
@@ -258,7 +257,10 @@ namespace hydro {
     }
 
     // apply linear spatial extrapolation
-    void apply_spatial_extrapolation(const prim state, const PrimGradients gradient, POINT_TYPE dx, prim* st_extrap) {
+    void apply_spatial_extrapolation(const prim                    state,
+                                     const gradients::PrimGradient gradient,
+                                     POINT_TYPE                    dx,
+                                     prim*                         st_extrap) {
 
         st_extrap->rho = state.rho + point_dot(gradient.rho, dx);
         st_extrap->v.x = state.v.x + point_dot(gradient.vx, dx);
@@ -270,7 +272,7 @@ namespace hydro {
     }
 
     // apply primitive time extrapolation: W -> W + dt_extrap * dW/dt(cell_idx)
-    void apply_time_extrapolation(prim state_i, PrimGradients grad_i, double dt_extrap, prim* st_extrap) {
+    void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap) {
 
         // first compute time derivatives dW/dt
         prim dWdt;

@@ -2,11 +2,17 @@
 #define GPU_COMPAT_H
 #pragma once
 
-// GPU type emulations for CPU_DEBUG mode, and dimension-dependent typedefs.
-
 #ifdef CPU_DEBUG
-// explicitly define types that exist in CUDA and HIP but not for CPU only
+// define types that exist in CUDA but not on CPU only
+// float
+typedef struct {
+    float x, y;
+} float2;
+typedef struct {
+    float x, y, z;
+} float3;
 
+// double
 typedef struct {
     double x, y;
 } double2;
@@ -15,35 +21,34 @@ typedef struct {
     double x, y, z;
 } double3;
 
-struct double4 {
+typedef struct {
     double x, y, z, w;
-};
+} double4;
 
 inline double4 make_double4(double x, double y, double z, double w) {
     return {x, y, z, w};
 }
 
+// char
 typedef unsigned char uchar;
-struct uchar3 {
-    uchar x, y, z;
-};
 
-inline uchar3 make_uchar3(uchar x, uchar y, uchar z) {
-    return {x, y, z};
-}
-
-struct uchar2 {
+typedef struct {
     uchar x, y;
-};
+} uchar2;
 
 inline uchar2 make_uchar2(uchar x, uchar y) {
     return {x, y};
 }
 
-struct int3 {
-    int x, y, z;
-};
+typedef struct {
+    uchar x, y, z;
+} uchar3;
 
+inline uchar3 make_uchar3(uchar x, uchar y, uchar z) {
+    return {x, y, z};
+}
+
+// emulate atomic add
 inline int atomicAdd(int* addr, int val) {
 #ifdef USE_OPENMP
     int old;
@@ -61,6 +66,7 @@ inline int atomicAdd(int* addr, int val) {
 }
 #endif
 
+// typedefs
 // point and vertex types
 #ifdef dim_2D
 #define DIMENSION 2
@@ -73,15 +79,6 @@ typedef uchar3  VERT_TYPE;
 #endif
 
 // compact types for memory-sensitive arrays (gradients, face_area, f_mid)
-#ifdef CPU_DEBUG
-typedef struct {
-    float x, y;
-} float2;
-typedef struct {
-    float x, y, z;
-} float3;
-#endif
-
 #ifdef SAVE_MEMORY
 typedef float compact_t;
 #ifdef dim_2D

@@ -1,14 +1,12 @@
-# Input/Output
-ic_file = ICs/IC.hdf5
+# input/output
+ic_file = ics/IC.hdf5
 output_directory = ./output/
 
-# Time
+# time
 time_end = 0.1
 output_dt = 0.01
 
-# Mesh regularization
+# hydrodynamics
+CFL_frac = 0.3
 CellShapingSpeed = 0.7
 CellShapingFactor = 0.2
-
-# Hydrodynamics
-CFL_frac = 0.3

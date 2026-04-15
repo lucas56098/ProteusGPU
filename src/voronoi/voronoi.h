@@ -89,9 +89,9 @@ inline hsize_t hydro_index(hsize_t neighbor_raw, const VMesh* mesh) {
 }
 
 // shared helper: extract primitive state for cell i (handles ghost mapping)
-inline prim get_state(hsize_t i, const VMesh* mesh, const primvars* primvar) {
-    prim    state_i;
-    hsize_t index = hydro_index(i, mesh);
+inline hydro::prim get_state(hsize_t i, const VMesh* mesh, const hydro::primvars* primvar) {
+    hydro::prim state_i;
+    hsize_t     index = hydro_index(i, mesh);
 
     state_i.rho = primvar->rho[index];
     state_i.v.x = primvar->v[index].x;
