@@ -16,8 +16,14 @@ namespace voronoi {
 
     constexpr double PI = 3.14159265358979323846;
 
+    // s_pts and s_move_pts are owned by voronoi.cpp (allocated in allocate_mesh)
+    extern POINT_TYPE* s_pts;
+    extern hsize_t     s_pts_cap;
+    extern POINT_TYPE* s_move_pts;
+    extern hsize_t     s_move_cap;
+
     // checks if pt is in box given by xa, xb, ya, ...
-    inline bool is_in(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za, double zb) {
+    inline bool is_in(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za = 0.0, double zb = 1.0) {
 #ifdef dim_2D
         (void)za;
         (void)zb;
@@ -35,7 +41,7 @@ namespace voronoi {
                           hsize_t*       original_ids,
                           double         shift_x,
                           double         shift_y,
-                          double         shift_z) {
+                          double         shift_z = 0.0) {
         // create shifted pt
         POINT_TYPE pt;
         pt.x = pts[index].x + shift_x;
@@ -52,35 +58,27 @@ namespace voronoi {
         (*n_ghosts)++;
     }
 
-    VMesh* compute_periodic_mesh(POINT_TYPE* pts_data, hsize_t num_points, VMesh* reuse) {
+    // ============================================================================
+    // Periodic mesh computation
+    // ============================================================================
+
+    void compute_periodic_mesh(VMesh* mesh, POINT_TYPE* pts_data, hsize_t num_points) {
         PROFILE_START("MESH_TOTAL");
 
 #ifdef DEBUG_MODE
         std::cout << "VORONOI: set up periodic mesh" << std::endl;
 #endif
 
-        // pre-allocate VMesh with worst-case capacity on first call (no realloc for GPU compatibility)
-        // ghost estimate: for uniform points in [0,1]^D with buffer width buff,
-        // the ghost fraction is (1+2*buff)^D - 1. Apply 2x fudge factor for safety.
-        if (!reuse) {
-            double  ghost_frac     = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-            hsize_t max_ghosts     = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
-            hsize_t max_n_total    = num_points + max_ghosts;
-            hsize_t max_face_count = max_n_total * _FACE_CAPACITY_MULT_;
-            reuse                  = allocate_vmesh(max_n_total, max_face_count);
-        }
+        // ghost estimate for capacity check
+        double  ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
+        hsize_t max_ghost_points = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
 
-        // allocate temporary pts (hydro + ghosts) and ghost id mapping
-        // same geometric estimate with 2x fudge factor
-        double      ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-        hsize_t     max_ghost_points = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
-        POINT_TYPE* pts;
-        pts = (POINT_TYPE*)malloc((num_points + max_ghost_points) * sizeof(POINT_TYPE));
+        POINT_TYPE* pts      = s_pts;
+        hsize_t     n_ghosts = 0;
+        hsize_t     n_hydro  = num_points;
 
-        hsize_t  n_ghosts = 0;
-        hsize_t  n_hydro  = num_points;
-        hsize_t* original_ids;
-        original_ids = (hsize_t*)malloc(max_ghost_points * sizeof(hsize_t));
+        // write ghost IDs directly into pre-allocated VMesh buffer
+        hsize_t* original_ids = mesh->ghost_ids;
 
         // select points that get ghosts
         for (hsize_t i = 0; i < n_hydro; i++) {
@@ -219,14 +217,11 @@ namespace voronoi {
 #endif
         }
 
-        // compute mesh (reuse old mesh buffers if available to avoid fragmentation)
-        VMesh* mesh = compute_mesh(pts, n_hydro + n_ghosts, reuse);
-        free(pts);
+        // compute mesh
+        compute_mesh(mesh, pts, n_hydro + n_ghosts);
 
-        // set mesh ghost quantities (free old ghost_ids if reusing an existing mesh)
+        // ghost_ids were written directly into mesh->ghost_ids above
         mesh->n_hydro = n_hydro;
-        free(mesh->ghost_ids);
-        mesh->ghost_ids = original_ids;
 
         // scale mesh up
         scale = 1. + (2 * buff);
@@ -260,30 +255,13 @@ namespace voronoi {
             mesh->face_area[i] = (compact_t)(ascale * (double)mesh->face_area[i]);
         }
 
-#ifdef DEBUG_MODE
-        for (hsize_t i = 0; i < mesh->num_edge_coord_verts; i++) {
-            mesh->edge_coords[DIMENSION * i]     = (mesh->edge_coords[DIMENSION * i] - 0.5) * scale + 0.5;
-            mesh->edge_coords[DIMENSION * i + 1] = (mesh->edge_coords[DIMENSION * i + 1] - 0.5) * scale + 0.5;
-#ifdef dim_3D
-            mesh->edge_coords[DIMENSION * i + 2] = (mesh->edge_coords[DIMENSION * i + 2] - 0.5) * scale + 0.5;
-#endif
-        }
-#endif
-
-#ifdef DEBUG_MODE
-        std::cout << "VORONOI: periodic mesh should be created" << std::endl;
-#endif
         PROFILE_END("MESH_TOTAL");
-
-        // return that mesh :D
-        return mesh;
     }
 
     // compute mesh-point velocities (gas velocity + CM drift regularization) to roughly preserve mass
-    void compute_mesh_velocities(const VMesh*                    mesh,
-                                 const hydro::primvars*          primvar,
-                                 const gradients::PrimGradients* grads,
-                                 POINT_TYPE*                     v_mesh) {
+    void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads) {
+
+        POINT_TYPE* v_mesh = mesh->v_mesh;
 
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
@@ -376,26 +354,21 @@ namespace voronoi {
     }
 
     // move the mesh with the given mesh point velocities
-    VMesh* move_mesh(VMesh* mesh, const POINT_TYPE* v_mesh, double dt) {
+    void move_mesh(VMesh* mesh, double dt) {
 
-        POINT_TYPE* pts = static_cast<POINT_TYPE*>(malloc(mesh->n_hydro * sizeof(POINT_TYPE)));
+        POINT_TYPE* pts     = s_move_pts;
+        hsize_t     n_hydro = mesh->n_hydro;
 
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            pts[i].x = fmod((mesh->seeds[i].x + dt * v_mesh[i].x) + 1.0, 1.0);
-            pts[i].y = fmod((mesh->seeds[i].y + dt * v_mesh[i].y) + 1.0, 1.0);
+        for (hsize_t i = 0; i < n_hydro; i++) {
+            pts[i].x = fmod((mesh->seeds[i].x + dt * mesh->v_mesh[i].x) + 1.0, 1.0);
+            pts[i].y = fmod((mesh->seeds[i].y + dt * mesh->v_mesh[i].y) + 1.0, 1.0);
 #ifdef dim_3D
-            pts[i].z = fmod((mesh->seeds[i].z + dt * v_mesh[i].z) + 1.0, 1.0);
+            pts[i].z = fmod((mesh->seeds[i].z + dt * mesh->v_mesh[i].z) + 1.0, 1.0);
 #endif
         }
 
-        hsize_t n_hydro = mesh->n_hydro;
-
-        // pass old mesh for buffer reuse instead of freeing and reallocating
-        VMesh* new_mesh = compute_periodic_mesh(pts, n_hydro, mesh);
-
-        free(pts);
-
-        return new_mesh;
+        // rebuild periodic mesh in-place using moved seed positions
+        compute_periodic_mesh(mesh, pts, n_hydro);
     }
 
 } // namespace voronoi

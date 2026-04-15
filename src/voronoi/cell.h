@@ -5,6 +5,7 @@
 #include "../io/input.h"
 #include "../io/output.h"
 #include "../knn/knn.h"
+#include "geometry.h"
 #include "voronoi.h"
 #include <cstddef>
 #include <cstdlib>
@@ -43,34 +44,24 @@ namespace voronoi {
     };
 
     // put convex cell into VMesh struct
-    void extract_cell_to_vmesh(ConvexCell& cell, VMesh* mesh, hsize_t cell_index);
-    // helper to compute additional quantities needed in hydro
-    double compute_cell_area_centroid_2d(const double4* vertices, int nb_t, double& cx, double& cy);
-    double
-         compute_cell_volume_centroid_3d(ConvexCell& cell, const double4* vertices, double& cx, double& cy, double& cz);
     void ensure_face_capacity(VMesh* mesh, hsize_t needed);
     bool
     collect_face_vertices(ConvexCell& cell, int p, const double4* vertices, double4* face_verts, int* n_face_verts);
-    double compute_face_measure(double4* face_verts, int n_face_verts, double4 seed, double* cell_volume);
-    void   store_face_data(VMesh*         mesh,
-                           const double4* face_verts,
-                           int            n_face_verts,
-                           int            neighbor_id,
-                           double         face_measure,
-                           double4        seed,
-                           double4        neighbor);
 
-#ifdef CPU_DEBUG
-    // two-pass parallel extraction:
-    // pass 1: extract per-cell data (seeds/com/volumes) and count faces
-    int extract_cell_percell_count(ConvexCell& cell, VMesh* mesh, hsize_t cell_index);
-    // pass 2: extract face data directly into VMesh at known face_ptr offset
-    void extract_cell_percell_faces(ConvexCell& cell, VMesh* mesh, hsize_t cell_index);
-#endif
-
-#ifdef DEBUG_MODE
-    void ensure_edge_coords_capacity(VMesh* mesh, hsize_t needed_verts);
-#endif
+    // two-pass extraction
+    // pass 1: extract per-cell data (seeds/com/volumes) and return face count
+    int extract_cell_data(ConvexCell& cell, VMesh* mesh, hsize_t cell_index);
+    // pass 2: write face data into VMesh at face_ptr[cell_index] offset
+    void extract_cell_faces(ConvexCell& cell, VMesh* mesh, hsize_t cell_index);
+    // write a single face at index fi (no num_faces increment)
+    void write_face(VMesh*         mesh,
+                    hsize_t        fi,
+                    int            neighbor_id,
+                    double         face_measure,
+                    const double4* face_verts,
+                    int            n_face_verts,
+                    double4        seed,
+                    double4        neighbor);
 
 } // namespace voronoi
 

@@ -14,65 +14,134 @@
 
 namespace voronoi {
 
-    // ----------------------------------------------
-    // -------- main voronoi mesh generation --------
-    // ----------------------------------------------
-    VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points, VMesh* reuse) {
+    // Persistent state (allocated once in allocate_mesh, freed in free_mesh)
+    static knn_problem* s_knn      = nullptr;
+    POINT_TYPE*         s_pts      = nullptr; // scratch buffer for ghost-augmented points
+    hsize_t             s_pts_cap  = 0;
+    POINT_TYPE*         s_move_pts = nullptr; // scratch buffer for moved seed positions
+    hsize_t             s_move_cap = 0;
+
+    VMesh* allocate_mesh(hsize_t n_hydro) {
+
+        // worst-case ghost estimate with 2x safety margin
+        double  ghost_frac  = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
+        hsize_t max_ghosts  = (hsize_t)(2.0 * ghost_frac * n_hydro) + 1;
+        hsize_t max_n_total = n_hydro + max_ghosts;
+        hsize_t max_faces   = max_n_total * _FACE_CAPACITY_MULT_;
+
+        // allocate VMesh with fixed worst-case capacities
+        VMesh* mesh          = (VMesh*)malloc(sizeof(VMesh));
+        mesh->n_seeds        = 0;
+        mesh->n_hydro        = 0;
+        mesh->num_faces      = 0;
+        mesh->cell_capacity  = max_n_total;
+        mesh->face_capacity  = max_faces;
+        mesh->ghost_capacity = max_ghosts;
+
+        // per-cell arrays
+        mesh->seeds       = (double3*)calloc(max_n_total, sizeof(double3));
+        mesh->com         = (double3*)calloc(max_n_total, sizeof(double3));
+        mesh->volumes     = (double*)calloc(max_n_total, sizeof(double));
+        mesh->face_counts = (hsize_t*)calloc(max_n_total, sizeof(hsize_t));
+        mesh->face_ptr    = (hsize_t*)calloc(max_n_total, sizeof(hsize_t));
+
+        // per-face arrays
+        mesh->neighbor_cell = (int*)malloc(max_faces * sizeof(int));
+        mesh->face_area     = (compact_t*)malloc(max_faces * sizeof(compact_t));
+#ifdef MOVING_MESH
+        mesh->f_mid_local = (compact_t*)malloc(max_faces * (DIMENSION - 1) * sizeof(compact_t));
+#endif
+
+        // ghost mapping
+        mesh->ghost_ids = (hsize_t*)malloc(max_ghosts * sizeof(hsize_t));
+
+        // moving mesh per-cell arrays (zero-initialized for first dt_CFL call)
+#ifdef MOVING_MESH
+        mesh->v_mesh      = (POINT_TYPE*)calloc(n_hydro, sizeof(POINT_TYPE));
+        mesh->old_volumes = (double*)calloc(n_hydro, sizeof(double));
+#endif
+
+        // scratch buffers for ghost-augmented point arrays
+        s_pts     = (POINT_TYPE*)malloc(max_n_total * sizeof(POINT_TYPE));
+        s_pts_cap = max_n_total;
+
+        // scratch buffer for moved seed positions (only n_hydro needed)
+        s_move_pts = (POINT_TYPE*)malloc(n_hydro * sizeof(POINT_TYPE));
+        s_move_cap = n_hydro;
+
+        // KNN cache
+        s_knn = knn::init_once((int)n_hydro);
+
+        return mesh;
+    }
+
+    // Free VMesh and all persistent voronoi buffers.
+    void free_mesh(VMesh* mesh) {
+        if (mesh) {
+            free(mesh->seeds);
+            free(mesh->com);
+            free(mesh->volumes);
+            free(mesh->face_counts);
+            free(mesh->face_ptr);
+            free(mesh->neighbor_cell);
+            free(mesh->face_area);
+#ifdef MOVING_MESH
+            free(mesh->f_mid_local);
+#endif
+#ifdef MOVING_MESH
+            free(mesh->v_mesh);
+            free(mesh->old_volumes);
+#endif
+            free(mesh->ghost_ids);
+            free(mesh);
+        }
+
+        free(s_pts);
+        s_pts     = nullptr;
+        s_pts_cap = 0;
+        free(s_move_pts);
+        s_move_pts = nullptr;
+        s_move_cap = 0;
+
+        if (s_knn) { knn::knn_free(&s_knn); }
+    }
+
+    // computes the mesh
+    void compute_mesh(VMesh* mesh, POINT_TYPE* pts_data, int num_points) {
 #ifdef DEBUG_MODE
         std::cout << "VORONOI: Computing Voronoi mesh..." << std::endl;
 #endif
 
-        // -------- KNN PROBLEM --------
+        // -------- KNN --------
         PROFILE_START("KNN (par)");
-        // define knn problem
-        knn_problem* knn = NULL;
-
-        // prepare knn problem
-        int n_pts = num_points;
-        knn       = knn::init((POINT_TYPE*)pts_data, n_pts);
+        knn::prepare(s_knn, (const POINT_TYPE*)pts_data, num_points);
 #ifdef DEBUG_MODE
         std::cout << "KNN: problem initialized." << std::endl;
 #endif
-
         PROFILE_END("KNN (par)");
-        // -------- VORONOI MESH GENERATION --------
+
+        // -------- VORONOI --------
         PROFILE_START("VORONOI (par)");
 
-        // allocate or reuse Vmesh struct
-        std::vector<Status> stat(n_pts, security_radius_not_reached);
-        hsize_t             initial_face_capacity = (hsize_t)n_pts * 16;
-        VMesh*              mesh;
-
-        if (reuse) {
-            mesh = reuse;
-            // verify pre-allocated capacity is sufficient (no realloc for GPU compatibility)
-            if ((hsize_t)n_pts > mesh->cell_capacity) {
-                std::cerr << "VORONOI: Error! cell count " << n_pts << " exceeds pre-allocated capacity "
-                          << mesh->cell_capacity << ". Increase ghost headroom." << std::endl;
-                exit(EXIT_FAILURE);
-            }
-            // face capacity is checked after atomic reservation in the parallel loop
-            // reset for new computation
-            mesh->n_seeds   = (hsize_t)n_pts;
-            mesh->num_faces = 0;
-            mesh->n_hydro   = 0;
-#ifdef DEBUG_MODE
-            mesh->num_edge_coord_verts = 0;
-#endif
-            memset(mesh->face_counts, 0, n_pts * sizeof(hsize_t));
-            memset(mesh->face_ptr, 0, n_pts * sizeof(hsize_t));
-        } else {
-            mesh = allocate_vmesh((hsize_t)n_pts, initial_face_capacity);
+        // verify capacity
+        if ((hsize_t)num_points > mesh->cell_capacity) {
+            std::cerr << "VORONOI: Error! cell count " << num_points << " exceeds pre-allocated capacity "
+                      << mesh->cell_capacity << ". Increase ghost headroom." << std::endl;
+            exit(EXIT_FAILURE);
         }
 
-        // compute voronoi cells from knn results, writing directly to original positions
-        compute_cells(n_pts, knn, stat, mesh, knn->d_permutation);
+        // reset mesh for new computation
+        mesh->n_seeds   = (hsize_t)num_points;
+        mesh->num_faces = 0;
+        mesh->n_hydro   = 0;
+        memset(mesh->face_counts, 0, num_points * sizeof(hsize_t));
+        memset(mesh->face_ptr, 0, num_points * sizeof(hsize_t));
+
+        // compute voronoi cells
+        std::vector<Status> stat(num_points, security_radius_not_reached);
+        compute_cells(num_points, s_knn, stat, mesh, s_knn->d_permutation);
 
         PROFILE_END("VORONOI (par)");
-
-        // free KNN resources
-        knn::knn_free(&knn);
-        return mesh;
     }
 
     // compute voronoi cells from knn results and store in VMesh
@@ -81,11 +150,6 @@ namespace voronoi {
                        std::vector<Status>& stat,
                        VMesh*               mesh,
                        const unsigned int*  sorted_to_original) {
-
-#ifdef DEBUG_MODE
-        extern hsize_t edge_coords_capacity_global;
-        edge_coords_capacity_global = mesh->n_seeds * 16 * 4; // initial estimate
-#endif
 
         // compute cell kernel
         int threadsPerBlock = _VORO_BLOCK_SIZE_;
@@ -196,10 +260,15 @@ namespace voronoi {
 
                 if (fallback_status == success) {
                     hsize_t original_id = (hsize_t)sorted_to_original[i];
-                    hsize_t face_start  = mesh->num_faces;
-                    extract_cell_to_vmesh(cell, mesh, original_id);
+                    int     fc          = extract_cell_data(cell, mesh, original_id);
+                    ensure_face_capacity(mesh, mesh->num_faces + fc);
+                    hsize_t face_start             = mesh->num_faces;
+                    mesh->face_ptr[original_id]    = face_start;
+                    mesh->face_counts[original_id] = (hsize_t)fc;
+                    extract_cell_faces(cell, mesh, original_id);
+                    mesh->num_faces += (hsize_t)fc;
                     // convert neighbor IDs from sorted to original indexing
-                    for (hsize_t fi = face_start; fi < mesh->num_faces; fi++) {
+                    for (hsize_t fi = face_start; fi < face_start + (hsize_t)fc; fi++) {
                         int& nid = mesh->neighbor_cell[fi];
                         if (nid >= 0 && (hsize_t)nid < (hsize_t)N_seedpts) { nid = (int)sorted_to_original[nid]; }
                     }
@@ -270,7 +339,7 @@ namespace voronoi {
                 hsize_t original_id = (hsize_t)sorted_to_original[seed_id];
 
                 // count faces and extract per-cell data (seeds, com, volumes)
-                int fc                         = extract_cell_percell_count(cell, mesh, original_id);
+                int fc                         = extract_cell_data(cell, mesh, original_id);
                 mesh->face_counts[original_id] = (hsize_t)fc;
 
                 // atomically reserve a contiguous block of face slots (lock-free)
@@ -294,7 +363,7 @@ namespace voronoi {
                 mesh->face_ptr[original_id] = my_offset;
 
                 // write face data at the reserved offset (non-overlapping, no contention)
-                extract_cell_percell_faces(cell, mesh, original_id);
+                extract_cell_faces(cell, mesh, original_id);
 
                 // convert neighbor IDs from sorted to original indexing
                 hsize_t face_end = my_offset + (hsize_t)fc;
@@ -308,64 +377,5 @@ namespace voronoi {
         mesh->num_faces = face_offset;
     }
 #endif
-
-    // ----------------------------------------------
-    // ------ mesh allocation and deallocation ------
-    // ----------------------------------------------
-    VMesh* allocate_vmesh(hsize_t n_seeds, hsize_t initial_face_capacity) {
-        VMesh* mesh         = (VMesh*)malloc(sizeof(VMesh));
-        mesh->n_seeds       = n_seeds;
-        mesh->num_faces     = 0;
-        mesh->cell_capacity = n_seeds;
-        mesh->face_capacity = initial_face_capacity;
-        mesh->n_hydro       = 0;
-        mesh->ghost_ids     = NULL;
-
-        // per-cell arrays (known size)
-        mesh->seeds       = (double3*)calloc(n_seeds, sizeof(double3));
-        mesh->com         = (double3*)calloc(n_seeds, sizeof(double3));
-        mesh->volumes     = (double*)calloc(n_seeds, sizeof(double));
-        mesh->face_counts = (hsize_t*)calloc(n_seeds, sizeof(hsize_t));
-        mesh->face_ptr    = (hsize_t*)calloc(n_seeds, sizeof(hsize_t));
-
-        // face arrays (initial capacity, grown dynamically during extraction)
-        mesh->neighbor_cell = (int*)malloc(initial_face_capacity * sizeof(int));
-        mesh->face_area     = (compact_t*)malloc(initial_face_capacity * sizeof(compact_t));
-
-#ifdef MOVING_MESH
-        mesh->f_mid_local = (compact_t*)malloc(initial_face_capacity * (DIMENSION - 1) * sizeof(compact_t));
-#endif
-
-#ifdef DEBUG_MODE
-        mesh->edge_coords =
-            (double*)malloc(initial_face_capacity * DIMENSION * 4 * sizeof(double)); // estimate ~4 verts per face
-        mesh->edge_coords_offsets  = (hsize_t*)malloc(initial_face_capacity * sizeof(hsize_t));
-        mesh->num_edge_coord_verts = 0;
-#endif
-
-        // ghosts are manually allocated in compute periodic mesh
-
-        return mesh;
-    }
-
-    void free_vmesh(VMesh* mesh) {
-        if (!mesh) return;
-        free(mesh->seeds);
-        free(mesh->com);
-        free(mesh->volumes);
-        free(mesh->face_counts);
-        free(mesh->face_ptr);
-        free(mesh->neighbor_cell);
-        free(mesh->face_area);
-#ifdef MOVING_MESH
-        free(mesh->f_mid_local);
-#endif
-#ifdef DEBUG_MODE
-        free(mesh->edge_coords);
-        free(mesh->edge_coords_offsets);
-#endif
-        free(mesh->ghost_ids);
-        free(mesh);
-    }
 
 } // namespace voronoi

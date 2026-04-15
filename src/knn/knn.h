@@ -9,15 +9,9 @@
 #include <cstring>
 #include <string>
 
-/*
- * This part of the code is heavily inspired by the work of: Nicolas Ray, Dmitry Sokolov,
- * Sylvain Lefebvre, Bruno L'evy, "Meshless Voronoi on the GPU", ACM Trans. Graph.,
- * vol. 37, no. 6, Dec. 2018. If you build upon this code, we recommend
- * reading and citing their paper: https://doi.org/10.1145/3272127.3275092
- */
-
 typedef struct knn_problem {
-    int           len_pts;             // number of input points
+    int           len_pts;             // number of input points (current call)
+    int           pts_capacity;        // allocated capacity for d_stored_points / d_permutation
     int           N_grid;              // grid resolution
     int           Npow;                // N_grid^DIMENSION (total grid cells)
     int           N_cell_offsets;      // actual number of cells in the offset grid
@@ -32,28 +26,16 @@ typedef struct knn_problem {
 
 namespace knn {
 
-    // prepare the knn problem
-    knn_problem* init(POINT_TYPE* pts, int len_pts);
-    void         sort_points_into_grid(knn_problem* knn, POINT_TYPE* d_points, int len_pts);
-#ifdef CPU_DEBUG
-    void
-    cpu_count(int blocksPerGrid, int threadsPerBlock, POINT_TYPE* d_points, int len_pts, int N_grid, int* d_counters);
-    void cpu_reserve(
-        int blocksPerGrid, int threadsPerBlock, int N_grid, const int* d_counters, int* d_globcounter, int* d_ptrs);
-    void cpu_store(int               blocksPerGrid,
-                   int               threadsPerBlock,
-                   const POINT_TYPE* d_points,
-                   int               len_pts,
-                   int               N_grid,
-                   const int*        d_ptrs,
-                   int*              d_counters,
-                   POINT_TYPE*       d_stored_points,
-                   unsigned int*     d_permutation);
-#endif
-    int cellFromPoint(int N_grid, POINT_TYPE point);
+    // computes offset grid and allocates buffers
+    knn_problem* init_once(int n_hydro);
 
-    // compute K nearest neighbors for a single point inline (thread-safe, no global buffer)
-    // writes sorted neighbor indices into out_knearest[_K_]
+    // resets counters and sorts points into grid
+    void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
+
+    void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
+    int  cellFromPoint(int N_grid, POINT_TYPE point);
+
+    // compute K nearest neighbors for a single point
     void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest);
 
     void heapify(unsigned int* keys, double* vals, int node, int size);

@@ -46,8 +46,13 @@ int main(int argc, char* argv[]) {
     // init hydro primvars from IC
     hydro::primvars* primvar = hydro::init(icData.seedpos_dims[0]);
 
-    // compute voronoi mesh
-    VMesh* mesh = voronoi::compute_periodic_mesh((POINT_TYPE*)icData.seedpos.data(), icData.seedpos_dims[0]);
+    // compute voronoi mesh (allocate once, reuse every timestep)
+    hsize_t n_hydro = icData.seedpos_dims[0];
+    VMesh*  mesh    = voronoi::allocate_mesh(n_hydro);
+    voronoi::compute_periodic_mesh(mesh, (POINT_TYPE*)icData.seedpos.data(), n_hydro);
+
+    // allocate persistent hydro buffers (prim_new, gradients)
+    hydro::allocate_hydro_buffers(n_hydro);
 
     // free IC data no longer needed
     begrun::free_initial_conditions();
@@ -88,7 +93,7 @@ int main(int argc, char* argv[]) {
         if (t_sim + dt > t_end) { dt = t_end - t_sim; }
 
         // hydro step
-        mesh = hydro::hydro_step(dt, mesh, primvar);
+        hydro::hydro_step(dt, mesh, primvar);
         t_sim += dt;
         step++;
 
@@ -108,7 +113,7 @@ int main(int argc, char* argv[]) {
     std::cout << "HYDRO: Finished after " << step << " steps at t = " << t_sim << std::endl;
 
     // delete mesh & hydro
-    voronoi::free_vmesh(mesh);
+    voronoi::free_mesh(mesh);
     hydro::free_prim(&primvar);
     hydro::free_hydro_buffers();
 

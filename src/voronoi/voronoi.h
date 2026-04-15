@@ -9,66 +9,64 @@
 #include <cstring>
 #include <string>
 
-/*
- * This part of the code is heavily inspired by the work of: Nicolas Ray, Dmitry Sokolov,
- * Sylvain Lefebvre, Bruno L'evy, "Meshless Voronoi on the GPU", ACM Trans. Graph.,
- * vol. 37, no. 6, Dec. 2018. If you build upon this code, we recommend
- * reading and citing their paper: https://doi.org/10.1145/3272127.3275092
- */
-
-// voronoi mesh struct used for hydro solver
+// Voronoi mesh data (allocated once at startup with worst-case capacity)
 struct VMesh {
 
-    // stored once
-    hsize_t n_seeds;       // number of cells
-    hsize_t n_hydro;       // number of hydro cells (n_ghost = n_seeds - n_hydro)
-    hsize_t num_faces;     // total number of faces in the mesh
-    hsize_t cell_capacity; // allocated capacity of per-cell arrays (>= n_seeds)
-    hsize_t face_capacity; // allocated capacity of face arrays (>= num_faces)
+    // current counts
+    hsize_t n_seeds;   // number of cells
+    hsize_t n_hydro;   // number of hydro cells (n_ghost = n_seeds - n_hydro)
+    hsize_t num_faces; // number of faces
 
-    // stored for all cells
-    double3* seeds;       // seedpoints
-    double3* com;         // cell centroid
-    double*  volumes;     // area in 2D, volume in 3D
+    // capacities (fixed)
+    hsize_t cell_capacity;  // max per-cell array size
+    hsize_t face_capacity;  // max face array size
+    hsize_t ghost_capacity; // max ghost_ids array size
+
+    // per-cell
+    double3* seeds;       // seed positions
+    double3* com;         // cell centroids
+    double*  volumes;     // cell volumes (area in 2D)
     hsize_t* face_counts; // number of faces per cell
-    hsize_t* face_ptr;    // pointer to start of each cell's faces in the face arrays
+    hsize_t* face_ptr;    // offset into face arrays for each cell
 
-    // stored for all faces
-    int*       neighbor_cell; // global id of neighboring cell for each face
-    compact_t* face_area;     // edge length in 2D, face area in 3D
+    // per-hydro-cell
 #ifdef MOVING_MESH
-    compact_t* f_mid_local; // (DIMENSION-1) tangent-space offsets per face from seed midpoint
-#endif
-#ifdef DEBUG_MODE
-    double*  edge_coords;          // flat array of all face vertex coordinates (DIMENSION doubles per vertex)
-    hsize_t* edge_coords_offsets;  // number of vertices per face
-    hsize_t  num_edge_coord_verts; // total number of edge coord vertices
+    POINT_TYPE* v_mesh;      // mesh point velocities
+    double*     old_volumes; // volumes before mesh movement
 #endif
 
-    // stored for all ghost cells
-    hsize_t* ghost_ids; // ids of the corresponding original cell (i.e. the ghost cell with id (n_hydro-1) + 4
-                        // has ghost_ids[4])
+    // per-face
+    int*       neighbor_cell; // neighbor cell index for each face
+    compact_t* face_area;     // face area (edge length in 2D)
+#ifdef MOVING_MESH
+    compact_t* f_mid_local; // (DIMENSION-1) tangent-space offsets per face
+#endif
+
+    // ghost mapping
+    hsize_t* ghost_ids; // ghost index -> original hydro index
 };
 
 namespace voronoi {
 
-    // allocation and deallocation of VMesh
-    VMesh* allocate_vmesh(hsize_t n_seeds, hsize_t initial_face_capacity);
-    void   free_vmesh(VMesh* mesh);
+    // ---- lifecycle (called once) ----
+    VMesh* allocate_mesh(hsize_t n_hydro);
+    void   free_mesh(VMesh* mesh);
 
-    // main mesh computation (pass reuse to recycle an existing mesh's buffers)
-    VMesh* compute_mesh(POINT_TYPE* pts_data, int num_points, VMesh* reuse = nullptr);
-    void   compute_cells(int                  N_seedpts,
-                         knn_problem*         knn,
-                         std::vector<Status>& stat,
-                         VMesh*               mesh,
-                         const unsigned int*  sorted_to_original);
+    // ---- mesh computation (called every timestep) ----
+    void compute_periodic_mesh(VMesh* mesh, POINT_TYPE* pts_data, hsize_t num_points);
+    void move_mesh(VMesh* mesh, double dt);
+    void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);
 
-    // cpu fallback for cells that failed during knn-based construction
+    // ---- internal (used by compute_periodic_mesh) ----
+    void compute_mesh(VMesh* mesh, POINT_TYPE* pts_data, int num_points);
+    void compute_cells(int                  N_seedpts,
+                       knn_problem*         knn,
+                       std::vector<Status>& stat,
+                       VMesh*               mesh,
+                       const unsigned int*  sorted_to_original);
     void cpu_fallback_failed_cells(
         int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original);
 
-// kernels
 #ifdef CPU_DEBUG
     void cpu_compute_cell(int                 blocksPerGrid,
                           int                 threadsPerBlock,
@@ -82,13 +80,13 @@ namespace voronoi {
 
 } // namespace voronoi
 
-// helper
+// ---- shared inline helpers ----
+
 inline hsize_t hydro_index(hsize_t neighbor_raw, const VMesh* mesh) {
     if (neighbor_raw < mesh->n_hydro) { return neighbor_raw; }
     return mesh->ghost_ids[neighbor_raw - mesh->n_hydro];
 }
 
-// shared helper: extract primitive state for cell i (handles ghost mapping)
 inline hydro::prim get_state(hsize_t i, const VMesh* mesh, const hydro::primvars* primvar) {
     hydro::prim state_i;
     hsize_t     index = hydro_index(i, mesh);

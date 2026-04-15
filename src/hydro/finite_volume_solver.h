@@ -12,17 +12,20 @@ namespace hydro {
     // init hydrostruct from IC data
     primvars* init(int n_hydro);
     void      free_prim(primvars** primvar);
-    void      free_hydro_buffers();
+
+    // allocate/free persistent hydro buffers (prim_new, gradients)
+    void allocate_hydro_buffers(hsize_t n_hydro);
+    void free_hydro_buffers();
 
     // RK2 hydro stepping
-    VMesh* hydro_step(double dt, VMesh* mesh, primvars* primvar);
-    void   apply_flux_update(double                          dt_update,
-                             double                          dt_extrap,
-                             const VMesh*                    mesh,
-                             const primvars*                 prim_old,
-                             const gradients::PrimGradients* grads,
-                             const POINT_TYPE*               v_mesh,
-                             primvars*                       prim_new);
+    void hydro_step(double dt, VMesh* mesh, primvars* primvar);
+    void apply_flux_update(double                          dt_update,
+                           double                          dt_extrap,
+                           const VMesh*                    mesh,
+                           const primvars*                 prim_old,
+                           const gradients::PrimGradients* grads,
+                           const POINT_TYPE*               v_mesh,
+                           primvars*                       prim_new);
 
     // spatial and time extrapolation of states
     void apply_spatial_extrapolation(const prim                    state,

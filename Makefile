@@ -65,7 +65,7 @@ GLOBAL_SRC = $(GLOBAL_DIR)/globals.cpp
 IO_SRC = $(IO_DIR)/input.cpp $(IO_DIR)/output.cpp
 KNN_SRC = $(KNN_DIR)/knn.cpp
 BEGRUN_SRC = $(BEGRUN_DIR)/begrun.cpp
-VORONOI_SRC = $(VORONOI_DIR)/voronoi.cpp $(VORONOI_DIR)/cell.cpp $(VORONOI_DIR)/periodic_mesh.cpp
+VORONOI_SRC = $(VORONOI_DIR)/voronoi.cpp $(VORONOI_DIR)/cell.cpp $(VORONOI_DIR)/periodic_mesh.cpp $(VORONOI_DIR)/geometry.cpp
 HYDRO_SRC = $(HYDRO_DIR)/finite_volume_solver.cpp $(HYDRO_DIR)/riemann.cpp
 GRADIENTS_SRC = $(GRADIENTS_DIR)/gradients.cpp
 PROFILER_SRC = $(PROFILER_DIR)/profiler.cpp
@@ -77,7 +77,7 @@ GLOBAL_OBJ = $(BUILD_DIR)/globals.o
 IO_OBJ = $(BUILD_DIR)/input.o $(BUILD_DIR)/output.o
 KNN_OBJ = $(BUILD_DIR)/knn.o
 BEGRUN_OBJ = $(BUILD_DIR)/begrun.o
-VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/cell.o $(BUILD_DIR)/periodic_mesh.o
+VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/cell.o $(BUILD_DIR)/periodic_mesh.o $(BUILD_DIR)/geometry.o
 HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o $(BUILD_DIR)/riemann.o
 GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
 PROFILER_OBJ = $(BUILD_DIR)/profiler.o
@@ -181,6 +181,9 @@ $(BUILD_DIR)/cell.o: $(VORONOI_DIR)/cell.cpp $(VORONOI_DIR)/cell.h | $(BUILD_DIR
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/periodic_mesh.o: $(VORONOI_DIR)/periodic_mesh.cpp $(VORONOI_DIR)/periodic_mesh.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/geometry.o: $(VORONOI_DIR)/geometry.cpp $(VORONOI_DIR)/geometry.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/finite_volume_solver.o: $(HYDRO_DIR)/finite_volume_solver.cpp $(HYDRO_DIR)/finite_volume_solver.h | $(BUILD_DIR)

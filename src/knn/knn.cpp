@@ -1,4 +1,5 @@
 #include "knn.h"
+#include "../global/globals.h"
 #include <cfloat>
 #include <climits>
 #include <cmath>
@@ -7,18 +8,21 @@
 #include <cstring>
 #include <iostream>
 
-// CONSTRUCTION SITE: nothing works yet :D
-
 namespace knn {
 
-    // -------- initalize KNN problem --------
-    knn_problem* init(POINT_TYPE* pts, int len_pts) {
+    // initialization (offset grid + buffer allocation)
+    knn_problem* init_once(int n_hydro) {
 
-        // -------- allocate the main data structure --------
+        // worst-case total points including periodic ghosts (same formula as periodic_mesh.cpp)
+        double ghost_frac  = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
+        int    max_n_total = (int)(n_hydro + 2.0 * ghost_frac * n_hydro) + 1;
+
         knn_problem* knn = (knn_problem*)malloc(sizeof(knn_problem));
 
-        knn->len_pts             = len_pts;
-        knn->N_grid              = std::max(1, (int)round(pow(len_pts / 3.1f, 1.0f / (float)DIMENSION)));
+        // compute N_grid from worst-case total
+        knn->len_pts             = max_n_total;
+        knn->pts_capacity        = max_n_total;
+        knn->N_grid              = std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
         knn->Npow                = (int)pow(knn->N_grid, DIMENSION);
         knn->d_cell_offsets      = NULL;
         knn->d_cell_offset_dists = NULL;
@@ -51,13 +55,10 @@ namespace knn {
             for (int j = -N_max; j <= N_max; j++) {
                 for (int i = -N_max; i <= N_max; i++) {
                     if (std::max(abs(i), abs(j)) != ring) continue;
-                    // everything below is only executed if cell is inside current ring
 
-                    // compute linear offset in the flattened 2D grid array
                     int id_offset                     = i + j * knn->N_grid;
                     cell_offsets[knn->N_cell_offsets] = id_offset;
 
-                    // compute geometric distance for pruning later on
                     double d = (double)(ring - 1) / (double)(knn->N_grid); // assumes boxsize = 1.0
                     cell_offset_dists[knn->N_cell_offsets] = d * d;
 
@@ -70,13 +71,10 @@ namespace knn {
                 for (int j = -N_max; j <= N_max; j++) {
                     for (int i = -N_max; i <= N_max; i++) {
                         if (std::max(abs(i), std::max(abs(j), abs(k))) != ring) continue;
-                        // everything below is only executed if cell is inside current ring
 
-                        // compute linear offset in the flattened 3D grid array
                         int id_offset                     = i + j * knn->N_grid + k * knn->N_grid * knn->N_grid;
                         cell_offsets[knn->N_cell_offsets] = id_offset;
 
-                        // compute geometric distance for pruning later on
                         double d = (double)(ring - 1) / (double)(knn->N_grid); // assumes boxsize = 1.0
                         cell_offset_dists[knn->N_cell_offsets] = d * d;
 
@@ -87,142 +85,97 @@ namespace knn {
 #endif
         }
 
-        // -------- allocate memory buffers and copy data --------
         knn->d_cell_offsets      = cell_offsets;
         knn->d_cell_offset_dists = cell_offset_dists;
 
-        POINT_TYPE* d_points = (POINT_TYPE*)malloc(len_pts * sizeof(POINT_TYPE));
-        memcpy(d_points, pts, len_pts * sizeof(POINT_TYPE)); // input pts (temporary), freed after sorting into grid
-
+        // allocate per-call buffers (sized for worst-case capacity)
         int Npow        = knn->Npow;
-        knn->d_counters = (int*)calloc(Npow, sizeof(int)); // pts per grid cell
-        knn->d_ptrs     = (int*)calloc(Npow, sizeof(int)); // cell ptrs to start in d_stored_points
+        knn->d_counters = (int*)calloc(Npow, sizeof(int));
+        knn->d_ptrs     = (int*)calloc(Npow, sizeof(int));
 
-        knn->d_globcounter = (int*)calloc(1, sizeof(int)); // global counter
-        knn->d_stored_points =
-            (POINT_TYPE*)calloc(knn->len_pts, sizeof(POINT_TYPE)); // will be filled with sorted points
-        knn->d_permutation =
-            (unsigned int*)calloc(knn->len_pts, sizeof(unsigned int)); // permutation to restore original order
-
-        // -------- reorganize input points by grid cell --------
-        sort_points_into_grid(knn, d_points, len_pts);
-
-        // no longer need original points
-        free(d_points);
+        knn->d_globcounter   = (int*)calloc(1, sizeof(int));
+        knn->d_stored_points = (POINT_TYPE*)calloc(max_n_total, sizeof(POINT_TYPE));
+        knn->d_permutation   = (unsigned int*)calloc(max_n_total, sizeof(unsigned int));
 
         return knn;
     }
 
-    void sort_points_into_grid(knn_problem* knn, POINT_TYPE* d_points, int len_pts) {
+    // reset buffers and sort points into grid
+    void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
 
-        // -------- count points per grid cell --------
-        {
-            int threadsPerBlock = 256;
-            int blocksPerGrid   = (len_pts + threadsPerBlock - 1) / threadsPerBlock;
-
-#ifdef CPU_DEBUG
-            cpu_count(blocksPerGrid, threadsPerBlock, d_points, len_pts, knn->N_grid, knn->d_counters);
-#endif
+        if (len_pts > knn->pts_capacity) {
+            std::cerr << "KNN: Error! point count " << len_pts << " exceeds pre-allocated capacity "
+                      << knn->pts_capacity << ". Increase ghost headroom." << std::endl;
+            exit(EXIT_FAILURE);
         }
 
-        // -------- reserve memory ranges for each cell --------
-        {
-            int threadsPerBlock = 4;
-            int blocksPerGrid   = (knn->Npow + threadsPerBlock - 1) / threadsPerBlock;
+        knn->len_pts = len_pts;
 
-#ifdef CPU_DEBUG
-            cpu_reserve(blocksPerGrid, threadsPerBlock, knn->N_grid, knn->d_counters, knn->d_globcounter, knn->d_ptrs);
+        // reset grid counters and pointers
+        memset(knn->d_counters, 0, knn->Npow * sizeof(int));
+        memset(knn->d_ptrs, 0, knn->Npow * sizeof(int));
+        memset(knn->d_globcounter, 0, sizeof(int));
+
+        // sort points into grid
+        sort_points_into_grid(knn, pts, len_pts);
+    }
+
+    // sort points into the grid
+    void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
+
+        int  N_grid     = knn->N_grid;
+        int  Npow       = knn->Npow;
+        int* d_counters = knn->d_counters;
+
+        // count points per grid cell
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
 #endif
+        for (int id = 0; id < len_pts; id++) {
+            int cell = cellFromPoint(N_grid, pts[id]);
+            atomicAdd(d_counters + cell, 1);
         }
 
-        // -------- store points in their cell-organized locations -------
+        // reserve memory ranges for each cell
+        {
+            int* d_ptrs        = knn->d_ptrs;
+            int* d_globcounter = knn->d_globcounter;
+
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+            for (int id = 0; id < Npow; id++) {
+                int count = d_counters[id];
+                if (count > 0) { d_ptrs[id] = atomicAdd(d_globcounter, count); }
+            }
+        }
+
+        // store points in their cell-organized locations
         {
             // reset counters: we'll reuse them for atomic allocation within each cell's range
-            memset(knn->d_counters, 0x00, knn->Npow * sizeof(int));
+            memset(d_counters, 0, Npow * sizeof(int));
 
-            int threadsPerBlock = 256;
-            int blocksPerGrid   = (len_pts + threadsPerBlock - 1) / threadsPerBlock;
+            const int*    d_ptrs          = knn->d_ptrs;
+            POINT_TYPE*   d_stored_points = knn->d_stored_points;
+            unsigned int* d_permutation   = knn->d_permutation;
 
-// store oraganized points
-#ifdef CPU_DEBUG
-            cpu_store(blocksPerGrid,
-                      threadsPerBlock,
-                      d_points,
-                      len_pts,
-                      knn->N_grid,
-                      knn->d_ptrs,
-                      knn->d_counters,
-                      knn->d_stored_points,
-                      knn->d_permutation);
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
 #endif
-        }
-    }
+            for (int id = 0; id < len_pts; id++) {
+                POINT_TYPE p    = pts[id];
+                int        cell = cellFromPoint(N_grid, p);
 
-#ifdef CPU_DEBUG
-    // counts how many poiunts are in each cell, stores in d_counters
-    void
-    cpu_count(int blocksPerGrid, int threadsPerBlock, POINT_TYPE* d_points, int len_pts, int N_grid, int* d_counters) {
-        for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
-            for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
-                int id = threadsPerBlock * blockId + threadId;
-                if (id < len_pts) {
-                    int cell = cellFromPoint(N_grid, d_points[id]);
-                    atomicAdd(d_counters + cell, 1);
-                }
+                // claim a slot within the cell's range
+                int pos = d_ptrs[cell] + atomicAdd(d_counters + cell, 1);
+
+                d_stored_points[pos] = p;
+                d_permutation[pos]   = id;
             }
         }
     }
 
-    // uses d_counters to reserve memory ranges for each cell, stores in d_ptrs
-    void cpu_reserve(
-        int blocksPerGrid, int threadsPerBlock, int N_grid, const int* d_counters, int* d_globcounter, int* d_ptrs) {
-        int Npow_local = 1;
-        for (int d = 0; d < DIMENSION; d++)
-            Npow_local *= N_grid;
-        for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
-            for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
-                int id = threadsPerBlock * blockId + threadId;
-
-                if (id < Npow_local) {
-                    int count = d_counters[id]; // read how many points are in this cell
-                    if (count > 0) {
-                        d_ptrs[id] = atomicAdd(d_globcounter, count); // store starting pos in ptrs
-                    }
-                }
-            }
-        }
-    }
-
-    // stores points in their cell-organized locations
-    void cpu_store(int               blocksPerGrid,
-                   int               threadsPerBlock,
-                   const POINT_TYPE* d_points,
-                   int               len_pts,
-                   int               N_grid,
-                   const int*        d_ptrs,
-                   int*              d_counters,
-                   POINT_TYPE*       d_stored_points,
-                   unsigned int*     d_permutation) {
-        for (int blockId = 0; blockId < blocksPerGrid; blockId++) {
-            for (int threadId = 0; threadId < threadsPerBlock; threadId++) {
-                int id = threadsPerBlock * blockId + threadId;
-                if (id < len_pts) {
-                    // determine cell for point
-                    POINT_TYPE p    = d_points[id];
-                    int        cell = cellFromPoint(N_grid, p);
-
-                    // claim a slot within the cell's range
-                    int pos = d_ptrs[cell] + atomicAdd(d_counters + cell, 1);
-
-                    d_stored_points[pos] = p;
-                    d_permutation[pos]   = id;
-                }
-            }
-        }
-    }
-#endif
-
-    // get cell index from point position (will be __device__)
+    // get cell index from point position
     int cellFromPoint(int N_grid, POINT_TYPE point) {
         int i = (int)floor(point.x * (double)N_grid); // assumes boxsize = 1.0
         int j = (int)floor(point.y * (double)N_grid); // assumes boxsize = 1.0
@@ -239,7 +192,7 @@ namespace knn {
 #endif
     }
 
-    // -------- inline per-point KNN (called from voronoi cell construction) --------
+    // inline per-point KNN (called from voronoi cell construction)
     void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest) {
         // thread-private k-nearest arrays (stack-allocated)
         unsigned int local_knearest[_K_];
@@ -262,9 +215,7 @@ namespace knn {
             local_dists[i]    = DBL_MAX;
         }
 
-        int search_cell_index = 0;
-
-        do {
+        for (int search_cell_index = 0; search_cell_index < N_cell_offsets; search_cell_index++) {
             double min_dist = d_cell_offset_dists[search_cell_index];
             if (local_dists[0] < min_dist) { break; }
 
@@ -287,7 +238,7 @@ namespace knn {
                     }
                 }
             }
-        } while (search_cell_index++ < N_cell_offsets);
+        }
 
         heapsort(local_knearest, local_dists, _K_);
 
@@ -325,7 +276,6 @@ namespace knn {
         }
     }
 
-    // -------- other --------
     void knn_free(knn_problem** knn) {
         free((*knn)->d_cell_offsets);
         free((*knn)->d_cell_offset_dists);
