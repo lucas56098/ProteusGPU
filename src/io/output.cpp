@@ -265,14 +265,13 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
 }
 
 // prints current step, t, dt and ETA
-void print_log(int                                                                                            step,
-               const std::chrono::time_point<std::chrono::_V2::steady_clock,
-                                             std::chrono::duration<long long int, std::ratio<1, 1000000000>>> wall,
-               double                                                                                         t_sim,
-               double                                                                                         dt,
-               double                                                                                         t_start,
-               double                                                                                         t_end,
-               int* next_log) {
+void print_log(int                                   step,
+               std::chrono::steady_clock::time_point wall,
+               double                                t_sim,
+               double                                dt,
+               double                                t_start,
+               double                                t_end,
+               int*                                  next_log) {
 
     const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count();
     std::cout << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
