@@ -2,7 +2,7 @@
 build/
 libs/
 output
-output*
+output*/
 run*/
 visualize/
 .vscode/

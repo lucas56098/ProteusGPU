@@ -14,26 +14,65 @@ else
         -include Makefile.systype
 endif
 
-# Check for DEBUG_MODE FIRST (before compiler setup)
+# Check DEBUG/CUDA/PROFILING
 DEBUG_MODE_ENABLED := $(findstring DEBUG_MODE,$(CONFIG_DEFINES))
+CUDA_ENABLED := $(findstring CUDA,$(CONFIG_DEFINES))
+PROFILING_ENABLED := $(findstring ENABLE_PROFILING,$(CONFIG_DEFINES))
 
-# Base compiler flags
+# ============================================================
+# CUDA mode: nvcc compiler
+# ============================================================
+ifeq ($(CUDA_ENABLED),CUDA)
+
+CXXFLAGS = --compiler-options -Wall,-Wextra,-Wno-unknown-pragmas -std=c++14
+CXXFLAGS += --expt-relaxed-constexpr
+CXXFLAGS += -dc
+
+ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
+	CXXFLAGS += -O0 -g -G -lineinfo --ptxas-options=-v
+	LDFLAGS =
+	BUILD_MODE_MESSAGE = CUDA DEBUG
+else
+	CXXFLAGS += -O3 --prec-div=false --prec-sqrt=false --ftz=true --fmad=true
+	LDFLAGS =
+	BUILD_MODE_MESSAGE = CUDA RELEASE
+endif
+
+ifneq (,$(findstring USE_OPENMP,$(CONFIG_DEFINES)))
+	CXXFLAGS += --compiler-options -fopenmp
+	LDFLAGS += --compiler-options -fopenmp
+	OPENMP_MESSAGE = OpenMP enabled
+else
+	OPENMP_MESSAGE = OpenMP disabled
+endif
+
+CUDA_MESSAGE = CUDA enabled
+
+# Link NVTX for profiling annotations (Nsight Systems)
+ifeq ($(PROFILING_ENABLED),ENABLE_PROFILING)
+	LDFLAGS += -lnvToolsExt
+endif
+
+# ============================================================
+# CPU_DEBUG mode: host compiler (g++/clang++)
+# ============================================================
+else
+
 CXXFLAGS = -Wall -Wextra -std=c++14
 
-# Check for DEBUG_MODE and set optimization flags
 ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
-	# Debug mode: enable AddressSanitizer
 	CXXFLAGS += -O0 -g -fsanitize=address
 	LDFLAGS = -fsanitize=address
 	BUILD_MODE_MESSAGE = DEBUG (AddressSanitizer enabled)
 else
-	# Release mode: optimize for performance
 	CXXFLAGS += -O3
-	LDFLAGS = 
-	BUILD_MODE_MESSAGE = RELEASE (optimized)
+	LDFLAGS =
+	BUILD_MODE_MESSAGE = RELEASE
 endif
 
-# Check if OpenMP is enabled
+# g++ does not recognize .cu extension — treat as C++
+CXXFLAGS += -x c++
+
 ifneq (,$(findstring USE_OPENMP,$(CONFIG_DEFINES)))
 	CXXFLAGS += -fopenmp
 	LDFLAGS += -fopenmp
@@ -41,6 +80,10 @@ ifneq (,$(findstring USE_OPENMP,$(CONFIG_DEFINES)))
 else
 	OPENMP_MESSAGE = OpenMP disabled
 endif
+
+CUDA_MESSAGE = CUDA disabled (CPU_DEBUG)
+
+endif # CUDA_ENABLED
 
 CXXFLAGS += -MMD -MP
 INCLUDES = -Isrc -Isrc/global
@@ -60,15 +103,15 @@ PROFILER_DIR = $(SRC_DIR)/profiler
 HDF5_LIB_DIR = libs/hdf5/lib
 
 # source files
-MAIN_SRC = $(SRC_DIR)/main.cpp
-GLOBAL_SRC = $(GLOBAL_DIR)/globals.cpp
-IO_SRC = $(IO_DIR)/input.cpp $(IO_DIR)/output.cpp
-KNN_SRC = $(KNN_DIR)/knn.cpp
-BEGRUN_SRC = $(BEGRUN_DIR)/begrun.cpp
-VORONOI_SRC = $(VORONOI_DIR)/voronoi.cpp $(VORONOI_DIR)/cell.cpp $(VORONOI_DIR)/periodic_mesh.cpp $(VORONOI_DIR)/geometry.cpp
-HYDRO_SRC = $(HYDRO_DIR)/finite_volume_solver.cpp $(HYDRO_DIR)/riemann.cpp
-GRADIENTS_SRC = $(GRADIENTS_DIR)/gradients.cpp
-PROFILER_SRC = $(PROFILER_DIR)/profiler.cpp
+MAIN_SRC = $(SRC_DIR)/main.cu
+GLOBAL_SRC = $(GLOBAL_DIR)/globals.cu
+IO_SRC = $(IO_DIR)/input.cu $(IO_DIR)/output.cu
+KNN_SRC = $(KNN_DIR)/knn.cu
+BEGRUN_SRC = $(BEGRUN_DIR)/begrun.cu
+VORONOI_SRC = $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/periodic_mesh.cu
+HYDRO_SRC = $(HYDRO_DIR)/finite_volume_solver.cu
+GRADIENTS_SRC = $(GRADIENTS_DIR)/gradients.cu
+PROFILER_SRC = $(PROFILER_DIR)/profiler.cu
 SOURCES = $(MAIN_SRC) $(GLOBAL_SRC) $(IO_SRC) $(KNN_SRC) $(BEGRUN_SRC) $(VORONOI_SRC) $(HYDRO_SRC) $(GRADIENTS_SRC) $(PROFILER_SRC)
 
 # object files
@@ -77,20 +120,22 @@ GLOBAL_OBJ = $(BUILD_DIR)/globals.o
 IO_OBJ = $(BUILD_DIR)/input.o $(BUILD_DIR)/output.o
 KNN_OBJ = $(BUILD_DIR)/knn.o
 BEGRUN_OBJ = $(BUILD_DIR)/begrun.o
-VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/cell.o $(BUILD_DIR)/periodic_mesh.o $(BUILD_DIR)/geometry.o
-HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o $(BUILD_DIR)/riemann.o
+VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/periodic_mesh.o
+HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o
 GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
 PROFILER_OBJ = $(BUILD_DIR)/profiler.o
 OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(GRADIENTS_OBJ) $(PROFILER_OBJ)
 
-# name of executable (see: https://en.wikipedia.org/wiki/Proteus :D)
+# name of executable
 TARGET = ProteusGPU
 
+# System Types
 ifeq ($(SYSTYPE),Ubuntu)
 	CXX_DEBUG = g++
 	CXX_RELEASE = g++
 	HDF5_CFLAGS ?= -I/usr/include/hdf5/serial
 	HDF5_LIBS ?= -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5
+	CUDA_ARCH ?= sm_89
 endif
 
 ifeq ($(SYSTYPE),macOS)
@@ -113,6 +158,7 @@ ifeq ($(SYSTYPE),HorekaGH200)
 	CXX_RELEASE = nvc++
 	HDF5_CFLAGS ?= -I/software/easybuild/software/HDF5/1.14.5-gompi-2024a/include
 	HDF5_LIBS ?= -L/software/easybuild/software/HDF5/1.14.5-gompi-2024a/lib -lhdf5
+	CUDA_ARCH ?= sm_90
 endif
 
 # ADD YOUR SYSTEM TYPE AND HDF5 PATHS HERE IF NOT SUPPORTED
@@ -120,18 +166,23 @@ endif
 # ...
 # endif
 
-# Determine compiler based on DEBUG_MODE and platform
-ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
-        CXX = ${CXX_DEBUG}
+# Determine compiler based on CUDA/CPU_DEBUG mode and platform
+ifeq ($(CUDA_ENABLED),CUDA)
+        CXX = nvcc
+        CXXFLAGS += -arch=$(CUDA_ARCH)
 else
+  ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
+        CXX = ${CXX_DEBUG}
+  else
         CXX = ${CXX_RELEASE}
+  endif
 endif
 
 ifndef CXX
 	$(error SYSTYPE not recognized.)
 endif
 
-# check if HDF5 is enabled in Config.sh
+# link HDF5
 ifneq (,$(findstring USE_HDF5,$(CONFIG_DEFINES)))
 	HAS_HDF5 = 1
 	CXXFLAGS += $(HDF5_CFLAGS)
@@ -148,54 +199,54 @@ all: $(TARGET)
 	@echo "SYSTYPE: $(SYSTYPE)"
 	@echo "Compiler: $(CXX)"
 	@echo "Mode: $(BUILD_MODE_MESSAGE)"
+	@echo "GPU: $(CUDA_MESSAGE)"
 	@echo "OpenMP: $(OPENMP_MESSAGE)"
 	@echo "=========================================="
 	@echo "Run with: ./$(TARGET) [param.txt] [restart flag]"
 
+# ---- Linking ----
+ifeq ($(CUDA_ENABLED),CUDA)
+# CUDA: two-step link (device link + host link)
+$(TARGET): $(OBJECTS) | $(BUILD_DIR)
+	$(CXX) -arch=$(CUDA_ARCH) -dlink $(OBJECTS) -o $(BUILD_DIR)/dlink.o $(LDFLAGS)
+	$(CXX) -arch=$(CUDA_ARCH) $(OBJECTS) $(BUILD_DIR)/dlink.o -o $@ $(LDFLAGS) -lcudart
+else
 $(TARGET): $(OBJECTS) | $(BUILD_DIR)
 	$(CXX) $(OBJECTS) -o $@ $(LDFLAGS)
+endif
 
 # compile sources
-$(BUILD_DIR)/main.o: $(SRC_DIR)/main.cpp | $(BUILD_DIR)
+$(BUILD_DIR)/main.o: $(SRC_DIR)/main.cu | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/globals.o: $(GLOBAL_DIR)/globals.cpp $(GLOBAL_DIR)/globals.h | $(BUILD_DIR)
+$(BUILD_DIR)/globals.o: $(GLOBAL_DIR)/globals.cu $(GLOBAL_DIR)/globals.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/input.o: $(IO_DIR)/input.cpp $(IO_DIR)/input.h | $(BUILD_DIR)
+$(BUILD_DIR)/input.o: $(IO_DIR)/input.cu $(IO_DIR)/input.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/output.o: $(IO_DIR)/output.cpp $(IO_DIR)/output.h | $(BUILD_DIR)
+$(BUILD_DIR)/output.o: $(IO_DIR)/output.cu $(IO_DIR)/output.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/knn.o: $(KNN_DIR)/knn.cpp $(KNN_DIR)/knn.h | $(BUILD_DIR)
+$(BUILD_DIR)/knn.o: $(KNN_DIR)/knn.cu $(KNN_DIR)/knn.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/begrun.o: $(BEGRUN_DIR)/begrun.cpp $(BEGRUN_DIR)/begrun.h | $(BUILD_DIR)
+$(BUILD_DIR)/begrun.o: $(BEGRUN_DIR)/begrun.cu $(BEGRUN_DIR)/begrun.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/voronoi.o: $(VORONOI_DIR)/voronoi.cpp $(VORONOI_DIR)/voronoi.h | $(BUILD_DIR)
+$(BUILD_DIR)/voronoi.o: $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/voronoi.h $(VORONOI_DIR)/cell.cu $(VORONOI_DIR)/cell.h $(VORONOI_DIR)/geometry.cu $(VORONOI_DIR)/geometry.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/cell.o: $(VORONOI_DIR)/cell.cpp $(VORONOI_DIR)/cell.h | $(BUILD_DIR)
+$(BUILD_DIR)/periodic_mesh.o: $(VORONOI_DIR)/periodic_mesh.cu $(VORONOI_DIR)/periodic_mesh.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/periodic_mesh.o: $(VORONOI_DIR)/periodic_mesh.cpp $(VORONOI_DIR)/periodic_mesh.h | $(BUILD_DIR)
+$(BUILD_DIR)/finite_volume_solver.o: $(HYDRO_DIR)/finite_volume_solver.cu $(HYDRO_DIR)/finite_volume_solver.h $(HYDRO_DIR)/riemann.cu $(HYDRO_DIR)/riemann.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/geometry.o: $(VORONOI_DIR)/geometry.cpp $(VORONOI_DIR)/geometry.h | $(BUILD_DIR)
+$(BUILD_DIR)/gradients.o: $(GRADIENTS_DIR)/gradients.cu $(GRADIENTS_DIR)/gradients.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/finite_volume_solver.o: $(HYDRO_DIR)/finite_volume_solver.cpp $(HYDRO_DIR)/finite_volume_solver.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/riemann.o: $(HYDRO_DIR)/riemann.cpp $(HYDRO_DIR)/riemann.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/gradients.o: $(GRADIENTS_DIR)/gradients.cpp $(GRADIENTS_DIR)/gradients.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cpp $(PROFILER_DIR)/profiler.h | $(BUILD_DIR)
+$(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cu $(PROFILER_DIR)/profiler.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 
@@ -217,5 +268,5 @@ run: $(TARGET)
 # clean build files
 clean:
 	@echo "Cleaning build files..."
-	@rm -f $(OBJECTS) $(TARGET)
-	@rm -rf $(BUILD_DIR)/*.o
+	@rm -f $(OBJECTS) $(BUILD_DIR)/dlink.o $(TARGET)
+	@rm -rf $(BUILD_DIR)/*.o $(BUILD_DIR)/*.d

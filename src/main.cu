@@ -27,15 +27,14 @@
 ==========================================================================
 A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics
 ==========================================================================
-Version: 0.5
+Version: 0.6
 Authors: Lucas Schleuss, Dylan Nelson
 Institution: Institute of Theoretical Astrophysics, Heidelberg University
 ========================================================================*/
 
-// main routine
 int main(int argc, char* argv[]) {
-    PROFILE_START("TOTAL_RUNTIME");
 
+    PROFILE_START("TOTAL_RUNTIME");
     const auto wall_start = std::chrono::steady_clock::now();
 
     // load input parameters and IC
@@ -43,15 +42,15 @@ int main(int argc, char* argv[]) {
     double             t_sim    = state.t_sim;
     int                snap_num = state.snap_num;
 
-    // init hydro primvars from IC
+    // init primvars
     hydro::primvars* primvar = hydro::init(icData.seedpos_dims[0]);
 
-    // compute voronoi mesh (allocate once, reuse every timestep)
+    // compute mesh
     hsize_t n_hydro = icData.seedpos_dims[0];
     VMesh*  mesh    = voronoi::allocate_mesh(n_hydro);
     voronoi::compute_periodic_mesh(mesh, (POINT_TYPE*)icData.seedpos.data(), n_hydro);
 
-    // allocate persistent hydro buffers (prim_new, gradients)
+    // allocate hydro buffers
     hydro::allocate_hydro_buffers(n_hydro);
 
     // free IC data no longer needed
@@ -81,7 +80,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    // main hydro loop
+    // hydro loop
     PROFILE_START("HYDRO_MAIN");
     while (t_sim < t_end) {
 
@@ -97,7 +96,7 @@ int main(int argc, char* argv[]) {
         t_sim += dt;
         step++;
 
-        // print log info
+        // log info
         if (step >= next_log || t_sim >= t_end) { print_log(step, wall_start, t_sim, dt, t_start, t_end, &next_log); }
 
 #ifdef USE_HDF5

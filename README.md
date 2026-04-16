@@ -1,30 +1,32 @@
 # ProteusGPU
 
-[![Build](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml/badge.svg)](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml) [![Version 0.5](https://img.shields.io/badge/version-0.5-blue)](https://github.com/lucas56098/ProteusGPU/releases)
+[![Build](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml/badge.svg)](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml) [![Version 0.6](https://img.shields.io/badge/version-0.6-blue)](https://github.com/lucas56098/ProteusGPU/releases)
 
 ![Banner](/figures/banner_v4.jpg)
 
 Work in progress: A GPU accelerated moving mesh hydrodynamics code.
 
-Dont expect anything to work yet for the forseeable future.
-
 The idea is to combine: ["Meshless Voronoi on the GPU" [Ray et. al 2018]](https://doi.org/10.1145/3272127.3275092) with a moving mesh hydro solver similar to ["AREPO" [Springel 2010]](https://academic.oup.com/mnras/article/401/2/791/1147356) ported to GPU. Doing this in a toy code allows to explore various ideas first.
 
-This project is being done during my master's thesis, supervised by Dylan Nelson, at the Institute of Theoretical Astrophysics, Heidelberg University.
+> [!NOTE]
+> The current version runs 2D/3D static/moving mesh hydrodynamics multithreaded on CPU as well as on a single NVIDIA GPU. Nothing is optimized yet however.
 
-## Building
+This project is being done during my master's thesis, supervised by [Dylan Nelson](https://nelson.tng-project.org/), at the Institute of Theoretical Astrophysics, Heidelberg University.
 
-1. Select your system in `Makefile.systype` (Ubuntu/macOS, or add your own)
-2. Configure compilation flags in `Config.sh` and parameters in `param.txt`
-3. Build with `make`
+## Getting started
 
+1. After cloning the repo select your system in `Makefile.systype` (or add your own to the `Makefile`)
+2. Configure compilation flags in `Config.sh` and build with `make`
+3. Use a `create.py` script for IC generation and specify simulation parameters in `param.txt`
+4. Run the simulation with
 ```bash
-make           # Uses SYSTYPE from Makefile.systype
-./ProteusGPU   # Run the executable
+./ProteusGPU [./ics/param.txt] [restart_flag]
 ```
+If the `restart_flag` is set the simulation continues from the last snapshot in the `output_folder`.
 
 ## Dependencies
-- HDF5 (libhdf5-dev on Ubuntu, via Homebrew on macOS)
+- HDF5 (`libhdf5-dev` on Ubuntu, via Homebrew on macOS)
+- CUDA Toolkit (for GPU mode, requires NVIDIA GPU)
 
 ## Roadmap
 
@@ -36,4 +38,5 @@ make           # Uses SYSTYPE from Makefile.systype
 * v0.6 - GPU initial port (moving mesh hydro)
 * v0.7 - single GPU optimization
 * v0.8 - multi-GPU/multi-node MPI
+* v0.9 - improved numerics for inhomogenous particle distributions
 

@@ -8,5 +8,3 @@ output_dt = 0.01
 
 # hydrodynamics
 CFL_frac = 0.3
-CellShapingSpeed = 0.7
-CellShapingFactor = 0.2

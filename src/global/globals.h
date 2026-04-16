@@ -13,7 +13,7 @@ extern ICData        icData;
 extern OutputHandler output;
 extern double        buff; // buffer for the periodic bc (box will be 1 + 2*buff long)
 
-// compile-time physics constants (set via -D flags from Config.sh)
+// compile-time physics constants
 constexpr double gamma_eos         = (double)_GAMMA_EOS_;
 constexpr double CellShapingSpeed  = (double)_CELL_SHAPING_SPEED_;
 constexpr double CellShapingFactor = (double)_CELL_SHAPING_FACTOR_;

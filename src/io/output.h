@@ -11,8 +11,6 @@ struct VMesh;
 #ifdef USE_HDF5
 #include "hdf5.h"
 
-// has to be improved once we are at a point that there actually is something to store...
-
 // structs to prepare mesh data for writing to HDF5 file
 struct MeshHeader {
     int    dimension = DIMENSION;
@@ -31,15 +29,6 @@ struct MeshCellData {
     std::vector<int>     face_counts; // number of faces per cell
 };
 
-struct KNNData {
-    int                       num_points;
-    int                       k;
-    std::vector<double>       points;       // num_points x 3 (x,y,z)
-    std::vector<hsize_t>      points_dims;  // [num_points, 3]
-    std::vector<unsigned int> nearest;      // num_points x k
-    std::vector<hsize_t>      nearest_dims; // [num_points, k]
-    std::vector<unsigned int> permutation;  // num_points
-};
 #endif
 
 // output handler class for writing mesh files

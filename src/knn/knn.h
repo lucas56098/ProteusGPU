@@ -32,19 +32,19 @@ namespace knn {
     // resets counters and sorts points into grid
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
 
-    void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
-    int  cellFromPoint(int N_grid, POINT_TYPE point);
+    void   sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
+    HD int cellFromPoint(int N_grid, POINT_TYPE point);
 
     // compute K nearest neighbors for a single point
-    void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest);
+    HD void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest);
 
-    void heapify(unsigned int* keys, double* vals, int node, int size);
-    template <typename T> void inline swap_on_device(T& a, T& b);
-    void heapsort(unsigned int* keys, double* vals, int size);
+    HD void heapify(unsigned int* keys, double* vals, int node, int size);
+    template <typename T> HD void inline swap_on_device(T& a, T& b);
+    HD void heapsort(unsigned int* keys, double* vals, int size);
 
     void knn_free(knn_problem** knn);
 
-    static inline double dist2_point(const POINT_TYPE& a, const POINT_TYPE& b) {
+    HD static inline double dist2_point(const POINT_TYPE& a, const POINT_TYPE& b) {
 #ifdef dim_2D
         double dx = a.x - b.x;
         double dy = a.y - b.y;

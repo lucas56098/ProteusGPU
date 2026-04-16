@@ -74,7 +74,6 @@ namespace voronoi {
     void cpu_fallback_failed_cells(
         int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original);
 
-#ifdef CPU_DEBUG
     void cpu_compute_cell(int                 blocksPerGrid,
                           int                 threadsPerBlock,
                           int                 N_seedpts,
@@ -83,18 +82,17 @@ namespace voronoi {
                           Status*             gpu_stat,
                           VMesh*              mesh,
                           const unsigned int* sorted_to_original);
-#endif
 
 } // namespace voronoi
 
 // ---- shared inline helpers ----
 
-inline hsize_t hydro_index(hsize_t neighbor_raw, const VMesh* mesh) {
+HD inline hsize_t hydro_index(hsize_t neighbor_raw, const VMesh* mesh) {
     if (neighbor_raw < mesh->n_hydro) { return neighbor_raw; }
     return mesh->ghost_ids[neighbor_raw - mesh->n_hydro];
 }
 
-inline hydro::prim get_state(hsize_t i, const VMesh* mesh, const hydro::primvars* primvar) {
+HD inline hydro::prim get_state(hsize_t i, const VMesh* mesh, const hydro::primvars* primvar) {
     hydro::prim state_i;
     hsize_t     index = hydro_index(i, mesh);
 

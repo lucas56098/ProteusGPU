@@ -1,11 +1,23 @@
-#include "profiler.h"
 #include "../global/gpu_compat.h"
+#include "profiler.h"
+#include <algorithm>
 #include <sys/resource.h>
+
+// CPU wall-clock profiling (chrono-based, works in all modes)
 
 std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> Profiler::m_StartTimes;
 std::unordered_map<std::string, long long>                                      Profiler::m_Timings;
 
+// GPU event timing storage
+std::unordered_map<std::string, double> Profiler::m_GpuTimings;
+std::unordered_map<std::string, int>    Profiler::m_GpuCounts;
+
+#if !defined(CPU_DEBUG) && defined(CUDA)
+std::unordered_map<std::string, Profiler::GpuEventPair> Profiler::m_GpuEvents;
+#endif
+
 void Profiler::StartTimer(const std::string& name) {
+    NVTX_PUSH(name.c_str());
     m_StartTimes[name] = std::chrono::high_resolution_clock::now();
 }
 
@@ -13,8 +25,41 @@ void Profiler::EndTimer(const std::string& name) {
     auto endTime   = std::chrono::high_resolution_clock::now();
     auto startTime = m_StartTimes[name];
     m_Timings[name] += std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+    NVTX_POP();
 }
 
+// GPU event-based profiling (CUDA mode only)
+
+void Profiler::StartGPU(const std::string& name) {
+#if !defined(CPU_DEBUG) && defined(CUDA)
+    NVTX_PUSH(name.c_str());
+    auto& ev = m_GpuEvents[name];
+    if (!ev.start) {
+        cudaEventCreate((cudaEvent_t*)&ev.start);
+        cudaEventCreate((cudaEvent_t*)&ev.stop);
+    }
+    cudaEventRecord((cudaEvent_t)ev.start, 0);
+#else
+    (void)name;
+#endif
+}
+
+void Profiler::EndGPU(const std::string& name) {
+#if !defined(CPU_DEBUG) && defined(CUDA)
+    auto& ev = m_GpuEvents[name];
+    cudaEventRecord((cudaEvent_t)ev.stop, 0);
+    cudaEventSynchronize((cudaEvent_t)ev.stop);
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, (cudaEvent_t)ev.start, (cudaEvent_t)ev.stop);
+    m_GpuTimings[name] += (double)ms;
+    m_GpuCounts[name]++;
+    NVTX_POP();
+#else
+    (void)name;
+#endif
+}
+
+// Print combined results
 void Profiler::PrintResults() {
     std::cout << "\n=== Profiling Results (Wall Clock Time) ===\n";
     long long totalRuntime     = 0;
@@ -34,6 +79,30 @@ void Profiler::PrintResults() {
     std::cout << "\nTOTAL_RUNTIME: " << (totalRuntime / 1e6) << "s\n";
     std::cout << "PARALLELIZED_TIME: " << (parallelizedTime / 1e6) << "s\n";
     std::cout << "PARALLEL_FRACTION: " << parallelFraction * 100.0 << " %\n";
+
+    // GPU kernel timing breakdown
+    if (!m_GpuTimings.empty()) {
+        std::cout << "\n=== GPU Kernel Profiling (CUDA Events) ===\n";
+
+        // sort by cumulative time for reading
+        std::vector<std::pair<std::string, double>> sorted(m_GpuTimings.begin(), m_GpuTimings.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+
+        double gpu_total_ms = 0.0;
+        for (const auto& entry : sorted) {
+            gpu_total_ms += entry.second;
+        }
+
+        for (const auto& entry : sorted) {
+            int    calls = m_GpuCounts[entry.first];
+            double pct   = (gpu_total_ms > 0.0) ? (entry.second / gpu_total_ms * 100.0) : 0.0;
+            std::cout << "[GPU] " << entry.first << ": " << entry.second << " ms"
+                      << " (" << calls << " calls, " << (entry.second / calls) << " ms/call"
+                      << ", " << pct << "%)\n";
+        }
+        std::cout << "[GPU] TOTAL: " << gpu_total_ms << " ms\n";
+    }
+
     std::cout << "=========================\n";
 }
 

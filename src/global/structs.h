@@ -3,8 +3,6 @@
 #pragma once
 
 #include "gpu_compat.h"
-#include <cstdlib>
-#include <cstring>
 namespace voronoi {
 
     // status codes for voronoi mesh generation
@@ -69,7 +67,7 @@ namespace gradients {
         size_t     n; // number of cells
 
         // load single-cell gradients from SoA arrays
-        inline PrimGradient load(size_t i) const {
+        HD inline PrimGradient load(size_t i) const {
             PrimGradient g;
             g.rho = rho[i];
             g.vx  = vx[i];
@@ -83,24 +81,32 @@ namespace gradients {
     };
 
     inline void allocate_grad(size_t n, PrimGradients* g) {
-        g->rho = (GRAD_TYPE*)malloc(n * sizeof(GRAD_TYPE));
-        g->vx  = (GRAD_TYPE*)malloc(n * sizeof(GRAD_TYPE));
-        g->vy  = (GRAD_TYPE*)malloc(n * sizeof(GRAD_TYPE));
+        g->rho = gpu_alloc<GRAD_TYPE>(n);
+        g->vx  = gpu_alloc<GRAD_TYPE>(n);
+        g->vy  = gpu_alloc<GRAD_TYPE>(n);
 #ifdef dim_3D
-        g->vz = (GRAD_TYPE*)malloc(n * sizeof(GRAD_TYPE));
+        g->vz = gpu_alloc<GRAD_TYPE>(n);
 #endif
-        g->E = (GRAD_TYPE*)malloc(n * sizeof(GRAD_TYPE));
+        g->E = gpu_alloc<GRAD_TYPE>(n);
         g->n = n;
+
+        gpu_advise_gpu_preferred(g->rho, n * sizeof(GRAD_TYPE));
+        gpu_advise_gpu_preferred(g->vx, n * sizeof(GRAD_TYPE));
+        gpu_advise_gpu_preferred(g->vy, n * sizeof(GRAD_TYPE));
+#ifdef dim_3D
+        gpu_advise_gpu_preferred(g->vz, n * sizeof(GRAD_TYPE));
+#endif
+        gpu_advise_gpu_preferred(g->E, n * sizeof(GRAD_TYPE));
     }
 
     inline void free_grad(PrimGradients* g) {
-        free(g->rho);
-        free(g->vx);
-        free(g->vy);
+        gpu_free(g->rho);
+        gpu_free(g->vx);
+        gpu_free(g->vy);
 #ifdef dim_3D
-        free(g->vz);
+        gpu_free(g->vz);
 #endif
-        free(g->E);
+        gpu_free(g->E);
         g->rho = nullptr;
         g->vx  = nullptr;
         g->vy  = nullptr;
@@ -112,13 +118,13 @@ namespace gradients {
     }
 
     inline void zero_grad(PrimGradients* g) {
-        memset(g->rho, 0, g->n * sizeof(GRAD_TYPE));
-        memset(g->vx, 0, g->n * sizeof(GRAD_TYPE));
-        memset(g->vy, 0, g->n * sizeof(GRAD_TYPE));
+        gpu_memset(g->rho, 0, g->n * sizeof(GRAD_TYPE));
+        gpu_memset(g->vx, 0, g->n * sizeof(GRAD_TYPE));
+        gpu_memset(g->vy, 0, g->n * sizeof(GRAD_TYPE));
 #ifdef dim_3D
-        memset(g->vz, 0, g->n * sizeof(GRAD_TYPE));
+        gpu_memset(g->vz, 0, g->n * sizeof(GRAD_TYPE));
 #endif
-        memset(g->E, 0, g->n * sizeof(GRAD_TYPE));
+        gpu_memset(g->E, 0, g->n * sizeof(GRAD_TYPE));
     }
 
 } // namespace gradients

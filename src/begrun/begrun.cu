@@ -1,8 +1,8 @@
-#include "begrun.h"
 #include "../global/allvars.h"
 #include "../io/input.h"
 #include "../io/output.h"
 #include "../profiler/profiler.h"
+#include "begrun.h"
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -11,13 +11,12 @@
 
 namespace begrun {
 
-    // initalize Proteus
+    // setup run
     StartState begrun(int argc, char* argv[]) {
         PROFILE_START("BEGRUN");
 
-        print_banner();
-
         // print basic info
+        print_banner();
 #ifdef dim_2D
 #ifdef CPU_DEBUG
         std::cout << "BEGRUN: Running 2D mode on CPU" << std::endl;
@@ -26,7 +25,7 @@ namespace begrun {
 #endif
 #elif dim_3D
 #ifdef CPU_DEBUG
-        std::cout << "BEGRUN: Running 3D mode on GPU" << std::endl;
+        std::cout << "BEGRUN: Running 3D mode on CPU" << std::endl;
 #else
         std::cout << "BEGRUN: Running 3D mode on GPU" << std::endl;
 #endif
@@ -35,6 +34,17 @@ namespace begrun {
 #ifdef DRY_RUN
         std::cout << "Dry run for CI test successful, exiting." << std::endl;
         exit(EXIT_SUCCESS);
+#endif
+
+#ifndef CPU_DEBUG
+        // CUDA init
+        cudaDeviceSetLimit(cudaLimitStackSize, 16384);
+        int dev;
+        cudaGetDevice(&dev);
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, dev);
+        std::cout << "CUDA: Using device " << dev << " (" << prop.name << "), SM " << prop.major << "." << prop.minor
+                  << std::endl;
 #endif
 
         // load param.txt
@@ -69,7 +79,7 @@ namespace begrun {
         buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) * 4;
 
 #ifdef MOVING_MESH
-        // mesh regularization parameters (compile-time constants from Config.sh)
+        // mesh regularization parameters
         std::cout << "BEGRUN: CellShapingSpeed  = " << CellShapingSpeed << std::endl;
         std::cout << "BEGRUN: CellShapingFactor = " << CellShapingFactor << std::endl;
 #endif
@@ -106,7 +116,7 @@ namespace begrun {
         std::cout << "==========================================================================" << std::endl;
         std::cout << "A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics" << std::endl;
         std::cout << "==========================================================================" << std::endl;
-        std::cout << "Version: 0.5" << std::endl;
+        std::cout << "Version: 0.6" << std::endl;
         std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
         std::cout << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
         std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
