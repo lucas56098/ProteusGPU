@@ -150,6 +150,7 @@ ifeq ($(SYSTYPE),MPCDF)
 	CXX_RELEASE = g++
         HDF5_CFLAGS ?= -I${HDF5_HOME}/include
         HDF5_LIBS ?= -L${HDF5_HOME}/lib -lhdf5
+	CUDA_ARCH ?= sm_80
 endif
 
 ifeq ($(SYSTYPE),HorekaGH200)

@@ -146,19 +146,41 @@ inline void gpu_memcpy(void* dst, const void* src, size_t bytes) {
 inline void gpu_advise_gpu_preferred(void* ptr, size_t bytes) {
     int dev;
     cudaGetDevice(&dev);
+#if CUDART_VERSION >= 12000
+    cudaMemLocation loc = {};
+    loc.type = cudaMemLocationTypeDevice;
+    loc.id = dev;
+    CUDA_CHECK(cudaMemAdvise(ptr, bytes, cudaMemAdviseSetPreferredLocation, loc));
+    CUDA_CHECK(cudaMemAdvise(ptr, bytes, cudaMemAdviseSetAccessedBy, loc));
+#else
     CUDA_CHECK(cudaMemAdvise(ptr, bytes, cudaMemAdviseSetPreferredLocation, dev));
     CUDA_CHECK(cudaMemAdvise(ptr, bytes, cudaMemAdviseSetAccessedBy, dev));
+#endif
 }
 
 // prefetch managed memory to the GPU
 inline void gpu_prefetch(void* ptr, size_t bytes) {
     int dev;
     cudaGetDevice(&dev);
+#if CUDART_VERSION >= 12000
+    cudaMemLocation loc = {};
+    loc.type = cudaMemLocationTypeDevice;
+    loc.id = dev;
+    CUDA_CHECK(cudaMemPrefetchAsync(ptr, bytes, loc, 0));
+#else
     CUDA_CHECK(cudaMemPrefetchAsync(ptr, bytes, dev, 0));
+#endif
 }
 // prefetch managed memory to the CPU
 inline void gpu_prefetch_to_cpu(void* ptr, size_t bytes) {
+#if CUDART_VERSION >= 12000
+    cudaMemLocation loc = {};
+    loc.type = cudaMemLocationTypeHost;
+    loc.id = 0;
+    CUDA_CHECK(cudaMemPrefetchAsync(ptr, bytes, loc, 0));
+#else
     CUDA_CHECK(cudaMemPrefetchAsync(ptr, bytes, cudaCpuDeviceId, 0));
+#endif
 }
 
 typedef unsigned char uchar;
