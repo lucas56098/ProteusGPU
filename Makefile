@@ -112,7 +112,7 @@ VORONOI_SRC = $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/periodic_mesh.cu
 HYDRO_SRC = $(HYDRO_DIR)/finite_volume_solver.cu
 GRADIENTS_SRC = $(GRADIENTS_DIR)/gradients.cu
 PROFILER_SRC = $(PROFILER_DIR)/profiler.cu
-SOURCES = $(MAIN_SRC) $(GLOBAL_SRC) $(IO_SRC) $(KNN_SRC) $(BEGRUN_SRC) $(VORONOI_SRC) $(HYDRO_SRC) $(GRADIENTS_SRC) $(PROFILER_SRC)
+eOURCES = $(MAIN_SRC) $(GLOBAL_SRC) $(IO_SRC) $(KNN_SRC) $(BEGRUN_SRC) $(VORONOI_SRC) $(HYDRO_SRC) $(GRADIENTS_SRC) $(PROFILER_SRC)
 
 # object files
 MAIN_OBJ = $(BUILD_DIR)/main.o
@@ -146,6 +146,8 @@ ifeq ($(SYSTYPE),macOS)
 endif
 
 ifeq ($(SYSTYPE),MPCDF)
+	# VERA (A100): module load gcc/15 hdf5-serial/1.12.2 cuda/13.0 
+	# BinAC2 (A100): module load compiler/gnu/14.2 lib/hdf5/1.12-gnu-14.2 devel/cuda/13.0
 	CXX_DEBUG = g++
 	CXX_RELEASE = g++
         HDF5_CFLAGS ?= -I${HDF5_HOME}/include
@@ -153,8 +155,8 @@ ifeq ($(SYSTYPE),MPCDF)
 	CUDA_ARCH ?= sm_80
 endif
 
-ifeq ($(SYSTYPE),HorekaGH200)
-	# module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
+ifeq ($(SYSTYPE),Horeka)
+	# HorekaFTP (GH200): module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
 	CXX_DEBUG = nvc++
 	CXX_RELEASE = nvc++
 	HDF5_CFLAGS ?= -I/software/easybuild/software/HDF5/1.14.5-gompi-2024a/include
