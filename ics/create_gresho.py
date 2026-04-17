@@ -10,10 +10,9 @@ import numpy as np
 from common import seed_positions
 
 
-def create_gresho_vortex(filename, num_seeds, dimension, extent=1.0, gamma=5.0 / 3.0, mesh_mode="polar_ring"):
+def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_mode="polar_ring"):
     """Create initial conditions for the Gresho vortex test problem."""
-    if dimension not in (2, 3):
-        raise ValueError("dimension must be 2 or 3")
+    dimension = 2
 
     print(f"Creating Gresho vortex IC file: {filename}")
     print(f"  Total seeds: {num_seeds}")
@@ -83,7 +82,5 @@ def create_gresho_vortex(filename, num_seeds, dimension, extent=1.0, gamma=5.0 /
 
 if __name__ == "__main__":
     # 2D Gresho IC
-    create_gresho_vortex("IC_gresho_2D.hdf5", num_seeds=800**2, dimension=2)
+    create_gresho_vortex("IC_gresho_2D.hdf5", num_seeds=800**2)
 
-    # 3D Gresho IC
-    # create_gresho_vortex("IC_gresho_3D.hdf5", num_seeds=150**3, dimension=3)
