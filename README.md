@@ -4,12 +4,12 @@
 
 ![Banner](/figures/banner_v4.jpg)
 
-Work in progress: A GPU accelerated moving mesh hydrodynamics code.
+Proteus is a GPU accelerated moving mesh hydrodynamics code.
 
-The idea is to combine: ["Meshless Voronoi on the GPU" [Ray et. al 2018]](https://doi.org/10.1145/3272127.3275092) with a moving mesh hydro solver similar to ["AREPO" [Springel 2010]](https://academic.oup.com/mnras/article/401/2/791/1147356) ported to GPU. Doing this in a toy code allows to explore various ideas first.
+It combines the algorithmic approach of ["Meshless Voronoi on the GPU" [Ray et. al 2018]](https://doi.org/10.1145/3272127.3275092) with a moving mesh hydro solver similar to ["AREPO" [Springel 2010]](https://academic.oup.com/mnras/article/401/2/791/1147356) ported to GPU.
 
 > [!NOTE]
-> The current version runs 2D/3D static/moving mesh hydrodynamics multithreaded on CPU as well as on a single NVIDIA GPU. Nothing is optimized yet however.
+> The current version runs 2D/3D static/moving mesh hydrodynamics multithreaded on CPU, as well as on a single NVIDIA GPU. Optimizations are ongoing.
 
 This project is being done during my master's thesis, supervised by [Dylan Nelson](https://nelson.tng-project.org/), at the Institute of Theoretical Astrophysics, Heidelberg University.
 
@@ -37,6 +37,7 @@ If the `restart_flag` is set the simulation continues from the last snapshot in 
 * v0.5 - moving mesh hydro (3D, CPU)
 * v0.6 - GPU initial port (moving mesh hydro)
 * v0.7 - single GPU optimization
-* v0.8 - multi-GPU/multi-node MPI
-* v0.9 - improved numerics for inhomogenous particle distributions
+* v0.8 - multi-GPU, single node
+* v0.9 - multi-node MPI
+* v1.0 - support for inhomogenous particle distributions
 

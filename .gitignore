@@ -12,6 +12,7 @@ __pycache__/
 ProteusGPU
 .DS_Store
 ics/param_*
+ICs
 run_*.sh
 
 # file types

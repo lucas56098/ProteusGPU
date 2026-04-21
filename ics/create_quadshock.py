@@ -1,6 +1,7 @@
 """
-Creates Quad Shock 2 Initial Conditions (IC) HDF5 file.
+Creates Quad Shock (2D Riemann) Initial Conditions (IC) HDF5 file.
 
+note: conf == 1 (2) is Configuration 3 (5) of Kurganov & Tadmor (2022)
 supports: random mesh and perturbed cartesian
 """
 
@@ -10,18 +11,18 @@ import numpy as np
 from common import seed_positions
 
 
-def create_quadshock2(
+def create_quadshock(
     filename,
     num_seeds,
-    dimension,
+    conf=1,
     extent=1.0,
-    gamma=7.0 / 5.0,
+    gamma=5.0 / 3.0,
     mesh_mode="random",  # ["random", "cartesian"]
 ):
-    if dimension not in (2, 3):
-        raise ValueError("dimension must be 2 or 3")
+    dimension = 2
+    assert conf in [1,2]
 
-    print(f"Creating Quad Shock 2 IC file: {filename}")
+    print(f"Creating Quad Shock [{conf}] IC file: {filename}")
     print(f"  Total seeds: {num_seeds}")
     print(f"  Dimension: {dimension}")
     print(f"  Extent: {extent}")
@@ -43,22 +44,43 @@ def create_quadshock2(
     q3 = (x < mid) & (y < mid)   # bottom-left
     q4 = (x > mid) & (y < mid)   # bottom-right
 
+    # allocate
+    rho = np.zeros(num_seeds, dtype=np.float64)
+    vel = np.zeros((num_seeds, dimension), dtype=np.float64)
+    pressure = np.zeros(num_seeds, dtype=np.float64)
+
     # density
-    rho = np.empty(num_seeds, dtype=np.float64)
-    rho[q1] = 1.0
-    rho[q2] = 2.0
-    rho[q3] = 1.0
-    rho[q4] = 3.0
+    if conf == 1:
+        rho[q1] = 1.5
+        rho[q2] = 0.5323
+        rho[q3] = 0.138
+        rho[q4] = 0.5323
+    if conf == 2:
+        rho[q1] = 1.0
+        rho[q2] = 2.0
+        rho[q3] = 1.0
+        rho[q4] = 3.0
 
     # velocities
-    vel = np.zeros((num_seeds, dimension), dtype=np.float64)
-    vel[q1, 0] = 0.75;    vel[q1, 1] = -0.5
-    vel[q2, 0] = 0.75;    vel[q2, 1] = 0.5
-    vel[q3, 0] = -0.75;   vel[q3, 1] = 0.5
-    vel[q4, 0] = -0.75;   vel[q4, 1] = -0.5
+    if conf == 1:
+        vel[q1, 0] = 0.0;     vel[q1, 1] = 0.0
+        vel[q2, 0] = 1.206;   vel[q2, 1] = 0.0
+        vel[q3, 0] = 1.206;   vel[q3, 1] = 1.206
+        vel[q4, 0] = 0.0;     vel[q4, 1] = 1.206
+    if conf == 2:
+        vel[q1, 0] = 0.75;    vel[q1, 1] = -0.5
+        vel[q2, 0] = 0.75;    vel[q2, 1] = 0.5
+        vel[q3, 0] = -0.75;   vel[q3, 1] = 0.5
+        vel[q4, 0] = -0.75;   vel[q4, 1] = -0.5
 
-    # pressure (all quadrants have P = 1)
-    pressure = np.ones(num_seeds, dtype=np.float64)
+    # pressure
+    if conf == 1:
+        pressure[q1] = 1.5
+        pressure[q2] = 0.3
+        pressure[q3] = 0.029
+        pressure[q4] = 0.3
+    if conf == 2:
+        pressure += 1.0 # uniform
 
     # energy per volume: E = P/(gamma-1) + 0.5*rho*v^2
     Energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
@@ -86,8 +108,9 @@ def create_quadshock2(
 
 
 if __name__ == "__main__":
-    # 2D Quad Shock 2 IC
-    create_quadshock2("IC_quadshock2_2D.hdf5", num_seeds=800**2, dimension=2, mesh_mode="cartesian")
+    # 2D Quad Shock 1 IC
+    create_quadshock("IC_quadshock1_2D.hdf5", num_seeds=200**2, conf=1, mesh_mode="cartesian")
 
-    # 3D Quad Shock 2 IC
-    #create_quadshock2("IC_quadshock2_3D.hdf5", num_seeds=50**3, dimension=3, mesh_mode="cartesian")
+    # 2D Quad Shock 2 IC
+    #create_quadshock("IC_quadshock2_3D.hdf5", num_seeds=200**3, conf=2, mesh_mode="cartesian")
+
