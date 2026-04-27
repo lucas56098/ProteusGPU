@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml/badge.svg)](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml) [![Version 0.6](https://img.shields.io/badge/version-0.6-blue)](https://github.com/lucas56098/ProteusGPU/releases)
 
-![Banner](/figures/banner_v4.jpg)
+![Banner](/figures/banner_v5.webp)
 
 Proteus is a GPU accelerated moving mesh hydrodynamics code.
 

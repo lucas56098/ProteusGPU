@@ -100,19 +100,6 @@ VORONOI_DIR = $(SRC_DIR)/voronoi
 HYDRO_DIR = $(SRC_DIR)/hydro
 GRADIENTS_DIR = $(SRC_DIR)/gradients
 PROFILER_DIR = $(SRC_DIR)/profiler
-HDF5_LIB_DIR = libs/hdf5/lib
-
-# source files
-MAIN_SRC = $(SRC_DIR)/main.cu
-GLOBAL_SRC = $(GLOBAL_DIR)/globals.cu
-IO_SRC = $(IO_DIR)/input.cu $(IO_DIR)/output.cu
-KNN_SRC = $(KNN_DIR)/knn.cu
-BEGRUN_SRC = $(BEGRUN_DIR)/begrun.cu
-VORONOI_SRC = $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/periodic_mesh.cu
-HYDRO_SRC = $(HYDRO_DIR)/finite_volume_solver.cu
-GRADIENTS_SRC = $(GRADIENTS_DIR)/gradients.cu
-PROFILER_SRC = $(PROFILER_DIR)/profiler.cu
-eOURCES = $(MAIN_SRC) $(GLOBAL_SRC) $(IO_SRC) $(KNN_SRC) $(BEGRUN_SRC) $(VORONOI_SRC) $(HYDRO_SRC) $(GRADIENTS_SRC) $(PROFILER_SRC)
 
 # object files
 MAIN_OBJ = $(BUILD_DIR)/main.o
