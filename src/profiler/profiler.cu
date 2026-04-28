@@ -2,6 +2,7 @@
 #include "profiler.h"
 #include <algorithm>
 #include <sys/resource.h>
+#include <unistd.h>
 
 // CPU wall-clock profiling (chrono-based, works in all modes)
 
@@ -106,12 +107,11 @@ void Profiler::PrintResults() {
     std::cout << "=========================\n";
 }
 
-// MEMORY: function to print out maximum memory usage
+// peak CPU RSS (high-water mark from the OS) and peak GPU memory we ever held
 void print_max_memory_usage() {
 
+    // CPU side: peak resident set size from getrusage, total system RAM from sysconf
     struct rusage usage;
-
-    // get resource usage statistics for the current process
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
 
         double rssBytes = 0.0;
@@ -123,9 +123,23 @@ void print_max_memory_usage() {
         rssBytes = static_cast<double>(usage.ru_maxrss); // fallback: assume bytes
 #endif
 
-        std::cout << "MAIN: maximum memory used: " << rssBytes / 1000000.0 << " MB" << std::endl;
+        const long   pages    = sysconf(_SC_PHYS_PAGES);
+        const long   pageSize = sysconf(_SC_PAGE_SIZE);
+        const double totalRam = (pages > 0 && pageSize > 0) ? (double)pages * (double)pageSize : 0.0;
+
+        std::cout << "MAIN: maximum CPU memory used: " << rssBytes / 1000000.0 << " MB ("
+                  << totalRam / 1000000.0 << " MB total)" << std::endl;
     } else {
 
         std::cerr << "Error getting resource usage." << std::endl;
     }
+
+    // GPU side: high-water mark of bytes we requested through gpu_alloc, total from cudaMemGetInfo
+#ifndef CPU_DEBUG
+    size_t gpu_free  = 0;
+    size_t gpu_total = 0;
+    cudaMemGetInfo(&gpu_free, &gpu_total);
+    std::cout << "MAIN: maximum GPU memory used: " << g_gpu_bytes_peak() / 1000000.0 << " MB ("
+              << (double)gpu_total / 1000000.0 << " MB total)" << std::endl;
+#endif
 }

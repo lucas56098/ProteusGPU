@@ -6,7 +6,9 @@ output*/
 run*/
 visualize/
 .vscode/
+.claude
 __pycache__/
+src_*
 
 # files
 ProteusGPU
@@ -14,7 +16,12 @@ ProteusGPU
 ics/param_*
 ICs
 run_*.sh
+voronoi*.md
+*_*.md
 
 # file types
 *.hdf5
 *.log
+*.ncu-rep
+*.pdf
+*.txt

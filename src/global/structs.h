@@ -46,24 +46,24 @@ namespace gradients {
 
     // gradient data for a single cell
     struct PrimGradient {
-        GRAD_TYPE rho;
-        GRAD_TYPE vx;
-        GRAD_TYPE vy;
+        POINT_TYPE rho;
+        POINT_TYPE vx;
+        POINT_TYPE vy;
 #ifdef dim_3D
-        GRAD_TYPE vz;
+        POINT_TYPE vz;
 #endif
-        GRAD_TYPE E;
+        POINT_TYPE E;
     };
 
     // gradient arrays for all cells
     struct PrimGradients {
-        GRAD_TYPE* rho;
-        GRAD_TYPE* vx;
-        GRAD_TYPE* vy;
+        POINT_TYPE* rho;
+        POINT_TYPE* vx;
+        POINT_TYPE* vy;
 #ifdef dim_3D
-        GRAD_TYPE* vz;
+        POINT_TYPE* vz;
 #endif
-        GRAD_TYPE* E;
+        POINT_TYPE* E;
         size_t     n; // number of cells
 
         // load single-cell gradients from SoA arrays
@@ -81,22 +81,22 @@ namespace gradients {
     };
 
     inline void allocate_grad(size_t n, PrimGradients* g) {
-        g->rho = gpu_alloc<GRAD_TYPE>(n);
-        g->vx  = gpu_alloc<GRAD_TYPE>(n);
-        g->vy  = gpu_alloc<GRAD_TYPE>(n);
+        g->rho = gpu_alloc<POINT_TYPE>(n);
+        g->vx  = gpu_alloc<POINT_TYPE>(n);
+        g->vy  = gpu_alloc<POINT_TYPE>(n);
 #ifdef dim_3D
-        g->vz = gpu_alloc<GRAD_TYPE>(n);
+        g->vz = gpu_alloc<POINT_TYPE>(n);
 #endif
-        g->E = gpu_alloc<GRAD_TYPE>(n);
+        g->E = gpu_alloc<POINT_TYPE>(n);
         g->n = n;
 
-        gpu_advise_gpu_preferred(g->rho, n * sizeof(GRAD_TYPE));
-        gpu_advise_gpu_preferred(g->vx, n * sizeof(GRAD_TYPE));
-        gpu_advise_gpu_preferred(g->vy, n * sizeof(GRAD_TYPE));
+        gpu_advise_gpu_preferred(g->rho, n * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(g->vx, n * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(g->vy, n * sizeof(POINT_TYPE));
 #ifdef dim_3D
-        gpu_advise_gpu_preferred(g->vz, n * sizeof(GRAD_TYPE));
+        gpu_advise_gpu_preferred(g->vz, n * sizeof(POINT_TYPE));
 #endif
-        gpu_advise_gpu_preferred(g->E, n * sizeof(GRAD_TYPE));
+        gpu_advise_gpu_preferred(g->E, n * sizeof(POINT_TYPE));
     }
 
     inline void free_grad(PrimGradients* g) {
@@ -118,13 +118,13 @@ namespace gradients {
     }
 
     inline void zero_grad(PrimGradients* g) {
-        gpu_memset(g->rho, 0, g->n * sizeof(GRAD_TYPE));
-        gpu_memset(g->vx, 0, g->n * sizeof(GRAD_TYPE));
-        gpu_memset(g->vy, 0, g->n * sizeof(GRAD_TYPE));
+        gpu_memset(g->rho, 0, g->n * sizeof(POINT_TYPE));
+        gpu_memset(g->vx, 0, g->n * sizeof(POINT_TYPE));
+        gpu_memset(g->vy, 0, g->n * sizeof(POINT_TYPE));
 #ifdef dim_3D
-        gpu_memset(g->vz, 0, g->n * sizeof(GRAD_TYPE));
+        gpu_memset(g->vz, 0, g->n * sizeof(POINT_TYPE));
 #endif
-        gpu_memset(g->E, 0, g->n * sizeof(GRAD_TYPE));
+        gpu_memset(g->E, 0, g->n * sizeof(POINT_TYPE));
     }
 
 } // namespace gradients

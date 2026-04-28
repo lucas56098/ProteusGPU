@@ -1,14 +1,9 @@
-#include "../begrun/begrun.h"
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../hydro/riemann.h"
-#include "../io/input.h"
-#include "../io/output.h"
-#include "../knn/knn.h"
 #include "../profiler/profiler.h"
 #include "../voronoi/voronoi.h"
 #include "periodic_mesh.h"
-#include <climits>
 #include <cmath>
 #include <iostream>
 
@@ -30,9 +25,9 @@ namespace voronoi {
 #endif
     GLOBAL void kernel_scale_down_points(hsize_t, POINT_TYPE*, double);
     GLOBAL void kernel_scale_up_mesh(hsize_t, double3*, double3*, double*, double, double);
-    GLOBAL void kernel_scale_face_area(hsize_t, compact_t*, double);
+    GLOBAL void kernel_scale_face_area(hsize_t, double*, double);
 #ifdef MOVING_MESH
-    GLOBAL void kernel_scale_f_mid(hsize_t, compact_t*, double);
+    GLOBAL void kernel_scale_f_mid(hsize_t, double*, double);
 #endif
     GLOBAL void kernel_generate_ghosts(hsize_t,
                                        const POINT_TYPE* __restrict__,
@@ -79,12 +74,9 @@ namespace voronoi {
     // periodic mesh computation, velocity, motion
     // ============================================================
 
+    // wrap seeds around unit-box boundaries with ghost copies, build mesh, scale back
     void compute_periodic_mesh(VMesh* mesh, POINT_TYPE* pts_data, hsize_t num_points) {
         PROFILE_START("MESH_TOTAL");
-
-#ifdef DEBUG_MODE
-        std::cout << "VORONOI: set up periodic mesh" << std::endl;
-#endif
 
         double  ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         hsize_t max_ghost_points = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
@@ -95,21 +87,21 @@ namespace voronoi {
 
         hsize_t* original_ids = mesh->ghost_ids;
 
+        // emit ghost copies of every hydro point that falls within `buff` of a face
         PROFILE_START("GHOST_GEN (cpu)");
 #ifndef CPU_DEBUG
         {
             int* d_ghost_count = (int*)gpu_malloc(sizeof(int));
             gpu_memset(d_ghost_count, 0, sizeof(int));
 
-            int tpb    = 256;
+            int tpb    = _MESH_BLOCK_SIZE_;
             int blocks = ((int)n_hydro + tpb - 1) / tpb;
             PROFILE_GPU_START("kernel_generate_ghosts");
             kernel_generate_ghosts<<<blocks, tpb>>>(n_hydro, pts_data, pts, original_ids, d_ghost_count, buff);
             PROFILE_GPU_END("kernel_generate_ghosts");
 
-            int h_ghost_count = 0;
-            gpu_memcpy(&h_ghost_count, d_ghost_count, sizeof(int));
-            n_ghosts = (hsize_t)h_ghost_count;
+            GPU_SYNC();
+            n_ghosts = (hsize_t)(*d_ghost_count);
             gpu_free(d_ghost_count);
         }
 #else
@@ -147,11 +139,12 @@ namespace voronoi {
             exit(EXIT_FAILURE);
         }
 
+        // shrink (hydro + ghost) into the unit box so the mesher sees a normal domain
         double  scale   = 1. / (1. + (2 * buff));
         hsize_t n_total = n_hydro + n_ghosts;
 #ifndef CPU_DEBUG
         {
-            int tpb    = 256;
+            int tpb    = _MESH_BLOCK_SIZE_;
             int blocks = ((int)n_total + tpb - 1) / tpb;
             kernel_scale_down_points<<<blocks, tpb>>>(n_total, pts, scale);
             GPU_LAUNCH_CHECK();
@@ -166,10 +159,12 @@ namespace voronoi {
         }
 #endif
 
+        // build the Voronoi mesh on the shrunken (hydro + ghost) point set
         compute_mesh(mesh, pts, n_total);
 
         mesh->n_hydro = n_hydro;
 
+        // undo the scaling: stretch positions, volumes, face areas, and tangent offsets
         scale = 1. + (2 * buff);
 #ifdef dim_2D
         double vscale = scale * scale;
@@ -181,7 +176,7 @@ namespace voronoi {
 
 #ifndef CPU_DEBUG
         {
-            int tpb    = 256;
+            int tpb    = _MESH_BLOCK_SIZE_;
             int blocks = ((int)n_total + tpb - 1) / tpb;
             kernel_scale_up_mesh<<<blocks, tpb>>>(n_total, mesh->seeds, mesh->com, mesh->volumes, scale, vscale);
             GPU_LAUNCH_CHECK();
@@ -190,7 +185,7 @@ namespace voronoi {
 #ifdef MOVING_MESH
         {
             hsize_t n_fmid = mesh->num_faces * (DIMENSION - 1);
-            int     tpb    = 256;
+            int     tpb    = _MESH_BLOCK_SIZE_;
             int     blocks = ((int)n_fmid + tpb - 1) / tpb;
             kernel_scale_f_mid<<<blocks, tpb>>>(n_fmid, mesh->f_mid_local, scale);
             GPU_LAUNCH_CHECK();
@@ -198,7 +193,7 @@ namespace voronoi {
 #endif
 
         {
-            int tpb    = 256;
+            int tpb    = _MESH_BLOCK_SIZE_;
             int blocks = ((int)mesh->num_faces + tpb - 1) / tpb;
             kernel_scale_face_area<<<blocks, tpb>>>(mesh->num_faces, mesh->face_area, ascale);
             GPU_LAUNCH_CHECK();
@@ -218,12 +213,12 @@ namespace voronoi {
 
 #ifdef MOVING_MESH
         for (hsize_t i = 0; i < mesh->num_faces * (DIMENSION - 1); i++) {
-            mesh->f_mid_local[i] = (compact_t)((double)mesh->f_mid_local[i] * scale);
+            mesh->f_mid_local[i] *= scale;
         }
 #endif
 
         for (hsize_t i = 0; i < mesh->num_faces; i++) {
-            mesh->face_area[i] = (compact_t)(ascale * (double)mesh->face_area[i]);
+            mesh->face_area[i] *= ascale;
         }
 #endif
 
@@ -231,10 +226,11 @@ namespace voronoi {
     }
 
 #ifdef MOVING_MESH
+    // gas-velocity + Lloyd-style regularization, per hydro cell
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads) {
 
 #ifndef CPU_DEBUG
-        int tpb    = 256;
+        int tpb    = _MESH_BLOCK_SIZE_;
         int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
         PROFILE_GPU_START("kernel_mesh_velocities");
         kernel_mesh_velocities<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
@@ -249,13 +245,14 @@ namespace voronoi {
 #endif
     }
 
+    // advance seeds by v_mesh*dt (with periodic wrap), then rebuild the mesh
     void move_mesh(VMesh* mesh, double dt) {
 
         POINT_TYPE* pts     = mesh->scratch_move;
         hsize_t     n_hydro = mesh->n_hydro;
 
 #ifndef CPU_DEBUG
-        int tpb    = 256;
+        int tpb    = _MESH_BLOCK_SIZE_;
         int blocks = ((int)n_hydro + tpb - 1) / tpb;
         kernel_move_mesh<<<blocks, tpb>>>(n_hydro, mesh, dt, pts);
         GPU_LAUNCH_CHECK();
@@ -316,17 +313,17 @@ namespace voronoi {
         volumes[i] = vscale * volumes[i];
     }
 
-    GLOBAL void kernel_scale_face_area(hsize_t n, compact_t* face_area, double ascale) {
+    GLOBAL void kernel_scale_face_area(hsize_t n, double* face_area, double ascale) {
         hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= n) return;
-        face_area[i] = (compact_t)(ascale * (double)face_area[i]);
+        face_area[i] *= ascale;
     }
 
 #ifdef MOVING_MESH
-    GLOBAL void kernel_scale_f_mid(hsize_t n, compact_t* f_mid_local, double scale) {
+    GLOBAL void kernel_scale_f_mid(hsize_t n, double* f_mid_local, double scale) {
         hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= n) return;
-        f_mid_local[i] = (compact_t)((double)f_mid_local[i] * scale);
+        f_mid_local[i] *= scale;
     }
 #endif
 
@@ -387,24 +384,30 @@ namespace voronoi {
                                            VMesh*                          mesh,
                                            const hydro::primvars*          primvar,
                                            const gradients::PrimGradients* grads) {
+        // mesh velocity starts as the gas velocity
         double vx_mesh = primvar->v[i].x;
         double vy_mesh = primvar->v[i].y;
 #ifdef dim_3D
         double vz_mesh = primvar->v[i].z;
 #endif
 
+        // effective cell radius (sphere/disk equivalent)
 #ifdef dim_2D
         const double Ri = sqrt(fmax(mesh->volumes[i], 0.0) / PI);
 #else
         const double Ri = cbrt(3.0 * fmax(mesh->volumes[i], 0.0) / (4.0 * PI));
 #endif
 
+        // displacement of seed from cell centroid (Lloyd target)
         double dx = wrap_periodic_delta(mesh->com[i].x - mesh->seeds[i].x);
         double dy = wrap_periodic_delta(mesh->com[i].y - mesh->seeds[i].y);
 #ifdef dim_3D
         double dz = wrap_periodic_delta(mesh->com[i].z - mesh->seeds[i].z);
 #endif
 
+        // density-gradient correction: bias the target toward the steeper side, capped at Ri/4.
+        // The cap is a smooth clamp (not a binary skip) so the offset stays continuous across
+        // steps — otherwise small fluctuations near the cap flip the regularization on/off.
         if (grads != nullptr && Ri > 0.0) {
 #ifdef dim_3D
             const double dgrad = sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y +
@@ -417,14 +420,13 @@ namespace voronoi {
                 const double tmp   = 3.0 * Ri + scale;
                 const double disc  = tmp * tmp - 8.0 * Ri * Ri;
                 if (disc > 0.0) {
-                    const double x_off = (tmp - sqrt(disc)) / 4.0;
-                    if (x_off < 0.25 * Ri) {
-                        dx += x_off * grads->rho[i].x / dgrad;
-                        dy += x_off * grads->rho[i].y / dgrad;
+                    const double x_off  = (tmp - sqrt(disc)) / 4.0;
+                    const double offset = fmin(x_off, 0.25 * Ri);
+                    dx += offset * grads->rho[i].x / dgrad;
+                    dy += offset * grads->rho[i].y / dgrad;
 #ifdef dim_3D
-                        dz += x_off * grads->rho[i].z / dgrad;
+                    dz += offset * grads->rho[i].z / dgrad;
 #endif
-                    }
                 }
             }
         }
@@ -435,6 +437,7 @@ namespace voronoi {
         const double di = sqrt(dx * dx + dy * dy);
 #endif
 
+        // ramp regularization velocity from 0 (well-shaped) to CellShapingSpeed*c_s (very distorted)
         if (di > 0.0 && Ri > 0.0) {
             const double threshold = CellShapingFactor * Ri;
             double       fraction  = 0.0;
@@ -446,6 +449,7 @@ namespace voronoi {
             }
 
             if (fraction > 0.0) {
+                // scale by sound speed so regularization respects local timescales
                 const double rho     = primvar->rho[i];
                 hydro::prim  state_i = get_state(i, mesh, primvar);
                 const double p       = fmax(0.0, hydro::get_P_ideal_gas(&state_i));
@@ -467,6 +471,7 @@ namespace voronoi {
 #endif
     }
 
+    // advance one seed by v_mesh*dt with periodic wrap into [0,1)
     HD void move_mesh_for_cell(hsize_t i, const VMesh* mesh, double dt, POINT_TYPE* pts) {
         pts[i].x = fmod((mesh->seeds[i].x + dt * mesh->v_mesh[i].x) + 1.0, 1.0);
         pts[i].y = fmod((mesh->seeds[i].y + dt * mesh->v_mesh[i].y) + 1.0, 1.0);

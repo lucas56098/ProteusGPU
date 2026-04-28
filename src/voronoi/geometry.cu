@@ -1,14 +1,16 @@
 #include "cell.h"
 #include "geometry.h"
 #include <cmath>
-#include <iostream>
 
 namespace voronoi {
 
 #ifdef dim_2D
-    // Compute cell area and centroid via adjacency walk + shoelace.
-    // Uses pre-computed vertices[] (sized _MAX_P_ in 2D since nb_t <= nb_v <= _MAX_P_).
-    HD double compute_cell_area_centroid_2d(const ConvexCell& cell, const double4* vertices, double& cx, double& cy) {
+    // cell area + centroid via adjacency-walk shoelace (vertices[] precomputed in primal coords)
+    template <int MAX_P, int MAX_T>
+    HD double compute_cell_area_centroid_2d(const BasicConvexCell<MAX_P, MAX_T>& cell,
+                                            const double4*                       vertices,
+                                            double&                              cx,
+                                            double&                              cy) {
         int nb_t = cell.nb_t;
         if (nb_t < 3) {
             cx = cell.voro_seed.x;
@@ -18,7 +20,7 @@ namespace voronoi {
 
         // Walk polygon boundary: two vertices (uchar2) are adjacent
         // if they share exactly one plane index.
-        bool visited[_MAX_P_]; // nb_t <= _MAX_P_ in 2D
+        bool visited[MAX_P]; // nb_t <= MAX_P in 2D
         for (int i = 0; i < nb_t; i++)
             visited[i] = false;
         visited[0] = true;
@@ -72,6 +74,7 @@ namespace voronoi {
     // 3D face geometry: orient, compute area + volume/centroid
     // ============================================================
 
+    // reverse face_verts[] in place if its winding faces inward (toward the seed)
     HD void orient_face_outward(double4* face_verts, int n_fv, double4 seed) {
         double4 edge1      = minus4(face_verts[1], face_verts[0]);
         double4 edge2      = minus4(face_verts[2], face_verts[0]);
@@ -96,6 +99,7 @@ namespace voronoi {
         }
     }
 
+    // fan-triangulate the face from v0; accumulate face area, cell volume, and weighted centroid
     HD void compute_face_area_and_volume_centroid(const double4* face_verts,
                                                   int            n_fv,
                                                   double4        seed,

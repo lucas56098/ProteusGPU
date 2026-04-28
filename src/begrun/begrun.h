@@ -4,15 +4,11 @@
 #include "../io/output.h"
 
 // Config.sh define checks
-#ifndef USE_HDF5
-#error
-"Currently, HDF5 support is mandatory. Please add USE_HDF5 to Config.sh and recompile."
-#endif
 #if (!defined(dim_3D) && !defined(dim_2D)) || (defined(dim_3D) && defined(dim_2D))
 #error "Choose a dimension in Config.sh: [dim_3D] OR [dim_2D]"
 #endif
 
-    namespace begrun {
+namespace begrun {
 
     // simulation start state
     struct StartState {

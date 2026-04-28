@@ -126,10 +126,18 @@ inline int host_atomicAdd(int* addr, int val) {
         }                                                                                                              \
     } while (0)
 
+// running total of bytes ever requested through gpu_alloc (high-water mark approximation
+// of peak GPU memory; reallocations slightly inflate it, which is fine for diagnostics)
+inline size_t& g_gpu_bytes_peak() {
+    static size_t v = 0;
+    return v;
+}
+
 // memory wrappers
 inline void* gpu_malloc(size_t bytes) {
     void* p;
     CUDA_CHECK(cudaMallocManaged(&p, bytes));
+    g_gpu_bytes_peak() += bytes;
     return p;
 }
 inline void gpu_free(void* ptr) {
@@ -232,19 +240,6 @@ typedef uchar2  VERT_TYPE;
 #define DIMENSION 3
 typedef double3 POINT_TYPE;
 typedef uchar3  VERT_TYPE;
-#endif
-
-// compact types for memory-sensitive arrays
-#ifdef SAVE_MEMORY
-typedef float compact_t;
-#ifdef dim_2D
-typedef float2 GRAD_TYPE;
-#else
-typedef float3 GRAD_TYPE;
-#endif
-#else
-typedef double     compact_t;
-typedef POINT_TYPE GRAD_TYPE;
 #endif
 
 // atomic add/exch that work on host and device

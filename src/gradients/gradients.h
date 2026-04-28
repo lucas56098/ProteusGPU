@@ -40,7 +40,7 @@ namespace gradients {
         dWdt->rho -= state_i.v.z * grad_i.rho.z;
 #endif
 
-        // compute dv/dt (precompute reciprocal to avoid 3 fp64 divisions)
+        // compute dv/dt
         double inv_rho = 1.0 / state_i.rho;
         dWdt->v.x      = -(state_i.v.x * grad_i.vx.x + state_i.v.y * grad_i.vx.y) - dP_dx * inv_rho;
         dWdt->v.y      = -(state_i.v.x * grad_i.vy.x + state_i.v.y * grad_i.vy.y) - dP_dy * inv_rho;
@@ -60,7 +60,7 @@ namespace gradients {
 
     // limiter used for spatial gradients (returns limiting factor for one variable at one face)
     HD inline double limit_single_gradient(
-        const double value, const double min_value, const double max_value, const POINT_TYPE& d, const GRAD_TYPE& grad);
+        const double value, const double min_value, const double max_value, const POINT_TYPE& d, const POINT_TYPE& grad);
 
 } // namespace gradients
 

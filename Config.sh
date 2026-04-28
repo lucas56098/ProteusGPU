@@ -11,7 +11,7 @@ dim_3D                              # run in 3D mode
 #CUDA                               # run in GPU mode
 CPU_DEBUG                           # run in CPU mode
 
-USE_HDF5                            # HDF5 for IC and output (mandatory)
+#ENABLE_PROFILING                   # profiling of main routines
 
 ################################################################
 # hydro
@@ -23,14 +23,11 @@ _CELL_SHAPING_FACTOR_=0.2           # regularization threshold in cell radii
 
 _GAMMA_EOS_=1.6666666666666667      # adiabatic index
 
-#RIEMANN_HLL                        # use HLL riemann solver
-RIEMANN_HLLC                        # use HLLC riemann solver
-
 ################################################################
 # parallelization
 ################################################################
 
-#USE_OPENMP                          # enable multithreading on CPU
+USE_OPENMP                          # enable multithreading on CPU
 _OMP_HYDRO_THREADS_=16              # threads for hydro solver
 
 # GPU kernel block sizes
@@ -44,15 +41,13 @@ _MESH_BLOCK_SIZE_=256               # periodic mesh / ghost / scaling kernels
 # compile time memory constraints
 ################################################################
 
-_K_=190                             # number of nearest neighbors (KNN)
-_MAX_P_=50                          # max number of clipping planes per Voronoi cell
-_MAX_T_=96                          # max number of triangles per Voronoi cell
-_FACE_CAPACITY_MULT_=17             # max face array entries allocated per cell
+_K_=190                             # KNN candidates, slow tier            (2D/3D ~35/190)
+_MAX_P_=50                          # max clipping planes per cell, slow   (2D/3D ~30/50)
+_MAX_T_=96                          # max triangles per cell, slow         (2D/3D ~60/96)
 
-################################################################
-# experimental / debug
-################################################################
+# fast-tier limits: cells that overflow these fall back to slow tier (above)
+_FAST_K_=35                         # KNN candidates, fast tier            (2D/3D ~15/35)
+_FAST_MAX_P_=30                     # max clipping planes per cell, fast   (2D/3D ~20/30)
+_FAST_MAX_T_=60                     # max triangles per cell, fast         (2D/3D ~20/60)
 
-#DEBUG_MODE                         # verbose printout
-#ENABLE_PROFILING                   # profiling of main routines
-#SAVE_MEMORY                        # float instead of double for selected variables
+_FACE_CAPACITY_MULT_=17             # max face array entries allocated per cell (2D/3D ~8/17)

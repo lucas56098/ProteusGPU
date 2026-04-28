@@ -2,14 +2,12 @@
 #define OUTPUT_H
 
 #include "../global/allvars.h"
+#include "hdf5.h"
 #include <chrono>
 #include <string>
 #include <vector>
 
 struct VMesh;
-
-#ifdef USE_HDF5
-#include "hdf5.h"
 
 // structs to prepare mesh data for writing to HDF5 file
 struct MeshHeader {
@@ -29,8 +27,6 @@ struct MeshCellData {
     std::vector<int>     face_counts; // number of faces per cell
 };
 
-#endif
-
 // output handler class for writing mesh files
 class OutputHandler {
   private:
@@ -42,7 +38,6 @@ class OutputHandler {
     bool        initialize(); // initalize output directory
     std::string getOutputDirectory() const { return outputDirectory; }
 
-#ifdef USE_HDF5
     // wrapper to convert mesh into meshData and then store snapshot
     void snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int n_hydro, double t_sim);
 
@@ -55,8 +50,6 @@ class OutputHandler {
                        const hydro::primvars* primvar,
                        int                    n_hydro,
                        double                 t_sim);
-
-#endif
 };
 
 void print_log(int                                   step,
@@ -64,7 +57,6 @@ void print_log(int                                   step,
                double                                t_sim,
                double                                dt,
                double                                t_start,
-               double                                t_end,
-               int*                                  next_log);
+               double                                t_end);
 
 #endif // OUTPUT_H

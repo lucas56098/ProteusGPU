@@ -4,10 +4,6 @@
 #include "../global/allvars.h"
 #include "../io/input.h"
 #include "../knn/knn.h"
-#include <cstddef>
-#include <cstdlib>
-#include <cstring>
-#include <string>
 
 // Voronoi mesh data (allocated once at startup with worst-case capacity)
 struct VMesh {
@@ -37,9 +33,9 @@ struct VMesh {
 
     // per-face
     int*       neighbor_cell; // neighbor cell index for each face
-    compact_t* face_area;     // face area (edge length in 2D)
+    double* face_area;     // face area (edge length in 2D)
 #ifdef MOVING_MESH
-    compact_t* f_mid_local; // (DIMENSION-1) tangent-space offsets per face
+    double* f_mid_local; // (DIMENSION-1) tangent-space offsets per face
 #endif
 
     // ghost mapping
@@ -62,26 +58,12 @@ namespace voronoi {
     VMesh* allocate_mesh(hsize_t n_hydro);
     void   free_mesh(VMesh* mesh);
 
-    // ---- mesh computation (called every timestep) ----
-    void compute_periodic_mesh(VMesh* mesh, POINT_TYPE* pts_data, hsize_t num_points);
-    void move_mesh(VMesh* mesh, double dt);
-    void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);
-
-    // ---- internal (used by compute_periodic_mesh) ----
+    // ---- internal (used by compute_periodic_mesh in periodic_mesh.cu) ----
     void compute_mesh(VMesh* mesh, POINT_TYPE* pts_data, int num_points);
     void
     compute_cells(int N_seedpts, knn_problem* knn, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original);
     void cpu_fallback_failed_cells(
         int N_seedpts, double* d_stored_points, Status* stat, VMesh* mesh, const unsigned int* sorted_to_original);
-
-    void cpu_compute_cell(int                 blocksPerGrid,
-                          int                 threadsPerBlock,
-                          int                 N_seedpts,
-                          double*             d_stored_points,
-                          const knn_problem*  knn,
-                          Status*             gpu_stat,
-                          VMesh*              mesh,
-                          const unsigned int* sorted_to_original);
 
 } // namespace voronoi
 

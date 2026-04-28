@@ -9,7 +9,7 @@ Proteus is a GPU accelerated moving mesh hydrodynamics code.
 It combines the algorithmic approach of ["Meshless Voronoi on the GPU" [Ray et. al 2018]](https://doi.org/10.1145/3272127.3275092) with a moving mesh hydro solver similar to ["AREPO" [Springel 2010]](https://academic.oup.com/mnras/article/401/2/791/1147356) ported to GPU.
 
 > [!NOTE]
-> The current version runs 2D/3D static/moving mesh hydrodynamics multithreaded on CPU, as well as on a single NVIDIA GPU. Optimizations are ongoing.
+> The current version runs **3D moving mesh hydrodynamics on NVIDIA GH200** as well as discrete NVIDIA GPUs. A multithreaded CPU version, 2D and static meshes are supported. Optimizations are ongoing.
 
 This project is being done during my master's thesis, supervised by [Dylan Nelson](https://nelson.tng-project.org/), at the Institute of Theoretical Astrophysics, Heidelberg University.
 

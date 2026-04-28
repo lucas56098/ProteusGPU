@@ -2,21 +2,16 @@
 #define CELL_H
 
 #include "../global/allvars.h"
-#include "../io/input.h"
-#include "../io/output.h"
 #include "../knn/knn.h"
 #include "geometry.h"
 #include "voronoi.h"
-#include <cstddef>
-#include <cstdlib>
-#include <cstring>
-#include <string>
 
 namespace voronoi {
 
-    // struct used for mesh generation
-    struct ConvexCell {
-        HD ConvexCell(int p_seed, double* p_pts, Status* p_status);
+    // struct used for mesh generation. Size limits are template parameters so
+    // a small "fast" tier and a full "slow" tier can coexist in the same TU.
+    template <int MAX_P, int MAX_T> struct BasicConvexCell {
+        HD BasicConvexCell(int p_seed, double* p_pts, Status* p_status);
 
         double* pts;
         double4 voro_seed;
@@ -25,11 +20,11 @@ namespace voronoi {
         uchar   nb_v;
         uchar   nb_t;
         uchar   nb_r;
-        int     plane_vid[_MAX_P_]; // maps plane index to global point id (-1 for boundary planes)
+        int     plane_vid[MAX_P]; // maps plane index to global point id (-1 for boundary planes)
 
-        VERT_TYPE triangle[_MAX_T_];
-        uchar     boundary_next[_MAX_P_];
-        double4   half_plane[_MAX_P_];
+        VERT_TYPE triangle[MAX_T];
+        uchar     boundary_next[MAX_P];
+        double4   half_plane[MAX_P];
 
         // clipping functions
         HD void clip_by_plane(int vid);
@@ -43,13 +38,25 @@ namespace voronoi {
         HD double4 compute_vertex_point(VERT_TYPE v, bool persp_divide = true) const;
     };
 
-    // put convex cell into VMesh struct
-    void    ensure_face_capacity(VMesh* mesh, hsize_t needed);
-    HD bool collect_face_vertices(
-        const ConvexCell& cell, int p, const double4* vertices, double4* face_verts, int* n_face_verts);
+    // ConvexCell uses the slow-tier capacity. The fast-tier kernel instantiates
+    // BasicConvexCell<_FAST_MAX_P_, _FAST_MAX_T_> directly.
+    using ConvexCell = BasicConvexCell<_MAX_P_, _MAX_T_>;
 
-    HD int  count_cell_faces(const ConvexCell& cell);
-    HD void extract_cell_all(const ConvexCell& cell, VMesh* mesh, hsize_t cell_index);
+    // put convex cell into VMesh struct
+    void ensure_face_capacity(VMesh* mesh, hsize_t needed);
+
+    template <int MAX_P, int MAX_T>
+    HD bool collect_face_vertices(const BasicConvexCell<MAX_P, MAX_T>& cell,
+                                  int                                  p,
+                                  const double4*                       vertices,
+                                  double4*                             face_verts,
+                                  int*                                 n_face_verts);
+
+    template <int MAX_P, int MAX_T> HD int count_cell_faces(const BasicConvexCell<MAX_P, MAX_T>& cell);
+
+    template <int MAX_P, int MAX_T>
+    HD void extract_cell_all(const BasicConvexCell<MAX_P, MAX_T>& cell, VMesh* mesh, hsize_t cell_index);
+
     HD void write_face(VMesh*         mesh,
                        hsize_t        fi,
                        int            neighbor_id,

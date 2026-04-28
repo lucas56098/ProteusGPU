@@ -3,19 +3,17 @@
 #include "../io/output.h"
 #include "../profiler/profiler.h"
 #include "begrun.h"
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
-#include <thread>
 
 namespace begrun {
 
-    // setup run
+    // setup: banner, CUDA init, params, IC, output dir
     StartState begrun(int argc, char* argv[]) {
         PROFILE_START("BEGRUN");
 
-        // print basic info
+        // banner + dimension/mode line
         print_banner();
 #ifdef dim_2D
 #ifdef CPU_DEBUG
@@ -37,7 +35,7 @@ namespace begrun {
 #endif
 
 #ifndef CPU_DEBUG
-        // CUDA init
+        // raise per-thread CUDA stack to fit ConvexCell + KNN heap
         cudaDeviceSetLimit(cudaLimitStackSize, 16384);
         int dev;
         cudaGetDevice(&dev);
@@ -47,16 +45,16 @@ namespace begrun {
                   << std::endl;
 #endif
 
-        // load param.txt
+        // parse the parameter file
         input = load_params(argc, argv);
 
-        // 0 = fresh start (default), 1 = restart from latest snapshot
+        // argv[2]: 0 (or absent) = fresh start; 1 = restart from latest snapshot
         int restart_flag = (argc > 2) ? std::atoi(argv[2]) : 0;
 
         StartState state = {0.0, 0};
 
         if (restart_flag == 1) {
-            // find latest snapshot
+            // pick the highest-numbered snapshot in the output directory
             std::string out_dir  = input.getParameter("output_directory");
             int         latest_n = InputHandler::findLatestSnapshot(out_dir);
             if (latest_n < 0) {
@@ -67,24 +65,24 @@ namespace begrun {
             std::string snap_path = out_dir + "snapshot_" + std::to_string(latest_n) + ".hdf5";
             std::cout << "RESTART: Loading snapshot " << snap_path << std::endl;
 
-            // load IC from snapshot
+            // load mesh + hydro state from the snapshot
             if (!input.readSnapshotFile(snap_path, icData, state.t_sim)) { exit(EXIT_FAILURE); }
             state.snap_num = latest_n + 1;
         } else {
-            // load IC from IC file
+            // fresh IC from the file in param.txt
             if (!input.readICFile(input.getParameter("ic_file"), icData)) { exit(EXIT_FAILURE); }
         }
 
-        // adapt buffer for periodic bc to resolution
+        // periodic ghost band thickness scales with mean inter-particle spacing
         buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) * 4;
 
 #ifdef MOVING_MESH
-        // mesh regularization parameters
+        // mesh regularization parameters (Lloyd-style centroid drift)
         std::cout << "BEGRUN: CellShapingSpeed  = " << CellShapingSpeed << std::endl;
         std::cout << "BEGRUN: CellShapingFactor = " << CellShapingFactor << std::endl;
 #endif
 
-        // init output folder
+        // create output directory if missing
         output = OutputHandler(input.getParameter("output_directory"));
         if (!output.initialize()) { exit(EXIT_FAILURE); }
 

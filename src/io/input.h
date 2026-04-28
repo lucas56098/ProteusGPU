@@ -1,12 +1,10 @@
 #ifndef INPUT_H
 #define INPUT_H
 
+#include "hdf5.h"
 #include <map>
 #include <string>
 #include <vector>
-
-#ifdef USE_HDF5
-#include "hdf5.h"
 
 // structs to hold IC data read from HDF5 file
 struct ICHeader {
@@ -24,7 +22,6 @@ struct ICData {
 
     ICHeader header;
 };
-#endif
 
 // Input handler class for reading parameters and initial conditions
 class InputHandler {
@@ -43,12 +40,8 @@ class InputHandler {
 
     // access parameters
     std::string getParameter(const std::string& key) const;
-    int         getParameterInt(const std::string& key) const;
     double      getParameterDouble(const std::string& key) const;
-    bool        getParameterBool(const std::string& key) const;
-    bool        hasParameter(const std::string& key) const;
 
-#ifdef USE_HDF5
     // read initial conditions from a HDF5 file
     bool readICFile(const std::string& filename, ICData& icData);
 
@@ -57,7 +50,6 @@ class InputHandler {
 
     // find the latest snapshot_N.hdf5 in a directory, return N (or -1 if none found)
     static int findLatestSnapshot(const std::string& dir);
-#endif
 };
 
 #endif // INPUT_H

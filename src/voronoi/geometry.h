@@ -6,10 +6,14 @@
 
 namespace voronoi {
 
-    struct ConvexCell; // forward declaration (defined in cell.h)
+    template <int MAX_P, int MAX_T> struct BasicConvexCell; // forward declaration (defined in cell.h)
 
     // --- Cell volume/area and centroid ---
-    HD double compute_cell_area_centroid_2d(const ConvexCell& cell, const double4* vertices, double& cx, double& cy);
+    template <int MAX_P, int MAX_T>
+    HD double compute_cell_area_centroid_2d(const BasicConvexCell<MAX_P, MAX_T>& cell,
+                                            const double4*                       vertices,
+                                            double&                              cx,
+                                            double&                              cy);
 
     // --- 3D face geometry: orientation, area, and volume/centroid ---
     HD void orient_face_outward(double4* face_verts, int n_fv, double4 seed);

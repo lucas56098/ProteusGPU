@@ -1,7 +1,6 @@
 #include "../profiler/profiler.h"
 #include "gradients.h"
 #include <cmath>
-#include <cstdlib>
 
 namespace gradients {
 
@@ -64,6 +63,7 @@ namespace gradients {
 
         hydro::prim state_i = get_state(i, mesh, primvar);
 
+        // weighted least-squares accumulators (M and b for each primitive variable)
 #ifdef dim_2D
         double m00 = 0.0, m01 = 0.0, m11 = 0.0;
         double b_rho_0 = 0.0, b_rho_1 = 0.0;
@@ -79,6 +79,7 @@ namespace gradients {
         double b_E_0 = 0.0, b_E_1 = 0.0, b_E_2 = 0.0;
 #endif
 
+        // running min/max over neighbours (used by the slope limiter below)
         double min_rho = state_i.rho, max_rho = state_i.rho;
         double min_vx = state_i.v.x, max_vx = state_i.v.x;
         double min_vy = state_i.v.y, max_vy = state_i.v.y;
@@ -87,6 +88,7 @@ namespace gradients {
 #endif
         double min_E = state_i.E, max_E = state_i.E;
 
+        // accumulate over each face/neighbour
         hsize_t face_count = mesh->face_counts[i];
         hsize_t face_start = mesh->face_ptr[i];
 
@@ -95,6 +97,7 @@ namespace gradients {
             hsize_t neighbor_raw = (hsize_t)mesh->neighbor_cell[face_idx];
             hsize_t neighbor_h   = hydro_index(neighbor_raw, mesh);
 
+            // separation vector and inverse-distance weighting
             POINT_TYPE dx    = point_diff(mesh->seeds[neighbor_raw], mesh->seeds[i]);
             double     dist2 = point_dot(dx, dx);
             if (dist2 < 1e-24) continue;
@@ -153,6 +156,7 @@ namespace gradients {
             max_E = fmax(max_E, state_j.E);
         }
 
+        // solve M * grad = b for each primitive (one shared M, separate RHS per variable)
 #ifdef dim_2D
         solve_weighted_lsq_2d(m00, m01, m11, b_rho_0, b_rho_1, &grads->rho[i]);
         solve_weighted_lsq_2d(m00, m01, m11, b_vx_0, b_vx_1, &grads->vx[i]);
@@ -166,6 +170,8 @@ namespace gradients {
         solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_E_0, b_E_1, b_E_2, &grads->E[i]);
 #endif
 
+        // shrink each gradient so reconstructed face values
+        // stay between the cell's neighbour min/max
         double alpha_rho = 1.0, alpha_vx = 1.0, alpha_vy = 1.0, alpha_E = 1.0;
 #ifdef dim_3D
         double alpha_vz = 1.0;
@@ -194,11 +200,12 @@ namespace gradients {
         grads->E[i] = point_mul(alpha_E, grads->E[i]);
     }
 
+    // largest fac in [0,1] such that value + fac*dp stays in [min,max]
     HD inline double limit_single_gradient(const double      value,
                                            const double      min_value,
                                            const double      max_value,
                                            const POINT_TYPE& d,
-                                           const GRAD_TYPE&  grad) {
+                                           const POINT_TYPE& grad) {
         double dp  = point_dot(grad, d);
         double fac = 1.0;
 

@@ -14,8 +14,7 @@ else
         -include Makefile.systype
 endif
 
-# Check DEBUG/CUDA/PROFILING
-DEBUG_MODE_ENABLED := $(findstring DEBUG_MODE,$(CONFIG_DEFINES))
+# Check CUDA / PROFILING
 CUDA_ENABLED := $(findstring CUDA,$(CONFIG_DEFINES))
 PROFILING_ENABLED := $(findstring ENABLE_PROFILING,$(CONFIG_DEFINES))
 
@@ -26,17 +25,9 @@ ifeq ($(CUDA_ENABLED),CUDA)
 
 CXXFLAGS = --compiler-options -Wall,-Wextra,-Wno-unknown-pragmas -std=c++14
 CXXFLAGS += --expt-relaxed-constexpr
-CXXFLAGS += -dc
-
-ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
-	CXXFLAGS += -O0 -g -G -lineinfo --ptxas-options=-v
-	LDFLAGS =
-	BUILD_MODE_MESSAGE = CUDA DEBUG
-else
-	CXXFLAGS += -O3 --prec-div=false --prec-sqrt=false --ftz=true --fmad=true
-	LDFLAGS =
-	BUILD_MODE_MESSAGE = CUDA RELEASE
-endif
+CXXFLAGS += -dc -O3 --prec-div=false --prec-sqrt=false --ftz=true --fmad=true
+LDFLAGS =
+BUILD_MODE_MESSAGE = CUDA RELEASE
 
 ifneq (,$(findstring USE_OPENMP,$(CONFIG_DEFINES)))
 	CXXFLAGS += --compiler-options -fopenmp
@@ -58,17 +49,9 @@ endif
 # ============================================================
 else
 
-CXXFLAGS = -Wall -Wextra -std=c++14
-
-ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
-	CXXFLAGS += -O0 -g -fsanitize=address
-	LDFLAGS = -fsanitize=address
-	BUILD_MODE_MESSAGE = DEBUG (AddressSanitizer enabled)
-else
-	CXXFLAGS += -O3
-	LDFLAGS =
-	BUILD_MODE_MESSAGE = RELEASE
-endif
+CXXFLAGS = -Wall -Wextra -std=c++14 -O3
+LDFLAGS =
+BUILD_MODE_MESSAGE = RELEASE
 
 # g++ does not recognize .cu extension — treat as C++
 CXXFLAGS += -x c++
@@ -118,7 +101,6 @@ TARGET = ProteusGPU
 
 # System Types
 ifeq ($(SYSTYPE),Ubuntu)
-	CXX_DEBUG = g++
 	CXX_RELEASE = g++
 	HDF5_CFLAGS ?= -I/usr/include/hdf5/serial
 	HDF5_LIBS ?= -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5
@@ -126,7 +108,6 @@ ifeq ($(SYSTYPE),Ubuntu)
 endif
 
 ifeq ($(SYSTYPE),macOS)
-	CXX_DEBUG = clang++ # better address sanitizer support
 	CXX_RELEASE = g++-15
 	HDF5_CFLAGS ?= -I/opt/homebrew/opt/hdf5/include
 	HDF5_LIBS ?= -L/opt/homebrew/opt/hdf5/lib -lhdf5
@@ -135,16 +116,14 @@ endif
 ifeq ($(SYSTYPE),MPCDF)
 	# VERA (A100): module load gcc/15 hdf5-serial/1.12.2 cuda/13.0 
 	# BinAC2 (A100): module load compiler/gnu/14.2 lib/hdf5/1.12-gnu-14.2 devel/cuda/13.0
-	CXX_DEBUG = g++
 	CXX_RELEASE = g++
         HDF5_CFLAGS ?= -I${HDF5_HOME}/include
         HDF5_LIBS ?= -L${HDF5_HOME}/lib -lhdf5
 	CUDA_ARCH ?= sm_80
 endif
 
-ifeq ($(SYSTYPE),Horeka)
+ifeq ($(SYSTYPE),HorekaGH200)
 	# HorekaFTP (GH200): module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
-	CXX_DEBUG = nvc++
 	CXX_RELEASE = nvc++
 	HDF5_CFLAGS ?= -I/software/easybuild/software/HDF5/1.14.5-gompi-2024a/include
 	HDF5_LIBS ?= -L/software/easybuild/software/HDF5/1.14.5-gompi-2024a/lib -lhdf5
@@ -161,23 +140,16 @@ ifeq ($(CUDA_ENABLED),CUDA)
         CXX = nvcc
         CXXFLAGS += -arch=$(CUDA_ARCH)
 else
-  ifeq ($(DEBUG_MODE_ENABLED),DEBUG_MODE)
-        CXX = ${CXX_DEBUG}
-  else
         CXX = ${CXX_RELEASE}
-  endif
 endif
 
 ifndef CXX
 	$(error SYSTYPE not recognized.)
 endif
 
-# link HDF5
-ifneq (,$(findstring USE_HDF5,$(CONFIG_DEFINES)))
-	HAS_HDF5 = 1
-	CXXFLAGS += $(HDF5_CFLAGS)
-	LDFLAGS += $(HDF5_LIBS)
-endif
+# HDF5
+CXXFLAGS += $(HDF5_CFLAGS)
+LDFLAGS += $(HDF5_LIBS)
 
 # add config defines to compilation flags
 CXXFLAGS += $(CONFIG_DEFINES) $(DEFINES)

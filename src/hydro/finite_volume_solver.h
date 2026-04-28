@@ -39,7 +39,7 @@ namespace hydro {
                          hsize_t          index_j,
                          POINT_TYPE       v_mesh_i,
                          POINT_TYPE       v_mesh_j,
-                         const compact_t* f_mid_local,
+                         const double* f_mid_local,
                          const VMesh*     mesh,
                          geom             g,
                          POINT_TYPE*      vel_face,

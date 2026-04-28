@@ -23,7 +23,6 @@ bool OutputHandler::initialize() {
     return true;
 }
 
-#ifdef USE_HDF5
 // wrapper to convert Vmesh to meshData and then write the snapshot file
 void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int n_hydro, double t_sim) {
     PROFILE_START("SNAPSHOTS");
@@ -150,9 +149,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.seeds.data());
             H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-            std::cout << "OUTPUT: seeds: " << meshData.seeds_dims[0] << " x " << meshData.seeds_dims[1] << std::endl;
-#endif
         }
         H5Sclose(dataspace);
     }
@@ -166,9 +162,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.volumes.data());
             H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-            std::cout << "OUTPUT: volumes: " << meshData.volumes.size() << " volumes" << std::endl;
-#endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -182,9 +175,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.face_counts.data());
             H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-            std::cout << "OUTPUT: face_counts: " << meshData.face_counts.size() << " cells" << std::endl;
-#endif
         }
         H5Sclose(dataspace_1d);
     }
@@ -206,9 +196,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
             if (dataset_id >= 0) {
                 H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, primvar->rho);
                 H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-                std::cout << "OUTPUT: rho: " << n_hydro << " values" << std::endl;
-#endif
             }
             H5Sclose(dataspace_1d);
         }
@@ -231,9 +218,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
             if (dataset_id >= 0) {
                 H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, vel_flat.data());
                 H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-                std::cout << "OUTPUT: vel: " << n_hydro << " x " << DIMENSION << std::endl;
-#endif
             }
             H5Sclose(dataspace);
         }
@@ -247,9 +231,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
             if (dataset_id >= 0) {
                 H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, primvar->E);
                 H5Dclose(dataset_id);
-#ifdef DEBUG_MODE
-                std::cout << "OUTPUT: Energy: " << n_hydro << " values" << std::endl;
-#endif
             }
             H5Sclose(dataspace_1d);
         }
@@ -258,9 +239,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
     }
 
     H5Fclose(file_id);
-#ifdef DEBUG_MODE
-    std::cout << "OUTPUT: Mesh file written successfully to: " << fullPath << std::endl;
-#endif
     return success;
 }
 
@@ -270,17 +248,10 @@ void print_log(int                                   step,
                double                                t_sim,
                double                                dt,
                double                                t_start,
-               double                                t_end,
-               int*                                  next_log) {
+               double                                t_end) {
 
     const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count();
     std::cout << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
               << "  ETA = " << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
               << std::endl;
-    const int guess = (elapsed_s > 1e-12) ? static_cast<int>(std::round(3.0 * step / elapsed_s)) : 1;
-    const int bucket =
-        static_cast<int>(std::pow(10.0, std::floor(std::log10(static_cast<double>(guess > 1 ? guess : 1)))));
-    *next_log = ((step / bucket) + 1) * bucket;
 }
-
-#endif

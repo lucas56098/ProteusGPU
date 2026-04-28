@@ -26,9 +26,11 @@ namespace hydro {
     // Allocation and initialization
     // ============================================================
 
+    // step-scratch primvars buffer + gradient buffer (reused every hydro step)
     static primvars*                 s_prim_new = nullptr;
     static gradients::PrimGradients* s_grads    = nullptr;
 
+    // allocate primvars from IC data and copy into managed memory
     primvars* init(int n_hydro) {
         primvars* hydro_data = gpu_alloc<primvars>(1);
         hydro_data->rho      = gpu_alloc<double>(n_hydro);
@@ -61,6 +63,7 @@ namespace hydro {
         *primvar = NULL;
     }
 
+    // allocate the per-step scratch buffers used by hydro_step (s_prim_new, s_grads)
     void allocate_hydro_buffers(hsize_t n_hydro) {
         s_prim_new = gpu_alloc<primvars>(1);
         allocate_prim_buffer(n_hydro, s_prim_new);
@@ -162,6 +165,7 @@ namespace hydro {
         }
     }
 
+    // dispatch the per-cell flux update; dt_extrap > 0 enables MUSCL-Hancock time extrapolation
     void apply_flux_update(double                          dt_update,
                            double                          dt_extrap,
                            const VMesh*                    mesh,
@@ -191,6 +195,7 @@ namespace hydro {
         PROFILE_END("HYDRO_STEP (par)");
     }
 
+    // global CFL timestep: min over all hydro cells
     double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar) {
         PROFILE_START("CFL (par)");
 
@@ -200,8 +205,7 @@ namespace hydro {
         static double* d_min_dt = nullptr;
         if (!d_min_dt) d_min_dt = gpu_alloc<double>(1);
 
-        double init_val = 1e100;
-        gpu_memcpy(d_min_dt, &init_val, sizeof(double));
+        *d_min_dt = 1e100;
 
         int tpb    = _HYDRO_BLOCK_SIZE_;
         int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
@@ -209,7 +213,8 @@ namespace hydro {
         kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, d_min_dt);
         PROFILE_GPU_END("kernel_dt_CFL");
 
-        gpu_memcpy(&min_dt, d_min_dt, sizeof(double));
+        GPU_SYNC();
+        min_dt = *d_min_dt;
 #else
 #ifdef USE_OPENMP
 #pragma omp parallel for reduction(min : min_dt)
@@ -290,6 +295,7 @@ namespace hydro {
     // Per-cell work functions (called by kernels and CPU loops)
     // ============================================================
 
+    // sum face fluxes around cell i and apply the conservative update to prim_new[i]
     HD void flux_update_for_cell(hsize_t                         i,
                                  double                          dt_update,
                                  bool                            do_time_extrap,
@@ -301,23 +307,27 @@ namespace hydro {
 
         const hsize_t face_base = mesh->face_ptr[i];
 
+        // own state and gradient
         prim                    state_i = get_state(i, mesh, prim_old);
         gradients::PrimGradient grad_i  = grads->load(i);
 
         prim total_flux;
 
+        // accumulate flux contribution from each face
         for (hsize_t j = 0; j < mesh->face_counts[i]; j++) {
             int                     face_idx = face_base + j;
             hsize_t                 index_j  = mesh->neighbor_cell[face_idx];
             prim                    state_j  = get_state(index_j, mesh, prim_old);
             gradients::PrimGradient grad_j   = grads->load(hydro_index(index_j, mesh));
 
+            // local face frame (n, m, p) along the seed-to-seed direction
             double3 delta = {wrap_periodic_delta(mesh->seeds[index_j].x - mesh->seeds[i].x),
                              wrap_periodic_delta(mesh->seeds[index_j].y - mesh->seeds[i].y),
                              wrap_periodic_delta(mesh->seeds[index_j].z - mesh->seeds[i].z)};
             geom    g     = compute_geom(delta);
 
 #ifdef MOVING_MESH
+            // face velocity (lab + face-frame) for the moving-mesh transformation
             POINT_TYPE vel_face, vel_face_turned;
             POINT_TYPE vm_i = mesh->v_mesh[i];
             POINT_TYPE vm_j = mesh->v_mesh[hydro_index(index_j, mesh)];
@@ -332,6 +342,7 @@ namespace hydro {
                          &vel_face_turned);
 #endif
 
+            // reconstruct left/right face states by spatial (and optionally temporal) extrapolation
             prim       state_l, state_r;
             POINT_TYPE dx = point_diff(mesh->seeds[index_j], mesh->seeds[i]);
 
@@ -344,27 +355,28 @@ namespace hydro {
             }
 
 #ifdef MOVING_MESH
+            // boost into the face-comoving frame so the Riemann solver sees a stationary face
             convert_state_to_local_frame(&state_l, vel_face);
             convert_state_to_local_frame(&state_r, vel_face);
 #endif
 
+            // floor density and pressure to keep the Riemann solver well-defined
             keep_state_physical(&state_l);
             keep_state_physical(&state_r);
 
+            // rotate so the face normal aligns with x; solve 1D Riemann; rotate flux back
             rotate_to_face(&state_l, &g);
             rotate_to_face(&state_r, &g);
 
-#ifdef RIEMANN_HLL
-            flux_t flux_ij = riemann_hll(state_l, state_r);
-#else
             flux_t flux_ij = riemann_hllc(state_l, state_r);
-#endif
 
 #ifdef MOVING_MESH
+            // boost flux back to the lab frame
             convert_flux_to_lab_frame(&flux_ij, vel_face_turned);
 #endif
             rotate_from_face(&flux_ij, &g);
 
+            // accumulate area-weighted flux
             double face_area = mesh->face_area[face_idx];
 
             total_flux.rho += flux_ij.rho * face_area;
@@ -376,6 +388,7 @@ namespace hydro {
             total_flux.E += flux_ij.E * face_area;
         }
 
+        // conservative update: state_new = state_old - (dt/V) * sum(F * A)
         double frac    = dt_update / mesh->volumes[i];
         double rho_old = prim_new->rho[i];
         double rho_new = rho_old - frac * total_flux.rho;
@@ -390,6 +403,7 @@ namespace hydro {
         prim_new->E[i] -= frac * total_flux.E;
     }
 
+    // CFL timestep for cell i: CFL * R_cell / (sound_speed + signal_velocity)
     HD double dt_CFL_for_cell(hsize_t i, double CFL, const VMesh* mesh, const primvars* primvar) {
         prim state_i;
         state_i.rho = primvar->rho[i];
@@ -433,6 +447,7 @@ namespace hydro {
     // helper functions
     // ============================================================
 
+    // floor density and pressure to small positive values (numerical safety net)
     HD void keep_state_physical(prim* state) {
         const double rho_floor = 1e-12;
         const double p_floor   = 1e-12;
@@ -448,6 +463,7 @@ namespace hydro {
         if (state->E < emin) { state->E = emin; }
     }
 
+    // rotate velocity from lab axes into the face frame {n, m, p}
     HD void rotate_to_face(prim* state, geom* g) {
         double velx = state->v.x;
         double vely = state->v.y;
@@ -462,6 +478,7 @@ namespace hydro {
 #endif
     }
 
+    // rotate velocity from the face frame back to lab axes
     HD void rotate_from_face(prim* state, geom* g) {
         double velx = state->v.x;
         double vely = state->v.y;
@@ -476,6 +493,7 @@ namespace hydro {
 #endif
     }
 
+    // st_extrap = state + dx . gradient (linear reconstruction from cell to face)
     HD void apply_spatial_extrapolation(const prim                    state,
                                         const gradients::PrimGradient gradient,
                                         POINT_TYPE                    dx,
@@ -489,6 +507,7 @@ namespace hydro {
         st_extrap->E = state.E + point_dot(gradient.E, dx);
     }
 
+    // st_extrap += dt * dW/dt (MUSCL-Hancock half-step time advance)
     HD void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap) {
         prim dWdt;
         gradients::time_gradient(state_i, grad_i, &dWdt);
@@ -503,15 +522,17 @@ namespace hydro {
     }
 
 #ifdef MOVING_MESH
-    HD void get_vel_face(hsize_t          i,
-                         hsize_t          index_j,
-                         POINT_TYPE       v_mesh_i,
-                         POINT_TYPE       v_mesh_j,
-                         const compact_t* f_mid_local,
-                         const VMesh*     mesh,
-                         geom             g,
-                         POINT_TYPE*      vel_face,
-                         POINT_TYPE*      vel_face_turned) {
+    // face velocity for moving-mesh boost: midpoint of generator velocities + offset correction.
+    // vel_face is in lab axes, vel_face_turned in the face frame {n, m, p}.
+    HD void get_vel_face(hsize_t       i,
+                         hsize_t       index_j,
+                         POINT_TYPE    v_mesh_i,
+                         POINT_TYPE    v_mesh_j,
+                         const double* f_mid_local,
+                         const VMesh*  mesh,
+                         geom          g,
+                         POINT_TYPE*   vel_face,
+                         POINT_TYPE*   vel_face_turned) {
 
         double facv;
 
@@ -530,13 +551,13 @@ namespace hydro {
 
         // reconstruct offset from seed midpoint using local tangent-space coords
 #ifdef dim_2D
-        double alpha = (double)f_mid_local[0];
+        double alpha = f_mid_local[0];
         double cx    = alpha * g.m.x;
         double cy    = alpha * g.m.y;
 #else
         vel_face->z  = 0.5 * (v_mesh_i.z + v_mesh_j.z);
-        double alpha = (double)f_mid_local[0];
-        double beta  = (double)f_mid_local[1];
+        double alpha = f_mid_local[0];
+        double beta  = f_mid_local[1];
         double cx    = alpha * g.m.x + beta * g.p.x;
         double cy    = alpha * g.m.y + beta * g.p.y;
         double cz    = alpha * g.m.z + beta * g.p.z;
@@ -570,6 +591,7 @@ namespace hydro {
 #endif
     }
 
+    // boost the primitive state into the face-comoving frame (subtract vel_face from velocity)
     HD void convert_state_to_local_frame(prim* st, POINT_TYPE vel_face) {
         double v2_old = st->v.x * st->v.x + st->v.y * st->v.y;
 #ifdef dim_3D
@@ -591,6 +613,7 @@ namespace hydro {
         st->E = P / (gamma_eos - 1.0) + 0.5 * st->rho * v2_new;
     }
 
+    // boost the flux back from the face frame to the lab frame (add advected mass/momentum/energy)
     HD void convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned) {
         double momx = flux->v.x;
         double momy = flux->v.y;

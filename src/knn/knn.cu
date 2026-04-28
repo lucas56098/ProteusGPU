@@ -1,19 +1,9 @@
 #include "../global/globals.h"
 #include "../profiler/profiler.h"
 #include "knn.h"
-#include <cfloat>
-#include <climits>
-#include <cmath>
-#include <cstddef>
 #include <iostream>
 
 namespace knn {
-
-    // forward declarations
-    HD int  cellFromPoint(int N_grid, POINT_TYPE point);
-    HD void heapify(unsigned int* keys, double* vals, int node, int size);
-    HD void heapsort(unsigned int* keys, double* vals, int size);
-    template <typename T> HD void inline swap_on_device(T& a, T& b);
 
 #ifndef CPU_DEBUG
     // kernels
@@ -28,13 +18,13 @@ namespace knn {
 
     knn_problem* init_once(int n_hydro) {
 
-        // worst-case total points including periodic ghosts (same formula as periodic_mesh.cpp)
+        // worst-case total points including periodic ghosts (same formula as periodic_mesh)
         double ghost_frac  = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         int    max_n_total = (int)(n_hydro + 2.0 * ghost_frac * n_hydro) + 1;
 
         knn_problem* knn = gpu_alloc<knn_problem>(1);
 
-        // compute N_grid from worst-case total
+        // pick grid resolution: ~3 points per cell on average is the sweet spot for KNN
         knn->len_pts             = max_n_total;
         knn->pts_capacity        = max_n_total;
         knn->N_grid              = std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
@@ -53,20 +43,19 @@ namespace knn {
             exit(EXIT_FAILURE);
         }
 
-        // lets build an offset grid: allows us to quickly access pre computed ring-based neighbour pattern
+        // ring-expansion offset table: grid-cell offsets ordered by Chebyshev ring distance
         int     alloc             = N_max * N_max * N_max * N_max; // very naive upper bound
         int*    cell_offsets      = gpu_alloc<int>(alloc);
         double* cell_offset_dists = gpu_alloc<double>(alloc);
 
-        // init first query
+        // ring 0: the home cell itself
         cell_offsets[0]      = 0;
         cell_offset_dists[0] = 0.0;
         knn->N_cell_offsets  = 1;
 
-        // -------- calc offsets for all rings up to N_max --------
+        // rings 1..N_max-1
         for (int ring = 1; ring < N_max; ring++) {
 #ifdef dim_2D
-            // 2D: only iterate over i and j
             for (int j = -N_max; j <= N_max; j++) {
                 for (int i = -N_max; i <= N_max; i++) {
                     if (std::max(abs(i), abs(j)) != ring) continue;
@@ -74,14 +63,14 @@ namespace knn {
                     int id_offset                     = i + j * knn->N_grid;
                     cell_offsets[knn->N_cell_offsets] = id_offset;
 
-                    double d = (double)(ring - 1) / (double)(knn->N_grid); // assumes boxsize = 1.0
+                    // lower-bound distance from home cell to this ring cell (boxsize = 1)
+                    double d = (double)(ring - 1) / (double)(knn->N_grid);
                     cell_offset_dists[knn->N_cell_offsets] = d * d;
 
                     knn->N_cell_offsets++;
                 }
             }
 #else
-            // 3D: iterate over i, j, and k
             for (int k = -N_max; k <= N_max; k++) {
                 for (int j = -N_max; j <= N_max; j++) {
                     for (int i = -N_max; i <= N_max; i++) {
@@ -90,7 +79,7 @@ namespace knn {
                         int id_offset                     = i + j * knn->N_grid + k * knn->N_grid * knn->N_grid;
                         cell_offsets[knn->N_cell_offsets] = id_offset;
 
-                        double d = (double)(ring - 1) / (double)(knn->N_grid); // assumes boxsize = 1.0
+                        double d = (double)(ring - 1) / (double)(knn->N_grid);
                         cell_offset_dists[knn->N_cell_offsets] = d * d;
 
                         knn->N_cell_offsets++;
@@ -103,7 +92,7 @@ namespace knn {
         knn->d_cell_offsets      = cell_offsets;
         knn->d_cell_offset_dists = cell_offset_dists;
 
-        // allocate per-call buffers (sized for worst-case capacity)
+        // per-call grid bookkeeping (counters + prefix-sum pointers + atomic counter)
         int Npow        = knn->Npow;
         knn->d_counters = gpu_calloc<int>(Npow);
         knn->d_ptrs     = gpu_calloc<int>(Npow);
@@ -122,6 +111,7 @@ namespace knn {
         return knn;
     }
 
+    // per-timestep refresh: zero counters and rebuild the grid bucket sort
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
 
         if (len_pts > knn->pts_capacity) {
@@ -137,7 +127,7 @@ namespace knn {
         gpu_memset(knn->d_ptrs, 0, knn->Npow * sizeof(int));
         gpu_memset(knn->d_globcounter, 0, sizeof(int));
 
-        // sort points into grid
+        // bucket-sort the input points into d_stored_points, grouped by grid cell
         sort_points_into_grid(knn, pts, len_pts);
     }
 
@@ -269,87 +259,7 @@ namespace knn {
 #endif // !CPU_DEBUG
 
     // ============================================================
-    // Per-point KNN search (called from voronoi cell construction)
-    // ============================================================
-
-    HD void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest) {
-        // thread-private k-nearest arrays (stack-allocated)
-        unsigned int local_knearest[_K_];
-        double       local_dists[_K_];
-        int          heap_size = 0;
-
-        const POINT_TYPE* d_stored_points     = knn->d_stored_points;
-        int               N_grid              = knn->N_grid;
-        int               Npow_local          = knn->Npow;
-        const int*        d_ptrs              = knn->d_ptrs;
-        const int*        d_counters          = knn->d_counters;
-        int               N_cell_offsets      = knn->N_cell_offsets;
-        const int*        d_cell_offsets      = knn->d_cell_offsets;
-        const double*     d_cell_offset_dists = knn->d_cell_offset_dists;
-        int               len_pts             = knn->len_pts;
-
-        POINT_TYPE p       = d_stored_points[point_in];
-        int        cell_in = cellFromPoint(N_grid, p);
-
-        for (int i = 0; i < _K_; i++) {
-            local_knearest[i] = (unsigned int)point_in;
-            local_dists[i]    = DBL_MAX;
-        }
-
-        for (int search_cell_index = 0; search_cell_index < N_cell_offsets; search_cell_index++) {
-            double min_dist = d_cell_offset_dists[search_cell_index];
-            // Once heap is full, root holds the current worst (largest) accepted distance.
-            if (heap_size == _K_ && local_dists[0] < min_dist) { break; }
-
-            int cell = cell_in + d_cell_offsets[search_cell_index];
-
-            if (cell >= 0 && cell < Npow_local) {
-                int cell_base = d_ptrs[cell];
-                int num       = d_counters[cell];
-                int cell_end  = cell_base + num;
-
-                // Defensive guard: skip corrupted cell ranges instead of reading OOB.
-                if (cell_base < 0 || num < 0 || cell_end < cell_base || cell_end > len_pts) { continue; }
-
-                for (int ptr = cell_base; ptr < cell_end; ptr++) {
-                    if (ptr == point_in) { continue; }
-
-                    POINT_TYPE p_cmp = d_stored_points[ptr];
-                    double     d     = dist2_point(p, p_cmp);
-
-                    if (heap_size < _K_) {
-                        // Insert into max-heap (root stores the current worst accepted distance).
-                        int pos             = heap_size;
-                        local_dists[pos]    = d;
-                        local_knearest[pos] = (unsigned int)ptr;
-                        heap_size++;
-
-                        while (pos > 0) {
-                            int parent = (pos - 1) / 2;
-                            if (local_dists[parent] >= local_dists[pos]) { break; }
-                            swap_on_device(local_dists[parent], local_dists[pos]);
-                            swap_on_device(local_knearest[parent], local_knearest[pos]);
-                            pos = parent;
-                        }
-                    } else if (d < local_dists[0]) {
-                        // Better candidate: replace current worst and restore heap property.
-                        local_dists[0]    = d;
-                        local_knearest[0] = (unsigned int)ptr;
-                        heapify(local_knearest, local_dists, 0, _K_);
-                    }
-                }
-            }
-        }
-
-        if (heap_size > 1) { heapsort(local_knearest, local_dists, heap_size); }
-
-        for (int i = 0; i < _K_; i++) {
-            out_knearest[i] = local_knearest[i];
-        }
-    }
-
-    // ============================================================
-    // helpers (grid mapping, heap operations)
+    // helpers (grid mapping)
     // ============================================================
 
     HD int cellFromPoint(int N_grid, POINT_TYPE point) {
@@ -366,36 +276,6 @@ namespace knn {
         k     = imax(0, imin(k, N_grid - 1));
         return i + j * N_grid + k * N_grid * N_grid;
 #endif
-    }
-
-    template <typename T> HD void inline swap_on_device(T& a, T& b) {
-        T c(a);
-        a = b;
-        b = c;
-    }
-
-    HD void heapify(unsigned int* keys, double* vals, int node, int size) {
-        int j = node;
-        while (true) {
-            int left    = 2 * j + 1;
-            int right   = 2 * j + 2;
-            int largest = j;
-            if (left < size && vals[left] > vals[largest]) { largest = left; }
-            if (right < size && vals[right] > vals[largest]) { largest = right; }
-            if (largest == j) return;
-            swap_on_device(vals[j], vals[largest]);
-            swap_on_device(keys[j], keys[largest]);
-            j = largest;
-        }
-    }
-
-    HD void heapsort(unsigned int* keys, double* vals, int size) {
-        while (size > 1) {
-            swap_on_device(vals[0], vals[size - 1]);
-            swap_on_device(keys[0], keys[size - 1]);
-            size--;
-            heapify(keys, vals, 0, size);
-        }
     }
 
 } // namespace knn

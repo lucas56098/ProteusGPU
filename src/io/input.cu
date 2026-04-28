@@ -1,6 +1,5 @@
 #include "input.h"
 #include "../global/allvars.h"
-#include <algorithm>
 #include <dirent.h>
 #include <fstream>
 #include <iostream>
@@ -46,10 +45,6 @@ bool InputHandler::loadParameters() {
             if (commentPos != std::string::npos) { value = trim(value.substr(0, commentPos)); }
 
             parameters[key] = value;
-
-#ifdef DEBUG_MODE
-            std::cout << "DEBUG: Loaded parameter: " << key << " = " << value << std::endl;
-#endif
         }
     }
 
@@ -65,20 +60,6 @@ std::string InputHandler::getParameter(const std::string& key) const {
     throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
 }
 
-// get parameter as int
-int InputHandler::getParameterInt(const std::string& key) const {
-    auto it = parameters.find(key);
-    if (it == parameters.end()) {
-        throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
-    }
-    try {
-        return std::stoi(it->second);
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second +
-                                 "' to int");
-    }
-}
-
 // get parameter as double
 double InputHandler::getParameterDouble(const std::string& key) const {
     auto it = parameters.find(key);
@@ -92,30 +73,6 @@ double InputHandler::getParameterDouble(const std::string& key) const {
                                  "' to double");
     }
 }
-
-// get parameter as bool
-bool InputHandler::getParameterBool(const std::string& key) const {
-    auto it = parameters.find(key);
-    if (it == parameters.end()) {
-        throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
-    }
-    std::string value = it->second;
-    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
-    if (value == "true" || value == "1" || value == "yes" || value == "on") {
-        return true;
-    } else if (value == "false" || value == "0" || value == "no" || value == "off") {
-        return false;
-    }
-    throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second +
-                             "' to bool (expected: true/false/1/0/yes/no/on/off)");
-}
-
-// check if a parameter exists
-bool InputHandler::hasParameter(const std::string& key) const {
-    return parameters.find(key) != parameters.end();
-}
-
-#ifdef USE_HDF5
 
 // find the latest snapshot_N.hdf5 in a directory, return N (or -1 if none found)
 int InputHandler::findLatestSnapshot(const std::string& dir) {
@@ -455,4 +412,3 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     std::cout << "INPUT: Snapshot loaded successfully! (" << n << " cells, t = " << t_sim << ")" << std::endl;
     return true;
 }
-#endif

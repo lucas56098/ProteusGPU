@@ -4,10 +4,6 @@
 #include <cmath>
 #include <iostream>
 
-#if defined(USE_OPENMP)
-#include <omp.h>
-#endif
-
 namespace voronoi {
 
     static const uchar END_OF_LIST = 255;
@@ -31,7 +27,9 @@ namespace voronoi {
     // Constructor: initialize convex cell as bounding box
     // ============================================================
 
-    HD ConvexCell::ConvexCell(int p_seed, double* p_pts, Status* p_status) {
+    // initialize the convex cell to the unit-box bounding cell (eps margin against degeneracies)
+    template <int MAX_P, int MAX_T>
+    HD BasicConvexCell<MAX_P, MAX_T>::BasicConvexCell(int p_seed, double* p_pts, Status* p_status) {
 
         double eps  = 1e-14;
         double xmin = -eps;
@@ -45,13 +43,11 @@ namespace voronoi {
 
         pts = p_pts;
 
+        // boundary linked list and plane->point-id map start empty
         first_boundary = END_OF_LIST;
-        for (int i = 0; i < _MAX_P_; i++) {
+        for (int i = 0; i < MAX_P; i++) {
             boundary_next[i] = END_OF_LIST;
-        }
-
-        for (int i = 0; i < _MAX_P_; i++) {
-            plane_vid[i] = -1;
+            plane_vid[i]     = -1;
         }
 
         status  = p_status;
@@ -59,6 +55,7 @@ namespace voronoi {
 
         voro_seed = point_from_ptr(pts + DIMENSION * p_seed);
 
+        // bounding-box face planes (normal points inward, w = -<seed,n> shifted to a face)
         half_plane[0] = make_double4(1.0, 0.0, 0.0, -xmin);
         half_plane[1] = make_double4(-1.0, 0.0, 0.0, xmax);
         half_plane[2] = make_double4(0.0, 1.0, 0.0, -ymin);
@@ -68,6 +65,7 @@ namespace voronoi {
         half_plane[5] = make_double4(0.0, 0.0, -1.0, zmax);
 #endif
 
+        // dual-graph vertices: each "triangle" is a corner of the box (intersection of D planes)
 #ifdef dim_2D
         triangle[0] = make_uchar2(2, 0);
         triangle[1] = make_uchar2(1, 2);
@@ -93,11 +91,14 @@ namespace voronoi {
     // Main operations (clip, security radius, extraction)
     // ============================================================
 
-    HD void ConvexCell::clip_by_plane(int vid) {
+    // clip the cell by the perpendicular bisector of (seed, point[vid])
+    template <int MAX_P, int MAX_T> HD void BasicConvexCell<MAX_P, MAX_T>::clip_by_plane(int vid) {
 
+        // append the new bisector plane; bail if we're out of plane slots
         int cur_v = new_halfplane(vid);
         if (*status == vertex_overflow) { return; }
 
+        // partition: move triangles on the wrong side of the new plane to the tail of triangle[]
         double4 eqn = half_plane[cur_v];
         nb_r        = 0;
 
@@ -115,15 +116,18 @@ namespace voronoi {
         }
         if (*status == needs_exact_predicates) { return; }
 
+        // no conflict -> plane doesn't cut the cell, roll back the append
         if (nb_r == 0) {
             nb_v--;
             return;
         }
 
+        // build the boundary loop separating kept triangles from removed ones
         compute_boundary();
         if (*status != success) { return; }
         if (first_boundary == END_OF_LIST) { return; }
 
+        // sew new triangles along the boundary loop, anchored on the new plane
         uchar cir = first_boundary;
         do {
 #ifdef dim_2D
@@ -136,10 +140,13 @@ namespace voronoi {
         } while (cir != first_boundary);
     }
 
-    HD bool ConvexCell::is_security_radius_reached(double4 last_neig) const {
+    // returns true iff every cell vertex fits in the sphere of radius ||last_neig - seed||/2
+    template <int MAX_P, int MAX_T>
+    HD bool BasicConvexCell<MAX_P, MAX_T>::is_security_radius_reached(double4 last_neig) const {
         double max_num   = 0.0;
         double max_denom = 1.0;
 
+        // max squared distance from seed to any vertex (kept in projective num/denom form)
         for (int i = 0; i < nb_t; i++) {
             double4 pc = compute_vertex_point(triangle[i], false);
             double  dx = pc.x - voro_seed.x * pc.w;
@@ -157,6 +164,7 @@ namespace voronoi {
             }
         }
 
+        // d2/4 > max_vertex_d2, rearranged to avoid division
         double4 diff = minus4(last_neig, voro_seed);
         double  d2   = dot3(diff, diff);
         return (d2 * max_denom > 4.0 * max_num);
@@ -166,7 +174,8 @@ namespace voronoi {
     // Cell-to-mesh extraction
     // ============================================================
 
-    HD int count_cell_faces(const ConvexCell& cell) {
+    // a plane contributes a face only if at least DIMENSION triangles reference it
+    template <int MAX_P, int MAX_T> HD int count_cell_faces(const BasicConvexCell<MAX_P, MAX_T>& cell) {
         int count = 0;
         for (int p = 0; p < cell.nb_v; p++) {
             int refs = 0;
@@ -183,20 +192,25 @@ namespace voronoi {
         return count;
     }
 
-    HD void extract_cell_all(const ConvexCell& cell, VMesh* mesh, hsize_t cell_index) {
+    // emit cell volume, centroid, and per-face data into the global mesh arrays
+    template <int MAX_P, int MAX_T>
+    HD void extract_cell_all(const BasicConvexCell<MAX_P, MAX_T>& cell, VMesh* mesh, hsize_t cell_index) {
         double3 seed            = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
         mesh->seeds[cell_index] = seed;
 
 #ifdef dim_2D
-        double4 vertices_2d[_MAX_P_];
+        // resolve dual triangles into primal polygon vertices
+        double4 vertices_2d[MAX_P];
         for (int vi = 0; vi < cell.nb_t; vi++)
             vertices_2d[vi] = cell.compute_vertex_point(cell.triangle[vi], true);
 
+        // area + centroid via shoelace
         double cx                 = cell.voro_seed.x;
         double cy                 = cell.voro_seed.y;
         mesh->volumes[cell_index] = compute_cell_area_centroid_2d(cell, vertices_2d, cx, cy);
         mesh->com[cell_index]     = {cx, cy, 0.0};
 
+        // emit one edge per plane that reached the polygon
         hsize_t fi = mesh->face_ptr[cell_index];
         double4 face_verts[2];
         int     n_fv;
@@ -210,22 +224,25 @@ namespace voronoi {
             fi++;
         }
 #else
+        // 3D: fan-triangulate each face; volume via divergence theorem on (seed,v0,vi,vi+1) tets
         double  total_volume = 0.0;
         double  wx = 0.0, wy = 0.0, wz = 0.0;
         hsize_t fi = mesh->face_ptr[cell_index];
 
-        double4 face_verts[_MAX_T_];
+        double4 face_verts[MAX_T];
 
         for (int p = 0; p < cell.nb_v; p++) {
-            int face_vert_indices[_MAX_T_];
+            // gather triangles touching plane p — these are the corners of face p
+            int face_vert_indices[MAX_T];
             int n_fvi = 0;
             for (int i = 0; i < cell.nb_t; i++) {
                 if (vert_references_plane(cell.triangle, i, (uchar)p)) { face_vert_indices[n_fvi++] = i; }
             }
             if (n_fvi < DIMENSION) continue;
 
-            int  ordered[_MAX_T_];
-            bool used[_MAX_T_];
+            // walk vertices around the face: each adjacent pair shares a non-p plane
+            int  ordered[MAX_T];
+            bool used[MAX_T];
             for (int k = 0; k < n_fvi; k++)
                 used[k] = false;
             ordered[0]    = face_vert_indices[0];
@@ -260,6 +277,7 @@ namespace voronoi {
 
             int n_fv = n_ordered;
 
+            // dual triangles -> primal coordinates
             for (int k = 0; k < n_fv; k++) {
                 face_verts[k] = cell.compute_vertex_point(cell.triangle[ordered[k]], true);
             }
@@ -298,8 +316,8 @@ namespace voronoi {
     // Clipping helpers
     // ============================================================
 
-    HD int ConvexCell::new_halfplane(int vid) {
-        if (nb_v >= _MAX_P_) {
+    template <int MAX_P, int MAX_T> HD int BasicConvexCell<MAX_P, MAX_T>::new_halfplane(int vid) {
+        if (nb_v >= MAX_P) {
             *status = vertex_overflow;
             return -1;
         }
@@ -314,7 +332,8 @@ namespace voronoi {
         return nb_v - 1;
     }
 
-    HD bool ConvexCell::vert_is_in_conflict(VERT_TYPE v, double4 eqn) const {
+    template <int MAX_P, int MAX_T>
+    HD bool BasicConvexCell<MAX_P, MAX_T>::vert_is_in_conflict(VERT_TYPE v, double4 eqn) const {
 
         double4 pi1 = half_plane[v.x];
         double4 pi2 = half_plane[v.y];
@@ -364,28 +383,30 @@ namespace voronoi {
         return (det > 0.0);
     }
 
-    HD void ConvexCell::compute_boundary() {
+    // build the boundary loop separating removed triangles from kept ones (linked list in boundary_next[])
+    template <int MAX_P, int MAX_T> HD void BasicConvexCell<MAX_P, MAX_T>::compute_boundary() {
 
 #ifdef dim_2D
-        for (int i = 0; i < _MAX_P_; i++) {
+        // reset boundary linked list
+        for (int i = 0; i < MAX_P; i++) {
             boundary_next[i] = END_OF_LIST;
         }
         first_boundary = END_OF_LIST;
 
-        uchar line_count[_MAX_P_];
-        for (int i = 0; i < _MAX_P_; i++) {
+        // count how many removed edges reference each plane
+        uchar line_count[MAX_P];
+        for (int i = 0; i < MAX_P; i++) {
             line_count[i] = 0;
         }
-
         for (int r = 0; r < nb_r; r++) {
             uchar2 e = triangle[nb_t + r];
             line_count[e.x]++;
             line_count[e.y]++;
         }
 
+        // boundary endpoints are the two planes referenced by exactly one removed edge (parity)
         uchar boundary_lines[2];
         int   nb_boundary = 0;
-
         for (int p = 0; p < nb_v; p++) {
             if (line_count[p] == 1) {
                 if (nb_boundary < 2) { boundary_lines[nb_boundary++] = (uchar)p; }
@@ -402,11 +423,14 @@ namespace voronoi {
         boundary_next[boundary_lines[1]] = boundary_lines[0];
 
 #else
-        for (int i = 0; i < _MAX_P_; i++) {
+        // reset boundary linked list
+        for (int i = 0; i < MAX_P; i++) {
             boundary_next[i] = END_OF_LIST;
         }
         first_boundary = END_OF_LIST;
 
+        // absorb removed triangles into the boundary loop one at a time, skipping any that
+        // would make the loop non-simple; bail if we loop forever
         int   nb_iter = 0;
         uchar t       = nb_t;
 
@@ -473,8 +497,8 @@ namespace voronoi {
 #endif
     }
 
-    HD void ConvexCell::new_vertex(uchar i, uchar j, uchar k) {
-        if (nb_t + 1 >= _MAX_T_) {
+    template <int MAX_P, int MAX_T> HD void BasicConvexCell<MAX_P, MAX_T>::new_vertex(uchar i, uchar j, uchar k) {
+        if (nb_t + 1 >= MAX_T) {
             *status = triangle_overflow;
             return;
         }
@@ -496,7 +520,8 @@ namespace voronoi {
     // Extraction helpers
     // ============================================================
 
-    HD double4 ConvexCell::compute_vertex_point(VERT_TYPE v, bool persp_divide) const {
+    template <int MAX_P, int MAX_T>
+    HD double4 BasicConvexCell<MAX_P, MAX_T>::compute_vertex_point(VERT_TYPE v, bool persp_divide) const {
         double4 pi1 = half_plane[v.x];
         double4 pi2 = half_plane[v.y];
         double4 result;
@@ -520,8 +545,12 @@ namespace voronoi {
         return result;
     }
 
-    HD bool collect_face_vertices(
-        const ConvexCell& cell, int p, const double4* vertices, double4* face_verts, int* n_face_verts) {
+    template <int MAX_P, int MAX_T>
+    HD bool collect_face_vertices(const BasicConvexCell<MAX_P, MAX_T>& cell,
+                                  int                                  p,
+                                  const double4*                       vertices,
+                                  double4*                             face_verts,
+                                  int*                                 n_face_verts) {
 #ifdef dim_2D
         int n_fvi = 0;
         for (int i = 0; i < cell.nb_t; i++) {
@@ -534,15 +563,15 @@ namespace voronoi {
         if (n_fvi < 2) return false;
         *n_face_verts = 2;
 #else
-        int face_vert_indices[_MAX_T_];
+        int face_vert_indices[MAX_T];
         int n_fvi = 0;
         for (int i = 0; i < cell.nb_t; i++) {
             if (vert_references_plane(cell.triangle, i, (uchar)p)) { face_vert_indices[n_fvi++] = i; }
         }
         if (n_fvi < DIMENSION) return false;
 
-        int  ordered[_MAX_T_];
-        bool used[_MAX_T_];
+        int  ordered[MAX_T];
+        bool used[MAX_T];
         for (int k = 0; k < n_fvi; k++)
             used[k] = false;
         ordered[0]    = face_vert_indices[0];
@@ -598,7 +627,7 @@ namespace voronoi {
         (void)face_verts;
         (void)n_face_verts;
         mesh->neighbor_cell[fi] = neighbor_id;
-        mesh->face_area[fi]     = (compact_t)face_measure;
+        mesh->face_area[fi]     = face_measure;
 
 #ifdef MOVING_MESH
         double fmx = 0.0, fmy = 0.0, fmz = 0.0;
@@ -610,18 +639,18 @@ namespace voronoi {
             double  ox         = fmx - 0.5 * (seed.x + neighbor.x);
             double  oy         = fmy - 0.5 * (seed.y + neighbor.y);
 #ifdef dim_2D
-            mesh->f_mid_local[fi] = (compact_t)(ox * g_local.m.x + oy * g_local.m.y);
+            mesh->f_mid_local[fi] = ox * g_local.m.x + oy * g_local.m.y;
 #else
             double oz                     = fmz - 0.5 * (seed.z + neighbor.z);
-            mesh->f_mid_local[2 * fi]     = (compact_t)(ox * g_local.m.x + oy * g_local.m.y + oz * g_local.m.z);
-            mesh->f_mid_local[2 * fi + 1] = (compact_t)(ox * g_local.p.x + oy * g_local.p.y + oz * g_local.p.z);
+            mesh->f_mid_local[2 * fi]     = ox * g_local.m.x + oy * g_local.m.y + oz * g_local.m.z;
+            mesh->f_mid_local[2 * fi + 1] = ox * g_local.p.x + oy * g_local.p.y + oz * g_local.p.z;
 #endif
         } else {
 #ifdef dim_2D
-            mesh->f_mid_local[fi] = 0;
+            mesh->f_mid_local[fi] = 0.0;
 #else
-            mesh->f_mid_local[2 * fi]     = 0;
-            mesh->f_mid_local[2 * fi + 1] = 0;
+            mesh->f_mid_local[2 * fi]     = 0.0;
+            mesh->f_mid_local[2 * fi + 1] = 0.0;
 #endif
         }
 #endif
