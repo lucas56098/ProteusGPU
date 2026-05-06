@@ -6,6 +6,8 @@ Create test Initial Conditions (IC) HDF5 file for ProteusGPU
 import h5py
 import numpy as np
 
+from common import build_arg_parser, resolve_filename
+
 def create_test_ic(filename="IC.hdf5", num_seeds=100, extent=1.0, dimension=3):
     """
     Create a test IC file with random seedpoints in [0, extent]^dimension
@@ -50,6 +52,14 @@ def create_test_ic(filename="IC.hdf5", num_seeds=100, extent=1.0, dimension=3):
     print(f"Successfully created {filename}\n")
 
 if __name__ == "__main__":
-    # Create test IC file
-    create_test_ic("IC.hdf5", num_seeds=1000, extent=1.0, dimension=2) # change dimension here :D
-    #create_test_ic("IC.hdf5", num_seeds=15000, extent=1.0, dimension=3)
+    parser = build_arg_parser(
+        "test", default_n=32, default_dim=2, default_mesh_mode="random",
+    )
+    args = parser.parse_args()
+
+    create_test_ic(
+        filename=resolve_filename(args, "test"),
+        num_seeds=args.n ** args.dimension,
+        extent=args.extent,
+        dimension=args.dimension,
+    )

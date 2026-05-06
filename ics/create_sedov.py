@@ -12,7 +12,7 @@ Supports cartesian mesh IC only. (due to energy in)
 
 import h5py
 import numpy as np
-from common import seed_positions
+from common import seed_positions, build_arg_parser, resolve_filename
 
 
 def create_sedov(
@@ -87,8 +87,29 @@ def create_sedov(
 
 
 if __name__ == "__main__":
-    # Create 2D Sedov blast wave
-    create_sedov("IC_sedov_2D.hdf5", num_seeds=45**2, dimension=2)
+    # Sedov supports cartesian mesh only.
+    parser = build_arg_parser(
+        "sedov",
+        default_n=45,
+        default_dim=2,
+        default_mesh_mode="cartesian",
+        allowed_mesh_modes=("cartesian",),
+    )
+    parser.add_argument("--E_blast", type=float, default=1.0)
+    parser.add_argument(
+        "--r_blast", type=float, default=None,
+        help="blast radius (default: auto-derived from cell size)",
+    )
+    parser.add_argument("--p_ambient", type=float, default=1.0e-5)
+    args = parser.parse_args()
 
-    # Create 3D Sedov blast wave
-    #create_sedov("IC_sedov_3D.hdf5", num_seeds=64**3, dimension=3, mesh_mode="cartesian")
+    create_sedov(
+        filename=resolve_filename(args, "sedov"),
+        num_seeds=args.n ** args.dimension,
+        dimension=args.dimension,
+        extent=args.extent,
+        gamma=args.gamma,
+        E_blast=args.E_blast,
+        r_blast=args.r_blast,
+        p_ambient=args.p_ambient,
+    )

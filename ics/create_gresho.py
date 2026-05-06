@@ -7,7 +7,7 @@ supports: random mesh, perturbed cartesian, and polar ring
 import h5py
 import numpy as np
 
-from common import seed_positions
+from common import seed_positions, build_arg_parser, resolve_filename
 
 
 def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_mode="polar_ring"):
@@ -81,6 +81,21 @@ def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_
 
 
 if __name__ == "__main__":
-    # 2D Gresho IC
-    create_gresho_vortex("IC_gresho_2D.hdf5", num_seeds=800**2)
+    # Gresho is 2D-only.
+    parser = build_arg_parser(
+        "gresho",
+        default_n=800,
+        default_dim=2,
+        allowed_dims=(2,),
+        default_mesh_mode="polar_ring",
+    )
+    args = parser.parse_args()
+
+    create_gresho_vortex(
+        filename=resolve_filename(args, "gresho"),
+        num_seeds=args.n ** args.dimension,
+        extent=args.extent,
+        gamma=args.gamma,
+        mesh_mode=args.mesh_mode,
+    )
 

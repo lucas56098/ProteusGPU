@@ -8,7 +8,7 @@ supports: random mesh and perturbed cartesian
 import h5py
 import numpy as np
 
-from common import seed_positions
+from common import seed_positions, build_arg_parser, resolve_filename
 
 def create_riemann3d(
     filename,
@@ -101,5 +101,20 @@ def create_riemann3d(
 
 
 if __name__ == "__main__":
-    # 3D Riemann IC
-    create_riemann3d("IC_riemann3D.hdf5", num_seeds=100**3, mesh_mode="cartesian")
+    # riemann3d is 3D-only.
+    parser = build_arg_parser(
+        "riemann3d",
+        default_n=50,
+        default_dim=3,
+        allowed_dims=(3,),
+        default_mesh_mode="cartesian",
+    )
+    args = parser.parse_args()
+
+    create_riemann3d(
+        filename=resolve_filename(args, "riemann3d"),
+        num_seeds=args.n ** args.dimension,
+        extent=args.extent,
+        gamma=args.gamma,
+        mesh_mode=args.mesh_mode,
+    )

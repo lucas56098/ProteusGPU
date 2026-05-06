@@ -7,7 +7,7 @@ supports: random mesh and perturbed cartesian
 import h5py
 import numpy as np
 
-from common import seed_positions
+from common import seed_positions, build_arg_parser, resolve_filename
 
 
 def create_kelvin_helmholtz(
@@ -89,8 +89,16 @@ def create_kelvin_helmholtz(
 
 
 if __name__ == "__main__":
-    # 2D KH IC
-    create_kelvin_helmholtz("IC_kh_2D.hdf5", num_seeds=150**2, dimension=2)
+    parser = build_arg_parser(
+        "kh", default_n=70, default_dim=3, default_mesh_mode="cartesian",
+    )
+    args = parser.parse_args()
 
-    # 3D KH IC
-    # create_kelvin_helmholtz("IC_kh_3D.hdf5", num_seeds=150**3, dimension=3)
+    create_kelvin_helmholtz(
+        filename=resolve_filename(args, "kh"),
+        num_seeds=args.n ** args.dimension,
+        dimension=args.dimension,
+        extent=args.extent,
+        gamma=args.gamma,
+        mesh_mode=args.mesh_mode,
+    )

@@ -8,7 +8,7 @@ supports: random mesh and perturbed cartesian
 import h5py
 import numpy as np
 
-from common import seed_positions
+from common import seed_positions, build_arg_parser, resolve_filename
 
 
 def create_quadshock(
@@ -108,9 +108,27 @@ def create_quadshock(
 
 
 if __name__ == "__main__":
-    # 2D Quad Shock 1 IC
-    create_quadshock("IC_quadshock1_2D.hdf5", num_seeds=200**2, conf=1, mesh_mode="cartesian")
+    # quadshock is 2D-only.
+    parser = build_arg_parser(
+        "quadshock",
+        default_n=200,
+        default_dim=2,
+        allowed_dims=(2,),
+        default_mesh_mode="cartesian",
+    )
+    parser.add_argument(
+        "--conf", type=int, default=1, choices=[1, 2],
+        help="Kurganov-Tadmor configuration: 1 -> conf 3, 2 -> conf 5",
+    )
+    args = parser.parse_args()
 
-    # 2D Quad Shock 2 IC
-    #create_quadshock("IC_quadshock2_3D.hdf5", num_seeds=200**3, conf=2, mesh_mode="cartesian")
+    name = f"quadshock{args.conf}"
+    create_quadshock(
+        filename=resolve_filename(args, name),
+        num_seeds=args.n ** args.dimension,
+        conf=args.conf,
+        extent=args.extent,
+        gamma=args.gamma,
+        mesh_mode=args.mesh_mode,
+    )
 

@@ -2,8 +2,60 @@
 Common helper utilities for IC generation.
 """
 
+import argparse
 import h5py
 import numpy as np
+
+
+_ALL_MESH_MODES = ("random", "cartesian", "polar_ring")
+
+def build_arg_parser(
+    name,
+    *,
+    description=None,
+    default_n=64,
+    default_dim=3,
+    allowed_dims=(2, 3),
+    default_mesh_mode="cartesian",
+    allowed_mesh_modes=_ALL_MESH_MODES,
+    default_perturbation=0.05,
+    default_rng_seed=424242,
+    default_extent=1.0,
+    default_gamma=5.0 / 3.0,
+):
+    """Return an ArgumentParser with the shared IC-creation flags."""
+    parser = argparse.ArgumentParser(description=description or f"Create {name} IC.")
+
+    parser.add_argument(
+        "--filename", type=str, default=None,
+        help=f"output hdf5 path (default: IC_{name}_<D>D_N<n>.hdf5)",
+    )
+    parser.add_argument(
+        "--n", type=int, default=default_n,
+        help="cells per dimension (total seeds = n^dimension)",
+    )
+    parser.add_argument(
+        "--dimension", type=int, default=default_dim, choices=list(allowed_dims),
+    )
+    parser.add_argument(
+        "--mesh_mode", type=str, default=default_mesh_mode, choices=list(allowed_mesh_modes),
+    )
+    parser.add_argument(
+        "--perturbation", type=float, default=default_perturbation,
+        help="cartesian-grid jitter as fraction of cell size",
+    )
+    parser.add_argument("--rng_seed", type=int, default=default_rng_seed)
+    parser.add_argument("--extent", type=float, default=default_extent)
+    parser.add_argument("--gamma", type=float, default=default_gamma)
+
+    return parser
+
+
+def resolve_filename(args, name):
+    """Pick args.filename if given, otherwise IC_<name>_<D>D_N<n>.hdf5."""
+    if args.filename:
+        return args.filename
+    return f"IC_{name}_{args.dimension}D_N{args.n}.hdf5"
 
 
 def seed_positions(

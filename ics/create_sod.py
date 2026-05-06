@@ -6,6 +6,8 @@ supports: random mesh and perturbed cartesian
 import h5py
 import numpy as np
 
+from common import build_arg_parser, resolve_filename
+
 def create_sod_shock_tube(
     filename, 
     num_seeds, 
@@ -110,8 +112,18 @@ def create_sod_shock_tube(
 
 
 if __name__ == "__main__":
-    # Create 2D Sod shock tube
-    create_sod_shock_tube("IC_sod_2D.hdf5", num_seeds=200**2, dimension=2)
-    
-    # Create 3D Sod shock tube
-    #create_sod_shock_tube("IC_sod_3D.hdf5", num_seeds=150**3, dimension=3)
+    parser = build_arg_parser(
+        "sod", default_n=50, default_dim=3, default_mesh_mode="cartesian",
+    )
+    args = parser.parse_args()
+
+    create_sod_shock_tube(
+        filename=resolve_filename(args, "sod"),
+        num_seeds=args.n ** args.dimension,
+        dimension=args.dimension,
+        extent=args.extent,
+        gamma=args.gamma,
+        rng_seed=args.rng_seed,
+        mesh_mode=args.mesh_mode,
+        perturbation=args.perturbation,
+    )

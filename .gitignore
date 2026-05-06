@@ -14,7 +14,7 @@ src_*
 ProteusGPU
 .DS_Store
 ics/param_*
-ICs
+ics/IC_*
 run_*.sh
 voronoi*.md
 *_*.md
