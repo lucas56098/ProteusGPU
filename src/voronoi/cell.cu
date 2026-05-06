@@ -27,21 +27,14 @@ namespace voronoi {
     // Constructor: initialize convex cell as bounding box
     // ============================================================
 
-    // initialize the convex cell to the unit-box bounding cell (eps margin against degeneracies)
+    // initialize the convex cell to the unit-box bounding cell (eps margin against degeneracies).
+    // The bounding-box plane equations are no longer stored — plane_for() returns them on demand
+    // for the first 2*DIMENSION slots.
     template <int MAX_P, int MAX_T>
-    HD BasicConvexCell<MAX_P, MAX_T>::BasicConvexCell(int p_seed, double* p_pts, Status* p_status) {
+    HD BasicConvexCell<MAX_P, MAX_T>::BasicConvexCell(int p_seed, double* p_pts, Status* p_status, double p_buff) {
 
-        double eps  = 1e-14;
-        double xmin = -eps;
-        double xmax = 1.0 + eps;
-        double ymin = -eps;
-        double ymax = 1.0 + eps;
-#ifdef dim_3D
-        double zmin = -eps;
-        double zmax = 1.0 + eps;
-#endif
-
-        pts = p_pts;
+        pts  = p_pts;
+        buff = p_buff;
 
         // boundary linked list and plane->point-id map start empty
         first_boundary = END_OF_LIST;
@@ -54,16 +47,6 @@ namespace voronoi {
         *status = success;
 
         voro_seed = point_from_ptr(pts + DIMENSION * p_seed);
-
-        // bounding-box face planes (normal points inward, w = -<seed,n> shifted to a face)
-        half_plane[0] = make_double4(1.0, 0.0, 0.0, -xmin);
-        half_plane[1] = make_double4(-1.0, 0.0, 0.0, xmax);
-        half_plane[2] = make_double4(0.0, 1.0, 0.0, -ymin);
-        half_plane[3] = make_double4(0.0, -1.0, 0.0, ymax);
-#ifdef dim_3D
-        half_plane[4] = make_double4(0.0, 0.0, 1.0, -zmin);
-        half_plane[5] = make_double4(0.0, 0.0, -1.0, zmax);
-#endif
 
         // dual-graph vertices: each "triangle" is a corner of the box (intersection of D planes)
 #ifdef dim_2D
@@ -99,7 +82,7 @@ namespace voronoi {
         if (*status == vertex_overflow) { return; }
 
         // partition: move triangles on the wrong side of the new plane to the tail of triangle[]
-        double4 eqn = half_plane[cur_v];
+        double4 eqn = plane_for(cur_v);
         nb_r        = 0;
 
         int i = 0;
@@ -321,22 +304,46 @@ namespace voronoi {
             *status = vertex_overflow;
             return -1;
         }
-
-        double4 B        = point_from_ptr(pts + DIMENSION * vid);
-        double4 dir      = minus4(voro_seed, B);
-        double4 ave2     = plus4(voro_seed, B);
-        double  dot      = dot3(ave2, dir);
-        half_plane[nb_v] = make_double4(dir.x, dir.y, dir.z, -dot * 0.5);
-        plane_vid[nb_v]  = vid;
+        plane_vid[nb_v] = vid;
         nb_v++;
         return nb_v - 1;
+    }
+
+    // rebuild plane equation for slot p — bounding-box constants for p < 2*DIMENSION,
+    // otherwise the perpendicular bisector of (voro_seed, pts[plane_vid[p]]).
+    template <int MAX_P, int MAX_T>
+    HD double4 BasicConvexCell<MAX_P, MAX_T>::plane_for(int p) const {
+        if (p < 2 * DIMENSION) {
+            // bounding box [-buff, 1+buff]^d (the periodic ghost copies extend out to those limits,
+            // so the bounding planes have to enclose them). plane n.x*x+n.y*y+n.z*z+w >= 0 form:
+            //   min plane:  x >= -buff  -> ( 1, 0, 0,  buff + eps)
+            //   max plane:  x <=  1+buff -> (-1, 0, 0, 1 + buff + eps)
+            constexpr double eps    = 1e-14;
+            const double     w_min  = buff + eps;
+            const double     w_max  = 1.0 + buff + eps;
+            switch (p) {
+                case 0: return make_double4(1.0, 0.0, 0.0, w_min);          // -xmin
+                case 1: return make_double4(-1.0, 0.0, 0.0, w_max);         //  xmax
+                case 2: return make_double4(0.0, 1.0, 0.0, w_min);          // -ymin
+                case 3: return make_double4(0.0, -1.0, 0.0, w_max);         //  ymax
+#ifdef dim_3D
+                case 4: return make_double4(0.0, 0.0, 1.0, w_min);          // -zmin
+                case 5: return make_double4(0.0, 0.0, -1.0, w_max);         //  zmax
+#endif
+            }
+        }
+        double4 B    = point_from_ptr(pts + DIMENSION * plane_vid[p]);
+        double4 dir  = minus4(voro_seed, B);
+        double4 ave2 = plus4(voro_seed, B);
+        double  dot  = dot3(ave2, dir);
+        return make_double4(dir.x, dir.y, dir.z, -dot * 0.5);
     }
 
     template <int MAX_P, int MAX_T>
     HD bool BasicConvexCell<MAX_P, MAX_T>::vert_is_in_conflict(VERT_TYPE v, double4 eqn) const {
 
-        double4 pi1 = half_plane[v.x];
-        double4 pi2 = half_plane[v.y];
+        double4 pi1 = plane_for(v.x);
+        double4 pi2 = plane_for(v.y);
 
 #ifdef dim_2D
         double det = det3x3(pi1.x, pi2.x, eqn.x, pi1.y, pi2.y, eqn.y, pi1.w, pi2.w, eqn.w);
@@ -349,7 +356,7 @@ namespace voronoi {
         double eps     = 1e-14 * maxx * maxy * maxw;
         eps *= max_max;
 #else
-        double4 pi3 = half_plane[v.z];
+        double4 pi3 = plane_for(v.z);
 
         double det = det4x4(pi1.x,
                             pi2.x,
@@ -504,7 +511,9 @@ namespace voronoi {
         }
 #ifdef dim_2D
         (void)k;
-        double rw = det2x2(half_plane[i].x, half_plane[i].y, half_plane[j].x, half_plane[j].y);
+        double4 hi = plane_for(i);
+        double4 hj = plane_for(j);
+        double  rw = det2x2(hi.x, hi.y, hj.x, hj.y);
         if (rw > 0) {
             triangle[nb_t] = make_uchar2(j, i);
         } else {
@@ -522,8 +531,8 @@ namespace voronoi {
 
     template <int MAX_P, int MAX_T>
     HD double4 BasicConvexCell<MAX_P, MAX_T>::compute_vertex_point(VERT_TYPE v, bool persp_divide) const {
-        double4 pi1 = half_plane[v.x];
-        double4 pi2 = half_plane[v.y];
+        double4 pi1 = plane_for(v.x);
+        double4 pi2 = plane_for(v.y);
         double4 result;
 #ifdef dim_2D
         result.x = -det2x2(pi1.w, pi1.y, pi2.w, pi2.y);
@@ -532,7 +541,7 @@ namespace voronoi {
         result.w = det2x2(pi1.x, pi1.y, pi2.x, pi2.y);
         if (persp_divide) { return make_double4(result.x / result.w, result.y / result.w, 0, 1); }
 #else
-        double4 pi3 = half_plane[v.z];
+        double4 pi3 = plane_for(v.z);
         result.x    = -det3x3(pi1.w, pi1.y, pi1.z, pi2.w, pi2.y, pi2.z, pi3.w, pi3.y, pi3.z);
         result.y    = -det3x3(pi1.x, pi1.w, pi1.z, pi2.x, pi2.w, pi2.z, pi3.x, pi3.w, pi3.z);
         result.z    = -det3x3(pi1.x, pi1.y, pi1.w, pi2.x, pi2.y, pi2.w, pi3.x, pi3.y, pi3.w);
@@ -626,7 +635,10 @@ namespace voronoi {
                        double4        neighbor) {
         (void)face_verts;
         (void)n_face_verts;
-        mesh->neighbor_cell[fi] = neighbor_id;
+        // neighbor_id arrives as a sorted-mixed sid (or -1 for bounding-box planes).
+        // Remap to a real-sorted index via mesh->sid_to_neighbor before storing.
+        int remapped = (neighbor_id >= 0) ? (int)mesh->sid_to_neighbor[neighbor_id] : neighbor_id;
+        mesh->neighbor_cell[fi] = remapped;
         mesh->face_area[fi]     = face_measure;
 
 #ifdef MOVING_MESH

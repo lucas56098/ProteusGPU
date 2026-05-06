@@ -7,9 +7,10 @@ namespace knn {
 
 #ifndef CPU_DEBUG
     // kernels
-    GLOBAL void kernel_count_cells(const POINT_TYPE*, int, int, int*);
+    GLOBAL void kernel_count_cells(const POINT_TYPE*, int, int, double, double, int*);
     GLOBAL void kernel_compute_ptrs(int*, int*, int*, int);
-    GLOBAL void kernel_scatter_points(const POINT_TYPE*, int, int, int*, const int*, POINT_TYPE*, unsigned int*);
+    GLOBAL void kernel_scatter_points(
+        const POINT_TYPE*, int, int, double, double, int*, const int*, POINT_TYPE*, unsigned int*);
 #endif
 
     // ============================================================
@@ -29,6 +30,9 @@ namespace knn {
         knn->pts_capacity        = max_n_total;
         knn->N_grid              = std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
         knn->Npow                = (int)pow(knn->N_grid, DIMENSION);
+        // bucket grid spans [-buff, 1+buff]^d; cellFromPoint uses inv_boxsize to index into it
+        knn->buff                = buff;
+        knn->inv_boxsize         = 1.0 / (1.0 + 2.0 * buff);
         knn->d_cell_offsets      = NULL;
         knn->d_cell_offset_dists = NULL;
         knn->d_permutation       = NULL;
@@ -63,8 +67,9 @@ namespace knn {
                     int id_offset                     = i + j * knn->N_grid;
                     cell_offsets[knn->N_cell_offsets] = id_offset;
 
-                    // lower-bound distance from home cell to this ring cell (boxsize = 1)
-                    double d = (double)(ring - 1) / (double)(knn->N_grid);
+                    // lower-bound distance from home cell to this ring cell. Bucket grid spans
+                    // (1+2*buff) per axis split into N_grid cells, so each cell is that wide.
+                    double d = (double)(ring - 1) * (1.0 + 2.0 * buff) / (double)(knn->N_grid);
                     cell_offset_dists[knn->N_cell_offsets] = d * d;
 
                     knn->N_cell_offsets++;
@@ -79,7 +84,7 @@ namespace knn {
                         int id_offset                     = i + j * knn->N_grid + k * knn->N_grid * knn->N_grid;
                         cell_offsets[knn->N_cell_offsets] = id_offset;
 
-                        double d = (double)(ring - 1) / (double)(knn->N_grid);
+                        double d = (double)(ring - 1) * (1.0 + 2.0 * buff) / (double)(knn->N_grid);
                         cell_offset_dists[knn->N_cell_offsets] = d * d;
 
                         knn->N_cell_offsets++;
@@ -149,9 +154,11 @@ namespace knn {
 
     void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
 
-        int  N_grid     = knn->N_grid;
-        int  Npow       = knn->Npow;
-        int* d_counters = knn->d_counters;
+        int    N_grid      = knn->N_grid;
+        int    Npow        = knn->Npow;
+        double buff_local  = knn->buff;
+        double inv_boxsize = knn->inv_boxsize;
+        int*   d_counters  = knn->d_counters;
 
 #ifndef CPU_DEBUG
         int tpb = _KNN_BLOCK_SIZE_;
@@ -160,7 +167,7 @@ namespace knn {
 
         // 1) count points per grid cell
         int blocks1 = (len_pts + tpb - 1) / tpb;
-        kernel_count_cells<<<blocks1, tpb>>>(pts, len_pts, N_grid, d_counters);
+        kernel_count_cells<<<blocks1, tpb>>>(pts, len_pts, N_grid, buff_local, inv_boxsize, d_counters);
         GPU_LAUNCH_CHECK();
 
         // 2) compute prefix pointers via atomicAdd
@@ -170,8 +177,8 @@ namespace knn {
 
         // 3) scatter points into sorted positions
         gpu_memset(d_counters, 0, Npow * sizeof(int));
-        kernel_scatter_points<<<blocks1, tpb>>>(
-            pts, len_pts, N_grid, d_counters, knn->d_ptrs, knn->d_stored_points, knn->d_permutation);
+        kernel_scatter_points<<<blocks1, tpb>>>(pts, len_pts, N_grid, buff_local, inv_boxsize, d_counters,
+                                                knn->d_ptrs, knn->d_stored_points, knn->d_permutation);
 
         PROFILE_GPU_END("knn_grid_sort");
 
@@ -181,7 +188,7 @@ namespace knn {
 #pragma omp parallel for schedule(static)
 #endif
         for (int id = 0; id < len_pts; id++) {
-            int cell = cellFromPoint(N_grid, pts[id]);
+            int cell = cellFromPoint(N_grid, buff_local, inv_boxsize, pts[id]);
             host_atomicAdd(d_counters + cell, 1);
         }
 
@@ -212,7 +219,7 @@ namespace knn {
 #endif
             for (int id = 0; id < len_pts; id++) {
                 POINT_TYPE p         = pts[id];
-                int        cell      = cellFromPoint(N_grid, p);
+                int        cell      = cellFromPoint(N_grid, buff_local, inv_boxsize, p);
                 int        pos       = d_ptrs[cell] + host_atomicAdd(d_counters + cell, 1);
                 d_stored_points[pos] = p;
                 d_permutation[pos]   = id;
@@ -226,10 +233,11 @@ namespace knn {
     // ============================================================
 #ifndef CPU_DEBUG
 
-    GLOBAL void kernel_count_cells(const POINT_TYPE* pts, int len_pts, int N_grid, int* d_counters) {
+    GLOBAL void kernel_count_cells(
+        const POINT_TYPE* pts, int len_pts, int N_grid, double buff_local, double inv_boxsize, int* d_counters) {
         int id = blockIdx.x * blockDim.x + threadIdx.x;
         if (id >= len_pts) return;
-        int cell = cellFromPoint(N_grid, pts[id]);
+        int cell = cellFromPoint(N_grid, buff_local, inv_boxsize, pts[id]);
         atomicAdd(d_counters + cell, 1);
     }
 
@@ -243,6 +251,8 @@ namespace knn {
     GLOBAL void kernel_scatter_points(const POINT_TYPE* pts,
                                       int               len_pts,
                                       int               N_grid,
+                                      double            buff_local,
+                                      double            inv_boxsize,
                                       int*              d_counters,
                                       const int*        d_ptrs,
                                       POINT_TYPE*       d_stored_points,
@@ -250,7 +260,7 @@ namespace knn {
         int id = blockIdx.x * blockDim.x + threadIdx.x;
         if (id >= len_pts) return;
         POINT_TYPE p         = pts[id];
-        int        cell      = cellFromPoint(N_grid, p);
+        int        cell      = cellFromPoint(N_grid, buff_local, inv_boxsize, p);
         int        pos       = d_ptrs[cell] + atomicAdd(d_counters + cell, 1);
         d_stored_points[pos] = p;
         d_permutation[pos]   = id;
@@ -262,9 +272,12 @@ namespace knn {
     // helpers (grid mapping)
     // ============================================================
 
-    HD int cellFromPoint(int N_grid, POINT_TYPE point) {
-        int i = (int)floor(point.x * (double)N_grid); // assumes boxsize = 1.0
-        int j = (int)floor(point.y * (double)N_grid); // assumes boxsize = 1.0
+    HD int cellFromPoint(int N_grid, double buff, double inv_boxsize, POINT_TYPE point) {
+        // bucket grid spans [-buff, 1+buff]^d, total width 1+2*buff. Shift by +buff so the grid
+        // starts at 0, then map into [0, N_grid) via inv_boxsize = 1/(1+2*buff).
+        const double scale = (double)N_grid * inv_boxsize;
+        int i = (int)floor((point.x + buff) * scale);
+        int j = (int)floor((point.y + buff) * scale);
 
         i = imax(0, imin(i, N_grid - 1));
         j = imax(0, imin(j, N_grid - 1));
@@ -272,7 +285,7 @@ namespace knn {
 #ifdef dim_2D
         return i + j * N_grid;
 #else
-        int k = (int)floor(point.z * (double)N_grid); // assumes boxsize = 1.0
+        int k = (int)floor((point.z + buff) * scale);
         k     = imax(0, imin(k, N_grid - 1));
         return i + j * N_grid + k * N_grid * N_grid;
 #endif

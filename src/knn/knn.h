@@ -18,6 +18,8 @@ typedef struct knn_problem {
     int*          d_ptrs;              // cell start pointers, N_grid*N_grid*N_grid
     int*          d_globcounter;       // global allocation counter, 1
     POINT_TYPE*   d_stored_points;     // input points sorted, numpoints
+    double        buff;                // periodic ghost buffer; bucket grid spans [-buff, 1+buff]^d
+    double        inv_boxsize;         // 1 / (1 + 2*buff), precomputed for cellFromPoint
 } knn_problem;
 
 namespace knn {
@@ -29,7 +31,7 @@ namespace knn {
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
 
     void   sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
-    HD int cellFromPoint(int N_grid, POINT_TYPE point);
+    HD int cellFromPoint(int N_grid, double buff, double inv_boxsize, POINT_TYPE point);
 
     void knn_free(knn_problem** knn);
 
@@ -95,7 +97,7 @@ namespace knn {
         int               len_pts             = knn->len_pts;
 
         POINT_TYPE p       = d_stored_points[point_in];
-        int        cell_in = cellFromPoint(N_grid, p);
+        int        cell_in = cellFromPoint(N_grid, knn->buff, knn->inv_boxsize, p);
 
         // initialize the heap with sentinel "infinitely far" entries
         for (int i = 0; i < K; i++) {

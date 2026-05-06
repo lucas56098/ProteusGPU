@@ -53,6 +53,9 @@ namespace voronoi {
         mesh->face_capacity  = max_faces;
         mesh->ghost_capacity = max_ghosts;
 
+        // cache buff so device code (BasicConvexCell::plane_for) doesn't have to read the host global
+        mesh->buff = buff;
+
         // per-cell arrays
         mesh->seeds       = gpu_calloc<double3>(max_n_total);
         mesh->com         = gpu_calloc<double3>(max_n_total);
@@ -391,7 +394,7 @@ namespace voronoi {
         knn::knn_for_point<K>(seed_id, knn, local_knn);
 
         // clip the bounding cell by each neighbour's bisector, in distance order
-        BasicConvexCell<MAX_P, MAX_T> cell(seed_id, d_stored_points, &(stat[seed_id]));
+        BasicConvexCell<MAX_P, MAX_T> cell(seed_id, d_stored_points, &(stat[seed_id]), mesh->buff);
 
         for (int v = 0; v < K; v++) {
             unsigned int z = local_knn[v];
@@ -518,7 +521,7 @@ namespace voronoi {
 
                 // run cell construction over all neighbours in distance order
                 Status     fallback_status = success;
-                ConvexCell cell(i, d_stored_points, &fallback_status);
+                ConvexCell cell(i, d_stored_points, &fallback_status, mesh->buff);
                 for (size_t di = 0; di < dists.size(); di++) {
                     int j = dists[di].second;
                     cell.clip_by_plane(j);

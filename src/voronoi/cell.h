@@ -11,7 +11,7 @@ namespace voronoi {
     // struct used for mesh generation. Size limits are template parameters so
     // a small "fast" tier and a full "slow" tier can coexist in the same TU.
     template <int MAX_P, int MAX_T> struct BasicConvexCell {
-        HD BasicConvexCell(int p_seed, double* p_pts, Status* p_status);
+        HD BasicConvexCell(int p_seed, double* p_pts, Status* p_status, double p_buff);
 
         double* pts;
         double4 voro_seed;
@@ -20,11 +20,16 @@ namespace voronoi {
         uchar   nb_v;
         uchar   nb_t;
         uchar   nb_r;
+        double  buff; // bounding box covers [-buff, 1+buff]^d (set per-cell so plane_for can read it)
         int     plane_vid[MAX_P]; // maps plane index to global point id (-1 for boundary planes)
 
         VERT_TYPE triangle[MAX_T];
         uchar     boundary_next[MAX_P];
-        double4   half_plane[MAX_P];
+
+        // plane equation for slot p, rebuilt on demand from plane_vid[p] (or fixed
+        // bounding-box constants for p < 2*DIMENSION). Saves the 960 B/thread that
+        // used to live in a stored half_plane[] array.
+        HD double4 plane_for(int p) const;
 
         // clipping functions
         HD void clip_by_plane(int vid);

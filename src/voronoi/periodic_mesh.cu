@@ -23,12 +23,6 @@ namespace voronoi {
     GLOBAL void kernel_mesh_velocities(hsize_t, VMesh*, const hydro::primvars*, const gradients::PrimGradients*);
     GLOBAL void kernel_move_mesh(hsize_t, const VMesh*, double, POINT_TYPE*);
 #endif
-    GLOBAL void kernel_scale_down_points(hsize_t, POINT_TYPE*, double);
-    GLOBAL void kernel_scale_up_mesh(hsize_t, double3*, double3*, double*, double, double);
-    GLOBAL void kernel_scale_face_area(hsize_t, double*, double);
-#ifdef MOVING_MESH
-    GLOBAL void kernel_scale_f_mid(hsize_t, double*, double);
-#endif
     GLOBAL void kernel_generate_ghosts(hsize_t,
                                        const POINT_TYPE* __restrict__,
                                        POINT_TYPE* __restrict__,
@@ -74,7 +68,8 @@ namespace voronoi {
     // periodic mesh computation, velocity, motion
     // ============================================================
 
-    // wrap seeds around unit-box boundaries with ghost copies, build mesh, scale back
+    // wrap seeds around unit-box boundaries with ghost copies, then build the mesh
+    // on the enlarged [-buff, 1+buff]^d domain (no rescaling step)
     void compute_periodic_mesh(VMesh* mesh, POINT_TYPE* pts_data, hsize_t num_points) {
         PROFILE_START("MESH_TOTAL");
 
@@ -139,88 +134,13 @@ namespace voronoi {
             exit(EXIT_FAILURE);
         }
 
-        // shrink (hydro + ghost) into the unit box so the mesher sees a normal domain
-        double  scale   = 1. / (1. + (2 * buff));
         hsize_t n_total = n_hydro + n_ghosts;
-#ifndef CPU_DEBUG
-        {
-            int tpb    = _MESH_BLOCK_SIZE_;
-            int blocks = ((int)n_total + tpb - 1) / tpb;
-            kernel_scale_down_points<<<blocks, tpb>>>(n_total, pts, scale);
-            GPU_LAUNCH_CHECK();
-        }
-#else
-        for (hsize_t i = 0; i < n_total; i++) {
-            pts[i].x = scale * (pts[i].x - 0.5) + 0.5;
-            pts[i].y = scale * (pts[i].y - 0.5) + 0.5;
-#ifdef dim_3D
-            pts[i].z = scale * (pts[i].z - 0.5) + 0.5;
-#endif
-        }
-#endif
 
-        // build the Voronoi mesh on the shrunken (hydro + ghost) point set
-        compute_mesh(mesh, pts, n_total);
-
+        // build the Voronoi mesh directly on the [-buff, 1+buff]^d (hydro + ghost) point set.
+        // KNN's bucket grid and BasicConvexCell's bounding planes both pick up mesh->buff /
+        // knn->buff so they enclose the ghost ring without any explicit rescaling step.
         mesh->n_hydro = n_hydro;
-
-        // undo the scaling: stretch positions, volumes, face areas, and tangent offsets
-        scale = 1. + (2 * buff);
-#ifdef dim_2D
-        double vscale = scale * scale;
-        double ascale = scale;
-#else
-        double vscale = scale * scale * scale;
-        double ascale = scale * scale;
-#endif
-
-#ifndef CPU_DEBUG
-        {
-            int tpb    = _MESH_BLOCK_SIZE_;
-            int blocks = ((int)n_total + tpb - 1) / tpb;
-            kernel_scale_up_mesh<<<blocks, tpb>>>(n_total, mesh->seeds, mesh->com, mesh->volumes, scale, vscale);
-            GPU_LAUNCH_CHECK();
-        }
-
-#ifdef MOVING_MESH
-        {
-            hsize_t n_fmid = mesh->num_faces * (DIMENSION - 1);
-            int     tpb    = _MESH_BLOCK_SIZE_;
-            int     blocks = ((int)n_fmid + tpb - 1) / tpb;
-            kernel_scale_f_mid<<<blocks, tpb>>>(n_fmid, mesh->f_mid_local, scale);
-            GPU_LAUNCH_CHECK();
-        }
-#endif
-
-        {
-            int tpb    = _MESH_BLOCK_SIZE_;
-            int blocks = ((int)mesh->num_faces + tpb - 1) / tpb;
-            kernel_scale_face_area<<<blocks, tpb>>>(mesh->num_faces, mesh->face_area, ascale);
-            GPU_LAUNCH_CHECK();
-        }
-#else
-        for (hsize_t i = 0; i < n_total; i++) {
-            mesh->seeds[i].x = (mesh->seeds[i].x - 0.5) * scale + 0.5;
-            mesh->seeds[i].y = (mesh->seeds[i].y - 0.5) * scale + 0.5;
-            mesh->com[i].x   = (mesh->com[i].x - 0.5) * scale + 0.5;
-            mesh->com[i].y   = (mesh->com[i].y - 0.5) * scale + 0.5;
-#ifdef dim_3D
-            mesh->seeds[i].z = (mesh->seeds[i].z - 0.5) * scale + 0.5;
-            mesh->com[i].z   = (mesh->com[i].z - 0.5) * scale + 0.5;
-#endif
-            mesh->volumes[i] = vscale * mesh->volumes[i];
-        }
-
-#ifdef MOVING_MESH
-        for (hsize_t i = 0; i < mesh->num_faces * (DIMENSION - 1); i++) {
-            mesh->f_mid_local[i] *= scale;
-        }
-#endif
-
-        for (hsize_t i = 0; i < mesh->num_faces; i++) {
-            mesh->face_area[i] *= ascale;
-        }
-#endif
+        compute_mesh(mesh, pts, n_total);
 
         PROFILE_END("MESH_TOTAL");
     }
@@ -287,45 +207,6 @@ namespace voronoi {
         move_mesh_for_cell(i, mesh, dt, pts);
     }
 #endif // MOVING_MESH
-
-    GLOBAL void kernel_scale_down_points(hsize_t n, POINT_TYPE* pts, double scale) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n) return;
-        pts[i].x = scale * (pts[i].x - 0.5) + 0.5;
-        pts[i].y = scale * (pts[i].y - 0.5) + 0.5;
-#ifdef dim_3D
-        pts[i].z = scale * (pts[i].z - 0.5) + 0.5;
-#endif
-    }
-
-    GLOBAL void
-    kernel_scale_up_mesh(hsize_t n, double3* seeds, double3* com, double* volumes, double scale, double vscale) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n) return;
-        seeds[i].x = (seeds[i].x - 0.5) * scale + 0.5;
-        seeds[i].y = (seeds[i].y - 0.5) * scale + 0.5;
-        com[i].x   = (com[i].x - 0.5) * scale + 0.5;
-        com[i].y   = (com[i].y - 0.5) * scale + 0.5;
-#ifdef dim_3D
-        seeds[i].z = (seeds[i].z - 0.5) * scale + 0.5;
-        com[i].z   = (com[i].z - 0.5) * scale + 0.5;
-#endif
-        volumes[i] = vscale * volumes[i];
-    }
-
-    GLOBAL void kernel_scale_face_area(hsize_t n, double* face_area, double ascale) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n) return;
-        face_area[i] *= ascale;
-    }
-
-#ifdef MOVING_MESH
-    GLOBAL void kernel_scale_f_mid(hsize_t n, double* f_mid_local, double scale) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n) return;
-        f_mid_local[i] *= scale;
-    }
-#endif
 
     GLOBAL void kernel_generate_ghosts(hsize_t n_hydro,
                                        const POINT_TYPE* __restrict__ pts_data,

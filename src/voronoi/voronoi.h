@@ -44,6 +44,10 @@ struct VMesh {
     // per-cell status (reused each timestep)
     voronoi::Status* cell_status; // cell construction status flags
 
+    // periodic-buffer width (cached on the mesh so HD code can read it without touching the
+    // host-side global). The bounding box covers [-buff, 1+buff]^d; hydro stays in [0, 1]^d.
+    double buff;
+
     // scratch buffers (allocated once, reused each timestep)
     POINT_TYPE*  scratch_pts;      // ghost-augmented point buffer
     hsize_t      scratch_pts_cap;  // capacity of scratch_pts
