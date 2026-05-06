@@ -127,8 +127,9 @@ void print_max_memory_usage() {
         const long   pageSize = sysconf(_SC_PAGE_SIZE);
         const double totalRam = (pages > 0 && pageSize > 0) ? (double)pages * (double)pageSize : 0.0;
 
-        std::cout << "MAIN: maximum CPU memory used: " << rssBytes / 1000000.0 << " MB ("
-                  << totalRam / 1000000.0 << " MB total)" << std::endl;
+        constexpr double MiB = 1024.0 * 1024.0;
+        std::cout << "MAIN: maximum CPU memory used: " << rssBytes / MiB << " MiB ("
+                  << totalRam / MiB << " MiB total)" << std::endl;
     } else {
 
         std::cerr << "Error getting resource usage." << std::endl;
@@ -139,7 +140,8 @@ void print_max_memory_usage() {
     size_t gpu_free  = 0;
     size_t gpu_total = 0;
     cudaMemGetInfo(&gpu_free, &gpu_total);
-    std::cout << "MAIN: maximum GPU memory used: " << g_gpu_bytes_peak() / 1000000.0 << " MB ("
-              << (double)gpu_total / 1000000.0 << " MB total)" << std::endl;
+    constexpr double MiB = 1024.0 * 1024.0;
+    std::cout << "MAIN: maximum GPU memory used: " << g_gpu_bytes_peak() / MiB << " MiB ("
+              << (double)gpu_total / MiB << " MiB total)" << std::endl;
 #endif
 }

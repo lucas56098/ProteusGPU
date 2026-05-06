@@ -277,7 +277,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     H5Dclose(dataset_id);
     H5Fclose(file_id);
 
-    std::cout << "INPUT: IC file loaded successfully!" << std::endl;
+    std::cout << "INPUT: IC file " << filename << " loaded successfully!" << std::endl;
     return true;
 }
 

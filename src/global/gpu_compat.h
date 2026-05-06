@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 
 // CUDA / CPU_DEBUG mode switching
 
@@ -109,38 +110,56 @@ inline int host_atomicAdd(int* addr, int val) {
 #define GLOBAL __global__
 
 // syncs and error checking
-#define GPU_SYNC()                                                                                                     \
-    do {                                                                                                               \
-        CUDA_CHECK(cudaPeekAtLastError());                                                                             \
-        CUDA_CHECK(cudaDeviceSynchronize());                                                                           \
+#define GPU_SYNC()
+    do {
+        CUDA_CHECK(cudaPeekAtLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
     } while (0)
 
 #define GPU_LAUNCH_CHECK() CUDA_CHECK(cudaPeekAtLastError())
 
-#define CUDA_CHECK(call)                                                                                               \
-    do {                                                                                                               \
-        cudaError_t err = (call);                                                                                      \
-        if (err != cudaSuccess) {                                                                                      \
-            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));                 \
-            exit(EXIT_FAILURE);                                                                                        \
-        }                                                                                                              \
+#define CUDA_CHECK(call)
+    do {
+        cudaError_t err = (call);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));
+            exit(EXIT_FAILURE);
+        }
     } while (0)
 
-// running total of bytes ever requested through gpu_alloc (high-water mark approximation
-// of peak GPU memory; reallocations slightly inflate it, which is fine for diagnostics)
+inline size_t& g_gpu_bytes_current() {
+    static size_t v = 0;
+    return v;
+}
 inline size_t& g_gpu_bytes_peak() {
     static size_t v = 0;
     return v;
 }
+inline std::unordered_map<void*, size_t>& g_gpu_allocs() {
+    static std::unordered_map<void*, size_t> m;
+    return m;
+}
 
 // memory wrappers
 inline void* gpu_malloc(size_t bytes) {
-    void* p;
+    void* p = nullptr;
     CUDA_CHECK(cudaMallocManaged(&p, bytes));
-    g_gpu_bytes_peak() += bytes;
+    g_gpu_allocs()[p] = bytes;
+    g_gpu_bytes_current() += bytes;
+    if (g_gpu_bytes_current() > g_gpu_bytes_peak()) {
+        g_gpu_bytes_peak() = g_gpu_bytes_current();
+    }
     return p;
 }
 inline void gpu_free(void* ptr) {
+    if (ptr) {
+        auto& m  = g_gpu_allocs();
+        auto  it = m.find(ptr);
+        if (it != m.end()) {
+            g_gpu_bytes_current() -= it->second;
+            m.erase(it);
+        }
+    }
     CUDA_CHECK(cudaFree(ptr));
 }
 inline void gpu_memset(void* ptr, int val, size_t bytes) {
