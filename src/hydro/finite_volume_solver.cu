@@ -185,7 +185,7 @@ namespace hydro {
 #else
         const bool do_time_extrap = (dt_extrap != 0.0);
 #ifdef USE_OPENMP
-#pragma omp parallel for num_threads(_OMP_HYDRO_THREADS_)
+#pragma omp parallel for
 #endif
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
             flux_update_for_cell(i, dt_update, do_time_extrap, dt_extrap, mesh, prim_old, grads, prim_new);

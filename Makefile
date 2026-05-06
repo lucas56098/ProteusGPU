@@ -1,10 +1,15 @@
 # parallel build is default
 MAKEFLAGS += -j
 
+# user-overridable paths (override on command line, e.g. make CONFIG=foo/Config.sh BUILD_DIR=foo/build EXEC=foo/ProteusGPU)
+CONFIG ?= Config.sh
+BUILD_DIR ?= build
+EXEC ?= ProteusGPU
+
 # load Config.sh options and convert them to -D flags FIRST (before compiler setup)
 SHELL := /bin/bash
-CONFIG_DEFINES := $(shell grep -v "^\#" Config.sh | grep -v "^$$" | grep -v "^!" | awk 'NF {print "-D" $$1}')
-DEFINES := 
+CONFIG_DEFINES := $(shell grep -v "^\#" $(CONFIG) | grep -v "^$$" | grep -v "^!" | awk 'NF {print "-D" $$1}')
+DEFINES :=
 
 # system-specific includes
 ifdef SYSTYPE
@@ -73,8 +78,6 @@ INCLUDES = -Isrc -Isrc/global
 
 # directories
 SRC_DIR = src
-BUILD_DIR = build
-OUTPUT_DIR = output
 GLOBAL_DIR = $(SRC_DIR)/global
 IO_DIR = $(SRC_DIR)/io
 KNN_DIR = $(SRC_DIR)/knn
@@ -97,7 +100,7 @@ PROFILER_OBJ = $(BUILD_DIR)/profiler.o
 OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(GRADIENTS_OBJ) $(PROFILER_OBJ)
 
 # name of executable
-TARGET = ProteusGPU
+TARGET = $(EXEC)
 
 # System Types
 ifeq ($(SYSTYPE),Ubuntu)
@@ -114,8 +117,8 @@ ifeq ($(SYSTYPE),macOS)
 endif
 
 ifeq ($(SYSTYPE),MPCDF)
-	# VERA (A100): module load gcc/15 hdf5-serial/1.12.2 cuda/13.0 
-	# BinAC2 (A100): module load compiler/gnu/14.2 lib/hdf5/1.12-gnu-14.2 devel/cuda/13.0
+# VERA (A100): module load gcc/15 hdf5-serial/1.12.2 cuda/13.0 
+# BinAC2 (A100): module load compiler/gnu/14.2 lib/hdf5/1.12-gnu-14.2 devel/cuda/13.0
 	CXX_RELEASE = g++
         HDF5_CFLAGS ?= -I${HDF5_HOME}/include
         HDF5_LIBS ?= -L${HDF5_HOME}/lib -lhdf5
@@ -123,7 +126,7 @@ ifeq ($(SYSTYPE),MPCDF)
 endif
 
 ifeq ($(SYSTYPE),HorekaGH200)
-	# HorekaFTP (GH200): module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
+# HorekaFTP (GH200): module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
 	CXX_RELEASE = nvc++
 	HDF5_CFLAGS ?= -I/software/easybuild/software/HDF5/1.14.5-gompi-2024a/include
 	HDF5_LIBS ?= -L/software/easybuild/software/HDF5/1.14.5-gompi-2024a/lib -lhdf5
@@ -215,9 +218,6 @@ $(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cu $(PROFILER_DIR)/profiler.h 
 # create directories if missing
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
-
-$(OUTPUT_DIR):
-	@mkdir -p $(OUTPUT_DIR)
 
 # optional also run the programm
 run: $(TARGET)

@@ -270,7 +270,7 @@ namespace voronoi {
         int                face_overflow_flag = 0;
 
 #ifdef USE_OPENMP
-#pragma omp parallel for schedule(dynamic, _VORO_BLOCK_SIZE_)
+#pragma omp parallel for schedule(dynamic)
 #endif
         for (int seed_id = 0; seed_id < N_seedpts; seed_id++) {
             if (face_overflow_flag) continue;

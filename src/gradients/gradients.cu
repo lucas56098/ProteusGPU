@@ -28,7 +28,7 @@ namespace gradients {
         PROFILE_GPU_END("kernel_compute_gradients");
 #else
 #ifdef USE_OPENMP
-#pragma omp parallel for num_threads(_OMP_HYDRO_THREADS_)
+#pragma omp parallel for
 #endif
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
             compute_gradient_for_cell(i, mesh, primvar, grads);

@@ -8,8 +8,8 @@
 #dim_2D                             # run in 2D mode
 dim_3D                              # run in 3D mode
 
-#CUDA                               # run in GPU mode
-CPU_DEBUG                           # run in CPU mode
+#CUDA                                # run in GPU mode
+CPU_DEBUG                          # run in CPU mode
 
 #ENABLE_PROFILING                   # profiling of main routines
 
@@ -17,37 +17,36 @@ CPU_DEBUG                           # run in CPU mode
 # hydro
 ################################################################
 
-MOVING_MESH                         # enable moving mesh hydrodynamics
-_CELL_SHAPING_SPEED_=0.7            # mesh regularization speed fraction
-_CELL_SHAPING_FACTOR_=0.2           # regularization threshold in cell radii
+MOVING_MESH                         # enable moving mesh hydrodynamics 
+_CELL_SHAPING_SPEED_=0.7            # mesh regularization speed fraction (default 0.7)
+_CELL_SHAPING_FACTOR_=0.2           # regularization threshold in cell radii (default 0.2)
 
-_GAMMA_EOS_=1.6666666666666667      # adiabatic index
+_GAMMA_EOS_=1.6666666666666667      # adiabatic index (default 5/3)
 
 ################################################################
 # parallelization
 ################################################################
 
-USE_OPENMP                          # enable multithreading on CPU
-_OMP_HYDRO_THREADS_=16              # threads for hydro solver
+USE_OPENMP                          # enable multithreading on CPU (uses all available cores)
 
 # GPU kernel block sizes
-_VORO_BLOCK_SIZE_=64                # voronoi cell computation (register-heavy)
-_KNN_BLOCK_SIZE_=256                # KNN grid sort kernels
-_GRAD_BLOCK_SIZE_=256               # gradient computation kernel
-_HYDRO_BLOCK_SIZE_=256              # hydro flux / CFL / copy / volume kernels
-_MESH_BLOCK_SIZE_=256               # periodic mesh / ghost / scaling kernels
+_VORO_BLOCK_SIZE_=64                # voronoi cell computation (register-heavy, default 64)
+_KNN_BLOCK_SIZE_=256                # KNN grid sort kernels (default 256)
+_GRAD_BLOCK_SIZE_=256               # gradient computation kernel (default 256)
+_HYDRO_BLOCK_SIZE_=256              # hydro flux / CFL / copy / volume kernels (default 256)
+_MESH_BLOCK_SIZE_=256               # periodic mesh / ghost / scaling kernels (default 256)
 
 ################################################################
 # compile time memory constraints
 ################################################################
 
-_K_=190                             # KNN candidates, slow tier            (2D/3D ~35/190)
-_MAX_P_=50                          # max clipping planes per cell, slow   (2D/3D ~30/50)
-_MAX_T_=96                          # max triangles per cell, slow         (2D/3D ~60/96)
+_K_=190                             # KNN candidates, slow tier            (default 2D/3D ~35/190)
+_MAX_P_=50                          # max clipping planes per cell, slow   (default 2D/3D ~30/50)
+_MAX_T_=96                          # max triangles per cell, slow         (default 2D/3D ~60/96)
 
 # fast-tier limits: cells that overflow these fall back to slow tier (above)
-_FAST_K_=35                         # KNN candidates, fast tier            (2D/3D ~15/35)
-_FAST_MAX_P_=30                     # max clipping planes per cell, fast   (2D/3D ~20/30)
-_FAST_MAX_T_=60                     # max triangles per cell, fast         (2D/3D ~20/60)
+_FAST_K_=35                         # KNN candidates, fast tier            (default 2D/3D ~15/35)
+_FAST_MAX_P_=30                     # max clipping planes per cell, fast   (default 2D/3D ~20/30)
+_FAST_MAX_T_=60                     # max triangles per cell, fast         (default 2D/3D ~20/60)
 
-_FACE_CAPACITY_MULT_=17             # max face array entries allocated per cell (2D/3D ~8/17)
+_FACE_CAPACITY_MULT_=17             # max face array entries allocated per cell (default 2D/3D ~8/17)
