@@ -208,6 +208,11 @@ namespace voronoi {
     }
 #endif // MOVING_MESH
 
+    // warp-aggregated ghost generation: each warp computes its members' ghost counts, prefix-sums
+    // them across lanes, then a single atomicAdd by lane 0 claims a contiguous slot range. Each
+    // lane writes its ghosts at known offsets within that range. Replaces up to 7 atomics per
+    // thread (3D corner cell) with 1 atomic per warp — critical when threads in a warp are
+    // spatially clustered (post-spatial-sort) and many cells produce ghosts simultaneously.
     GLOBAL void kernel_generate_ghosts(hsize_t n_hydro,
                                        const POINT_TYPE* __restrict__ pts_data,
                                        POINT_TYPE* __restrict__ pts,
@@ -215,12 +220,73 @@ namespace voronoi {
                                        int* __restrict__ d_ghost_count,
                                        double buff_val) {
         hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
+        bool    active = (i < n_hydro);
 
-        pts[i] = pts_data[i];
+        // copy real cell into scratch_pts (every thread does this so the [0, n_hydro) range is
+        // populated; out-of-range threads zero pi to keep the geometry test well-defined).
+        POINT_TYPE pi;
+        if (active) {
+            pts[i] = pts_data[i];
+            pi     = pts[i];
+        } else {
+            pi.x = 0.0;
+            pi.y = 0.0;
+#ifdef dim_3D
+            pi.z = 0.0;
+#endif
+        }
 
-        POINT_TYPE pi = pts[i];
+        // pass 1: count ghosts this thread will produce (0..7 in 3D, 0..3 in 2D)
+        int my_count = 0;
+        if (active) {
+            for (int sx = -1; sx <= 1; sx++) {
+                for (int sy = -1; sy <= 1; sy++) {
+#ifdef dim_3D
+                    for (int sz = -1; sz <= 1; sz++) {
+#else
+                    {
+                        int sz = 0;
+#endif
+                        if (sx == 0 && sy == 0 && sz == 0) continue;
 
+                        double xa = (sx == 1) ? 0.0 : (sx == -1) ? 1.0 - buff_val : 0.0;
+                        double xb = (sx == 1) ? buff_val : 1.0;
+                        double ya = (sy == 1) ? 0.0 : (sy == -1) ? 1.0 - buff_val : 0.0;
+                        double yb = (sy == 1) ? buff_val : 1.0;
+                        double za = (sz == 1) ? 0.0 : (sz == -1) ? 1.0 - buff_val : 0.0;
+                        double zb = (sz == 1) ? buff_val : 1.0;
+
+                        if (is_in(pi, xa, xb, ya, yb, za, zb)) my_count++;
+                    }
+                }
+            }
+        }
+
+        // warp inclusive prefix sum over my_count (Kogge-Stone via __shfl_up_sync).
+        // ALL 32 lanes must participate; inactive threads contribute my_count=0.
+        const unsigned full_mask = 0xffffffffu;
+        int            s         = my_count;
+#pragma unroll
+        for (int d = 1; d < 32; d *= 2) {
+            int t = __shfl_up_sync(full_mask, s, d);
+            if ((int)(threadIdx.x & 31) >= d) s += t;
+        }
+        int warp_total = __shfl_sync(full_mask, s, 31);
+        int my_excl    = s - my_count;
+
+        // one atomicAdd per warp (skip if warp produced no ghosts)
+        int warp_base = 0;
+        if ((threadIdx.x & 31) == 0 && warp_total > 0) {
+            warp_base = atomicAdd(d_ghost_count, warp_total);
+        }
+        warp_base = __shfl_sync(full_mask, warp_base, 0);
+
+        if (!active || my_count == 0) return;
+
+        // pass 2: re-run the geometry tests and write ghosts at known slots.
+        // Re-running the tests is cheaper than spilling 7 directions into registers/local memory.
+        int my_base   = warp_base + my_excl;
+        int n_written = 0;
         for (int sx = -1; sx <= 1; sx++) {
             for (int sy = -1; sy <= 1; sy++) {
 #ifdef dim_3D
@@ -239,7 +305,7 @@ namespace voronoi {
                     double zb = (sz == 1) ? buff_val : 1.0;
 
                     if (is_in(pi, xa, xb, ya, yb, za, zb)) {
-                        int        slot = atomicAdd(d_ghost_count, 1);
+                        int        slot = my_base + n_written;
                         POINT_TYPE gpt;
                         gpt.x = pi.x + (double)sx;
                         gpt.y = pi.y + (double)sy;
@@ -248,6 +314,7 @@ namespace voronoi {
 #endif
                         pts[n_hydro + slot] = gpt;
                         original_ids[slot]  = i;
+                        n_written++;
                     }
                 }
             }
