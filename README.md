@@ -1,8 +1,8 @@
 # ProteusGPU
 
-[![Build](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml/badge.svg)](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml) [![Version 0.6](https://img.shields.io/badge/version-0.6-blue)](https://github.com/lucas56098/ProteusGPU/releases)
+[![Build](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml/badge.svg)](https://github.com/lucas56098/ProteusGPU/actions/workflows/build.yml) [![Version 0.7](https://img.shields.io/badge/version-0.7-blue)](https://github.com/lucas56098/ProteusGPU/releases)
 
-![Banner](/figures/banner_v5.webp)
+![Banner](/figures/banner_v6.webp)
 
 Proteus is a GPU accelerated moving mesh hydrodynamics code.
 
@@ -23,6 +23,26 @@ This project is being done during my master's thesis, supervised by [Dylan Nelso
 ./ProteusGPU [./ics/param.txt] [restart_flag]
 ```
 If the `restart_flag` is set the simulation continues from the last snapshot in the `output_folder`.
+
+## Examples
+Convergence of acoustic wave: second-order
+<img src="/figures/convergence.png" alt="Video" width="50%">
+
+Sod's shock tube test compared to AREPO
+<img src="/figures/sod_convergence.png" alt="Image" width="80%">
+
+Taylor-Sedov blast wave (2D/3D):
+<img src="/figures/sedov.png" alt="Image" width="49%"> <img src="/figures/sedov_3D_64.png" alt="Image" width="48%">
+
+Kelvin Helmholtz Instability ($51^2$ and $1024^2$)
+<img src="/figures/kh51.gif" alt="Image" width="49%"> <img src="/figures/kh1024.png" alt="Image" width="49%">
+
+Some colliding clouds ($200^3$, see ics/create_cloud_crash.py)
+<img src="/figures/cloud_collision_3D.png" alt="Image" width="100%">
+
+Runtime comparsion of Proteus (GPU/CPU) compared to AREPO for a $100^3$ shock tube test.
+<img src="/figures/runtime_comparison_gh200.png" alt="Image" width="70%">
+Note: since Proteus does not support MPI/Multi-node yet, the runtime comparison estimates AREPOs runtime from a single core time to eliminate most of its MPI overhead. Additionally its worth to note that Proteus does not work well on inhomogenous seed distributions yet.
 
 ## Dependencies
 - HDF5 (`libhdf5-dev` on Ubuntu, via Homebrew on macOS)

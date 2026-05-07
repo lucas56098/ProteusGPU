@@ -111,14 +111,14 @@ namespace begrun {
          |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/ 
 
     )" << std::endl;
-        std::cout << "==========================================================================" << std::endl;
-        std::cout << "A GPU accelerated Moving-Mesh Hydrodynamics Code for Exascale Astrophysics" << std::endl;
-        std::cout << "==========================================================================" << std::endl;
-        std::cout << "Version: 0.6" << std::endl;
+        std::cout << "================================================================================" << std::endl;
+        std::cout << "A GPU accelerated moving mesh hydrodynamics code for astrophysical applications" << std::endl;
+        std::cout << "================================================================================" << std::endl;
+        std::cout << "Version: 0.7" << std::endl;
         std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
         std::cout << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
         std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
-        std::cout << "==========================================================================" << std::endl;
+        std::cout << "================================================================================" << std::endl;
     }
 
     // loads parameters from param.txt
