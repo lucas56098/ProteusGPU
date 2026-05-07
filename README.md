@@ -24,24 +24,24 @@ This project is being done during my master's thesis, supervised by [Dylan Nelso
 ```
 If the `restart_flag` is set the simulation continues from the last snapshot in the `output_folder`.
 
-## Examples
-Convergence of acoustic wave: second-order
+## Examples 
+Convergence of acoustic wave: second-order <br>
 <img src="/figures/convergence.png" alt="Video" width="50%">
 
-Sod's shock tube test compared to AREPO
+Sod's shock tube test compared to AREPO<br>
 <img src="/figures/sod_convergence.png" alt="Image" width="80%">
 
-Taylor-Sedov blast wave (2D/3D):
+Taylor-Sedov blast wave (2D/3D):<br>
 <img src="/figures/sedov.png" alt="Image" width="49%"> <img src="/figures/sedov_3D_64.png" alt="Image" width="48%">
 
-Kelvin Helmholtz Instability ($51^2$ and $1024^2$)
+Kelvin Helmholtz Instability ($51^2$ and $1024^2$)<br>
 <img src="/figures/kh51.gif" alt="Image" width="49%"> <img src="/figures/kh1024.png" alt="Image" width="49%">
 
-Some colliding clouds ($200^3$, see ics/create_cloud_crash.py)
+Some colliding clouds ($200^3$, see ics/create_cloud_crash.py)<br>
 <img src="/figures/cloud_collision_3D.png" alt="Image" width="100%">
 
-Runtime comparsion of Proteus (GPU/CPU) compared to AREPO for a $100^3$ shock tube test.
-<img src="/figures/runtime_comparison_gh200.png" alt="Image" width="70%">
+Runtime comparsion of Proteus (GPU/CPU) compared to AREPO for a $100^3$ shock tube test.<br>
+<img src="/figures/runtime_comparison_gh200.png" alt="Image" width="60%">
 Note: since Proteus does not support MPI/Multi-node yet, the runtime comparison estimates AREPOs runtime from a single core time to eliminate most of its MPI overhead. Additionally its worth to note that Proteus does not work well on inhomogenous seed distributions yet.
 
 ## Dependencies
