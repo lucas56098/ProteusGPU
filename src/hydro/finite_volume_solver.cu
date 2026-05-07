@@ -80,6 +80,8 @@ namespace hydro {
         s_grads    = nullptr;
     }
 
+    primvars* prim_new_buffer() { return s_prim_new; }
+
     // ============================================================
     // Main routines
     // ============================================================
@@ -119,7 +121,7 @@ namespace hydro {
         gpu_memcpy(mesh->old_volumes, mesh->volumes, mesh->n_hydro * sizeof(double));
 
         // move mesh
-        voronoi::move_mesh(mesh, dt);
+        voronoi::move_mesh(mesh, dt, primvar, prim_new);
 
         // correct new primitive variables for volume change
 #ifndef CPU_DEBUG
@@ -308,7 +310,7 @@ namespace hydro {
         const hsize_t face_base = mesh->face_ptr[i];
 
         // own state and gradient
-        prim                    state_i = get_state(i, mesh, prim_old);
+        prim                    state_i = get_state(i, prim_old);
         gradients::PrimGradient grad_i  = grads->load(i);
 
         prim total_flux;
@@ -317,8 +319,8 @@ namespace hydro {
         for (hsize_t j = 0; j < mesh->face_counts[i]; j++) {
             int                     face_idx = face_base + j;
             hsize_t                 index_j  = mesh->neighbor_cell[face_idx];
-            prim                    state_j  = get_state(index_j, mesh, prim_old);
-            gradients::PrimGradient grad_j   = grads->load(hydro_index(index_j, mesh));
+            prim                    state_j  = get_state(index_j, prim_old);
+            gradients::PrimGradient grad_j   = grads->load(index_j);
 
             // local face frame (n, m, p) along the seed-to-seed direction
             double3 delta = {wrap_periodic_delta(mesh->seeds[index_j].x - mesh->seeds[i].x),
@@ -330,7 +332,7 @@ namespace hydro {
             // face velocity (lab + face-frame) for the moving-mesh transformation
             POINT_TYPE vel_face, vel_face_turned;
             POINT_TYPE vm_i = mesh->v_mesh[i];
-            POINT_TYPE vm_j = mesh->v_mesh[hydro_index(index_j, mesh)];
+            POINT_TYPE vm_j = mesh->v_mesh[index_j];
             get_vel_face(i,
                          index_j,
                          vm_i,

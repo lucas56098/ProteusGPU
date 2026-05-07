@@ -14,6 +14,7 @@ namespace hydro {
     void      free_prim(primvars** primvar);
     void      allocate_hydro_buffers(hsize_t n_hydro);
     void      free_hydro_buffers();
+    primvars* prim_new_buffer();
 
     // main routines
     void   hydro_step(double dt, VMesh* mesh, primvars* primvar);

@@ -6,9 +6,13 @@
 
 namespace voronoi {
 
-    // periodic ghost generation and mesh movement
-    void compute_periodic_mesh(VMesh* mesh, POINT_TYPE* pts_data, hsize_t num_points);
-    void move_mesh(VMesh* mesh, double dt);
+    // periodic ghost generation and mesh movement.
+    void compute_periodic_mesh(VMesh*           mesh,
+                               POINT_TYPE*      pts_data,
+                               hsize_t          num_points,
+                               hydro::primvars* primvar,
+                               hydro::primvars* primvar_aux);
+    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::primvars* primvar_aux);
 
     // mesh-point velocity computation (gas velocity + regularization)
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);

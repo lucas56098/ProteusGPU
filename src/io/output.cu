@@ -30,9 +30,29 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
     MeshCellData meshData;
     vmesh_to_meshdata(mesh, meshData);
 
+    std::vector<unsigned int> original_to_current(n_hydro);
+    for (int k = 0; k < n_hydro; k++) {
+        original_to_current[mesh->cell_to_original[k]] = (unsigned int)k;
+    }
+    std::vector<double>     rho_out(n_hydro);
+    std::vector<POINT_TYPE> vel_out(n_hydro);
+    std::vector<double>     E_out(n_hydro);
+    if (primvar) {
+        for (int file_id = 0; file_id < n_hydro; file_id++) {
+            unsigned int k = original_to_current[file_id];
+            if (primvar->rho) rho_out[file_id] = primvar->rho[k];
+            if (primvar->v)   vel_out[file_id] = primvar->v[k];
+            if (primvar->E)   E_out[file_id]   = primvar->E[k];
+        }
+    }
+    hydro::primvars primvar_inv;
+    primvar_inv.rho = primvar ? rho_out.data() : nullptr;
+    primvar_inv.v   = primvar ? vel_out.data() : nullptr;
+    primvar_inv.E   = primvar ? E_out.data()   : nullptr;
+
     std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
 
-    if (!writeSnapshot(output_file, meshData, primvar, n_hydro, t_sim)) { exit(EXIT_FAILURE); }
+    if (!writeSnapshot(output_file, meshData, &primvar_inv, n_hydro, t_sim)) { exit(EXIT_FAILURE); }
 
     PROFILE_END("SNAPSHOTS");
 }
@@ -50,26 +70,30 @@ void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
 
     meshData.seeds_dims = {(hsize_t)n_pts, DIMENSION};
 
-    // seeds (flatten double3 to flat double array)
+    // file_id -> current k (inverse of cell_to_original)
+    std::vector<unsigned int> original_to_current(n_pts);
+    for (int k = 0; k < n_pts; k++) {
+        original_to_current[mesh->cell_to_original[k]] = (unsigned int)k;
+    }
+
     meshData.seeds.resize(n_pts * DIMENSION);
-    for (int i = 0; i < n_pts; i++) {
-        meshData.seeds[i * DIMENSION + 0] = mesh->seeds[i].x;
-        meshData.seeds[i * DIMENSION + 1] = mesh->seeds[i].y;
+    for (int file_id = 0; file_id < n_pts; file_id++) {
+        unsigned int k = original_to_current[file_id];
+        meshData.seeds[file_id * DIMENSION + 0] = mesh->seeds[k].x;
+        meshData.seeds[file_id * DIMENSION + 1] = mesh->seeds[k].y;
 #ifdef dim_3D
-        meshData.seeds[i * DIMENSION + 2] = mesh->seeds[i].z;
+        meshData.seeds[file_id * DIMENSION + 2] = mesh->seeds[k].z;
 #endif
     }
 
-    // volumes
     meshData.volumes.resize(n_pts);
-    for (int i = 0; i < n_pts; i++) {
-        meshData.volumes[i] = mesh->volumes[i];
+    for (int file_id = 0; file_id < n_pts; file_id++) {
+        meshData.volumes[file_id] = mesh->volumes[original_to_current[file_id]];
     }
 
-    // face counts
     meshData.face_counts.resize(n_pts);
-    for (int i = 0; i < n_pts; i++) {
-        meshData.face_counts[i] = (int)mesh->face_counts[i];
+    for (int file_id = 0; file_id < n_pts; file_id++) {
+        meshData.face_counts[file_id] = (int)mesh->face_counts[original_to_current[file_id]];
     }
 }
 

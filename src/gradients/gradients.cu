@@ -61,7 +61,7 @@ namespace gradients {
     HD void
     compute_gradient_for_cell(hsize_t i, const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
 
-        hydro::prim state_i = get_state(i, mesh, primvar);
+        hydro::prim state_i = get_state(i, primvar);
 
         // weighted least-squares accumulators (M and b for each primitive variable)
 #ifdef dim_2D
@@ -94,11 +94,10 @@ namespace gradients {
 
         for (hsize_t fj = 0; fj < face_count; fj++) {
             hsize_t face_idx     = face_start + fj;
-            hsize_t neighbor_raw = (hsize_t)mesh->neighbor_cell[face_idx];
-            hsize_t neighbor_h   = hydro_index(neighbor_raw, mesh);
+            hsize_t neighbor     = (hsize_t)mesh->neighbor_cell[face_idx];
 
             // separation vector and inverse-distance weighting
-            POINT_TYPE dx    = point_diff(mesh->seeds[neighbor_raw], mesh->seeds[i]);
+            POINT_TYPE dx    = point_diff(mesh->seeds[neighbor], mesh->seeds[i]);
             double     dist2 = point_dot(dx, dx);
             if (dist2 < 1e-24) continue;
 
@@ -114,7 +113,7 @@ namespace gradients {
             m22 += weight * dx.z * dx.z;
 #endif
 
-            hydro::prim state_j = get_state(neighbor_h, mesh, primvar);
+            hydro::prim state_j = get_state(neighbor, primvar);
             hydro::prim d_state;
             d_state.rho = state_j.rho - state_i.rho;
             d_state.v.x = state_j.v.x - state_i.v.x;
@@ -177,10 +176,10 @@ namespace gradients {
         double alpha_vz = 1.0;
 #endif
         for (hsize_t fj = 0; fj < face_count; fj++) {
-            hsize_t    face_idx     = face_start + fj;
-            hsize_t    neighbor_raw = (hsize_t)mesh->neighbor_cell[face_idx];
-            POINT_TYPE dx           = point_diff(mesh->seeds[neighbor_raw], mesh->seeds[i]);
-            POINT_TYPE d            = point_mul(0.5, dx);
+            hsize_t    face_idx = face_start + fj;
+            hsize_t    neighbor = (hsize_t)mesh->neighbor_cell[face_idx];
+            POINT_TYPE dx       = point_diff(mesh->seeds[neighbor], mesh->seeds[i]);
+            POINT_TYPE d        = point_mul(0.5, dx);
 
             alpha_rho = fmin(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));
             alpha_vx  = fmin(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads->vx[i]));

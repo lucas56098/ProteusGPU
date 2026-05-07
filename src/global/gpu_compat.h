@@ -110,21 +110,21 @@ inline int host_atomicAdd(int* addr, int val) {
 #define GLOBAL __global__
 
 // syncs and error checking
-#define GPU_SYNC()
-    do {
-        CUDA_CHECK(cudaPeekAtLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
+#define GPU_SYNC()                                  \
+    do {                                            \
+        CUDA_CHECK(cudaPeekAtLastError());          \
+        CUDA_CHECK(cudaDeviceSynchronize());        \
     } while (0)
 
 #define GPU_LAUNCH_CHECK() CUDA_CHECK(cudaPeekAtLastError())
 
-#define CUDA_CHECK(call)
-    do {
-        cudaError_t err = (call);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));
-            exit(EXIT_FAILURE);
-        }
+#define CUDA_CHECK(call)                                                                                     \
+    do {                                                                                                     \
+        cudaError_t err = (call);                                                                            \
+        if (err != cudaSuccess) {                                                                            \
+            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));       \
+            exit(EXIT_FAILURE);                                                                              \
+        }                                                                                                    \
     } while (0)
 
 inline size_t& g_gpu_bytes_current() {

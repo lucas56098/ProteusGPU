@@ -70,7 +70,11 @@ namespace voronoi {
 
     // wrap seeds around unit-box boundaries with ghost copies, then build the mesh
     // on the enlarged [-buff, 1+buff]^d domain (no rescaling step)
-    void compute_periodic_mesh(VMesh* mesh, POINT_TYPE* pts_data, hsize_t num_points) {
+    void compute_periodic_mesh(VMesh*           mesh,
+                               POINT_TYPE*      pts_data,
+                               hsize_t          num_points,
+                               hydro::primvars* primvar,
+                               hydro::primvars* primvar_aux) {
         PROFILE_START("MESH_TOTAL");
 
         double  ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
@@ -139,8 +143,7 @@ namespace voronoi {
         // build the Voronoi mesh directly on the [-buff, 1+buff]^d (hydro + ghost) point set.
         // KNN's bucket grid and BasicConvexCell's bounding planes both pick up mesh->buff /
         // knn->buff so they enclose the ghost ring without any explicit rescaling step.
-        mesh->n_hydro = n_hydro;
-        compute_mesh(mesh, pts, n_total);
+        compute_mesh(mesh, pts, (int)n_total, primvar, primvar_aux);
 
         PROFILE_END("MESH_TOTAL");
     }
@@ -166,7 +169,7 @@ namespace voronoi {
     }
 
     // advance seeds by v_mesh*dt (with periodic wrap), then rebuild the mesh
-    void move_mesh(VMesh* mesh, double dt) {
+    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
 
         POINT_TYPE* pts     = mesh->scratch_move;
         hsize_t     n_hydro = mesh->n_hydro;
@@ -182,7 +185,7 @@ namespace voronoi {
         }
 #endif
 
-        compute_periodic_mesh(mesh, pts, n_hydro);
+        compute_periodic_mesh(mesh, pts, n_hydro, primvar, primvar_aux);
     }
 #endif // MOVING_MESH
 
@@ -399,7 +402,7 @@ namespace voronoi {
             if (fraction > 0.0) {
                 // scale by sound speed so regularization respects local timescales
                 const double rho     = primvar->rho[i];
-                hydro::prim  state_i = get_state(i, mesh, primvar);
+                hydro::prim  state_i = get_state(i, primvar);
                 const double p       = fmax(0.0, hydro::get_P_ideal_gas(&state_i));
                 if (rho > 0.0 && p > 0.0) {
                     const double ci = sqrt(gamma_eos * p / rho);
