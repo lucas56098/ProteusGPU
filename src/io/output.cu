@@ -104,7 +104,7 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
                                   double                 t_sim) {
     std::string fullPath = outputDirectory + filename;
 
-    std::cout << "OUTPUT: Writing mesh to: " << fullPath << std::endl;
+    std::cout << "OUTPUT: Writing snapshot to: " << fullPath << std::endl;
 
     // create HDF5 file
     hid_t file_id = H5Fcreate(fullPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
@@ -157,19 +157,19 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
     H5Sclose(scalar_space);
     H5Gclose(header_group);
 
-    // create cells group
-    hid_t cells_group = H5Gcreate(file_id, "cells", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (cells_group < 0) {
-        std::cerr << "OUTPUT: Error! Could not create cells group" << std::endl;
+    // create mesh cells group
+    hid_t mesh_group = H5Gcreate(file_id, "mesh", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    if (mesh_group < 0) {
+        std::cerr << "OUTPUT: Error! Could not create mesh group" << std::endl;
         H5Fclose(file_id);
         return false;
     }
 
-    // write seeds
+    // write seed (generating point) positions
     if (!meshData.seeds.empty() && meshData.seeds_dims.size() == 2) {
         hid_t dataspace = H5Screate_simple(2, meshData.seeds_dims.data(), NULL);
         hid_t dataset_id =
-            H5Dcreate(cells_group, "seeds", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dcreate(mesh_group, "pos", H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.seeds.data());
             H5Dclose(dataset_id);
@@ -182,7 +182,7 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
         hsize_t dims_1d[1]   = {meshData.volumes.size()};
         hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
         hid_t   dataset_id =
-            H5Dcreate(cells_group, "volumes", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dcreate(mesh_group, "volume", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.volumes.data());
             H5Dclose(dataset_id);
@@ -190,20 +190,21 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
         H5Sclose(dataspace_1d);
     }
 
-    // write face_counts (number of faces per cell)
+    // write face_counts (number of faces per cell) (disabled)
+    /*
     if (!meshData.face_counts.empty()) {
         hsize_t dims_1d[1]   = {meshData.face_counts.size()};
         hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
         hid_t   dataset_id =
-            H5Dcreate(cells_group, "face_counts", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dcreate(mesh_group, "face_counts", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         if (dataset_id >= 0) {
             H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.face_counts.data());
             H5Dclose(dataset_id);
         }
         H5Sclose(dataspace_1d);
-    }
+    }*/
 
-    H5Gclose(cells_group);
+    H5Gclose(mesh_group);
 
     // create hydro group
     hid_t hydro_group = H5Gcreate(file_id, "hydro", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
@@ -251,7 +252,7 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
             hsize_t dims_1d[1]   = {(hsize_t)n_hydro};
             hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
             hid_t   dataset_id   = H5Dcreate(
-                hydro_group, "Energy", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+                hydro_group, "energy", H5T_NATIVE_DOUBLE, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
             if (dataset_id >= 0) {
                 H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, primvar->E);
                 H5Dclose(dataset_id);
@@ -275,7 +276,7 @@ void print_log(int                                   step,
                double                                t_end) {
 
     const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count();
-    std::cout << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
+    std::cout << std::endl << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
               << "  ETA = " << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
               << std::endl;
 }

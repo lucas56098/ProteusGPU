@@ -9,21 +9,20 @@
 #include <chrono>
 #include <iostream>
 
-/*==============================================================================
-          _____           _                    _____ _____  _    _
-         |  __ \         | |                  / ____|  __ \| |  | |
-         | |__) | __ ___ | |_ ___ _   _ ___  | |  __| |__) | |  | |
-         |  ___/ '__/ _ \| __/ _ \ | | / __| | | |_ |  ___/| |  | |
-         | |   | | | (_) | ||  __/ |_| \__ \ | |__| | |    | |__| |
-         |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/
+/*=========================================================================
+        _____           _                    _____ _____  _    _
+       |  __ \         | |                  / ____|  __ \| |  | |
+       | |__) | __ ___ | |_ ___ _   _ ___  | |  __| |__) | |  | |
+       |  ___/ '__/ _ \| __/ _ \ | | / __| | | |_ |  ___/| |  | |
+       | |   | | | (_) | ||  __/ |_| \__ \ | |__| | |    | |__| |
+       |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/
 
-================================================================================
-A GPU accelerated moving mesh hydrodynamics code for astrophysical applications
-================================================================================
+       GPU-accelerated moving mesh hydrodynamics for astrophysics
+===========================================================================
 Version: 0.7
 Authors: Lucas Schleuss, Dylan Nelson
 Institution: Institute of Theoretical Astrophysics, Heidelberg University
-==============================================================================*/
+===========================================================================*/
 
 int main(int argc, char* argv[]) {
 
@@ -47,6 +46,9 @@ int main(int argc, char* argv[]) {
 
     // IC arrays are no longer needed — free their host memory
     begrun::free_initial_conditions();
+
+    // report initial memory usage
+    print_max_memory_usage();
 
     if (t_sim > 0.0) {
         std::cout << "HYDRO: restarted from t = " << t_sim << " (snap_num = " << snap_num << ")" << std::endl;
@@ -89,6 +91,9 @@ int main(int argc, char* argv[]) {
             snap_to_end    = true;
         }
 
+        // log info
+        print_log(step, wall_start, t_sim, dt, t_start, t_end);
+
         // hydro step
         hydro::hydro_step(dt, mesh, primvar);
         
@@ -97,9 +102,6 @@ int main(int argc, char* argv[]) {
         else if (snap_to_output) t_sim = t_nextoutput;
         else                     t_sim += dt;
         step++;
-
-        // log info
-        print_log(step, wall_start, t_sim, dt, t_start, t_end);
 
         // write snapshot
         if (t_sim >= t_nextoutput || t_sim >= t_end) {

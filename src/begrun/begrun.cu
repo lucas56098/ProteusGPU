@@ -53,10 +53,13 @@ namespace begrun {
 
         StartState state = {0.0, 0};
 
+        // identify existing snapshots in the output directory
+        std::string out_dir  = input.getParameter("output_directory");
+        int         latest_n = InputHandler::findLatestSnapshot(out_dir);
+
+        // todo: could simply always (assume) restart is desired if latest_n > 0, and drop need for restart_flag
         if (restart_flag == 1) {
             // pick the highest-numbered snapshot in the output directory
-            std::string out_dir  = input.getParameter("output_directory");
-            int         latest_n = InputHandler::findLatestSnapshot(out_dir);
             if (latest_n < 0) {
                 std::cerr << "RESTART: Error! No snapshots found in " << out_dir << std::endl;
                 exit(EXIT_FAILURE);
@@ -71,16 +74,16 @@ namespace begrun {
         } else {
             // fresh IC from the file in param.txt
             if (!input.readICFile(input.getParameter("ic_file"), icData)) { exit(EXIT_FAILURE); }
+
+	    // snapshots exist in output directory? we will start to overwrite them. likely unwanted.
+            if (latest_n > 0) {
+                std::cerr << "RESTART: Stopping! Found existing snapshots in " << out_dir << " but no restart-flag." << std::endl;
+                exit(EXIT_FAILURE);
+            }
         }
 
         // periodic ghost band thickness scales with mean inter-particle spacing
         buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) * 4;
-
-#ifdef MOVING_MESH
-        // mesh regularization parameters (Lloyd-style centroid drift)
-        std::cout << "BEGRUN: CellShapingSpeed  = " << CellShapingSpeed << std::endl;
-        std::cout << "BEGRUN: CellShapingFactor = " << CellShapingFactor << std::endl;
-#endif
 
         // create output directory if missing
         output = OutputHandler(input.getParameter("output_directory"));
