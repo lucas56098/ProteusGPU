@@ -24,7 +24,7 @@ def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=No
     hdf5_file : str
         Path to mesh_output HDF5 file.
     quantity : str
-        Hydro quantity to plot: 'rho', 'vel_mag', 'Energy', 'pressure'.
+        Hydro quantity to plot: 'rho', 'vel_mag', 'energy', 'pressure'.
     output_file : str or None
         Save path; if None, displays interactively.
     vmin, vmax : float or None
@@ -41,7 +41,7 @@ def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=No
     t_start = time.perf_counter()
 
     with h5py.File(hdf5_file, 'r') as f:
-        seeds = f['cells/seeds'][:]
+        seeds = f['mesh/pos'][:]
         header = f['header']
         dimension = header.attrs['dimension']
         extent = header.attrs['extent']
@@ -52,7 +52,7 @@ def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=No
 
         rho = f['hydro/rho'][:]
         vel = f['hydro/vel'][:]
-        energy = f['hydro/Energy'][:]
+        energy = f['hydro/energy'][:]
 
     # Compute quantity
     if quantity == 'rho':

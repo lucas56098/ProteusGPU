@@ -56,7 +56,7 @@ def create_sedov(
     rho = np.full(num_seeds, 1.0, dtype=np.float64)
     vel = np.zeros((num_seeds, dimension), dtype=np.float64)
     E_ambient = p_ambient / (gamma - 1.0)
-    Energy = np.full(num_seeds, E_ambient, dtype=np.float64)
+    energy = np.full(num_seeds, E_ambient, dtype=np.float64)
 
     # deposit blast energy uniformly over cells inside r_blast
     blast_mask = radius < r_blast
@@ -65,7 +65,7 @@ def create_sedov(
         raise RuntimeError("No cells inside r_blast — increase r_blast or num_seeds")
 
     E_per_cell = E_blast / (n_blast * cell_volume)
-    Energy[blast_mask] = E_per_cell
+    energy[blast_mask] = E_per_cell
 
     print(f"  Blast cells: {n_blast}")
     print(f"  E_blast: {E_blast}")
@@ -78,10 +78,10 @@ def create_sedov(
         header.attrs["extent"] = extent
         header.attrs["gamma"] = gamma
 
-        f.create_dataset("seedpos", data=pos)
+        f.create_dataset("pos", data=pos)
         f.create_dataset("rho", data=rho)
         f.create_dataset("vel", data=vel)
-        f.create_dataset("Energy", data=Energy)
+        f.create_dataset("energy", data=energy)
 
     print(f"  Created {filename} with {num_seeds} cells\n")
 

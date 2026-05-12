@@ -43,7 +43,7 @@ namespace hydro {
 
         for (int i = 0; i < n_hydro; i++) {
             hydro_data->rho[i] = icData.rho[i];
-            hydro_data->E[i]   = icData.Energy[i];
+            hydro_data->E[i]   = icData.energy[i];
             hydro_data->v[i].x = icData.vel[DIMENSION * i];
             hydro_data->v[i].y = icData.vel[DIMENSION * i + 1];
 #ifdef dim_3D

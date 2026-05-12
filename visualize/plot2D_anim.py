@@ -74,7 +74,7 @@ def discover_snapshots(input_dir, pattern):
 
 def read_snapshot(snapshot_path, quantity):
     with h5py.File(snapshot_path, 'r') as f:
-        seeds = f['cells/seeds'][:]
+        seeds = f['mesh/pos'][:]
         header = f['header']
         dimension = int(header.attrs['dimension'])
         extent = float(header.attrs['extent'])
@@ -86,7 +86,7 @@ def read_snapshot(snapshot_path, quantity):
 
         rho = f['hydro/rho'][:]
         vel = f['hydro/vel'][:]
-        energy = f['hydro/Energy'][:]
+        energy = f['hydro/energy'][:]
 
     values, label = compute_quantity(quantity, rho, vel, energy)
     return seeds, values, label, extent

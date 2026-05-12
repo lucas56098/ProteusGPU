@@ -71,7 +71,7 @@ def seed_positions(
     rng = np.random.default_rng(rng_seed)
 
     if mesh_mode == "random":
-        seedpos = rng.uniform(0.0, extent, size=(num_seeds, dimension)).astype(np.float64)
+        pos = rng.uniform(0.0, extent, size=(num_seeds, dimension)).astype(np.float64)
 
     elif mesh_mode == "cartesian":
         if dimension == 2:
@@ -85,7 +85,7 @@ def seed_positions(
             x1 = (np.arange(nx) + 0.5) * dx
             y1 = (np.arange(ny) + 0.5) * dy
             xx, yy = np.meshgrid(x1, y1, indexing="xy")
-            seedpos = np.column_stack((xx.ravel(), yy.ravel())).astype(np.float64)
+            pos = np.column_stack((xx.ravel(), yy.ravel())).astype(np.float64)
         else:
             n = int(round(num_seeds ** (1.0 / 3.0)))
             if n * n * n != num_seeds:
@@ -94,17 +94,17 @@ def seed_positions(
             dx = extent / n
             x1 = (np.arange(n) + 0.5) * dx
             xx, yy, zz = np.meshgrid(x1, x1, x1, indexing="xy")
-            seedpos = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel())).astype(np.float64)
+            pos = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel())).astype(np.float64)
 
         # perturb the cartesian grid
         for i in range(dimension):
-            seedpos[:, i] += rng.uniform(-perturbation * dx, perturbation * dx, size=num_seeds)
+            pos[:, i] += rng.uniform(-perturbation * dx, perturbation * dx, size=num_seeds)
 
         # periodic wrap after perturbation
-        seedpos %= extent
+        pos %= extent
 
     elif mesh_mode == "polar_ring":
-        seedpos = np.zeros((num_seeds, dimension), dtype=np.float64)
+        pos = np.zeros((num_seeds, dimension), dtype=np.float64)
         seed_count = 0
 
         n_per_dim = int(round(num_seeds ** (1.0 / dimension)))
@@ -124,7 +124,7 @@ def seed_positions(
 
                 # only include the cell if within the box
                 if -extent_half <= x < extent_half and -extent_half <= y < extent_half:
-                    seedpos[seed_count] = [x, y]
+                    pos[seed_count] = [x, y]
                     seed_count += 1
 
                 if seed_count == num_seeds:
@@ -132,6 +132,6 @@ def seed_positions(
 
                 phi += dphi
 
-        seedpos += 0.5 * extent  # shift to box coordinates
+        pos += 0.5 * extent  # shift to box coordinates
 
-    return seedpos
+    return pos

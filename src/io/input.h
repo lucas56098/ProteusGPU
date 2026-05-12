@@ -12,13 +12,13 @@ struct ICHeader {
 };
 
 struct ICData {
-    std::vector<double>  seedpos;      // dimension * numSeeds
-    std::vector<hsize_t> seedpos_dims; // [numSeeds, dimension]
+    std::vector<double>  pos;      // dimension * numSeeds
+    std::vector<hsize_t> pos_dims; // [numSeeds, dimension]
 
     // hydro quantities
     std::vector<double> rho;    // numSeeds
     std::vector<double> vel;    // dimension * numSeeds
-    std::vector<double> Energy; // numSeeds
+    std::vector<double> energy; // numSeeds
 
     ICHeader header;
 };

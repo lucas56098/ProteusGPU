@@ -83,7 +83,7 @@ namespace begrun {
         }
 
         // periodic ghost band thickness scales with mean inter-particle spacing
-        buff = (1. / pow(icData.seedpos_dims[0], 1. / ((double)DIMENSION))) * 4;
+        buff = (1. / pow(icData.pos_dims[0], 1. / ((double)DIMENSION))) * 4;
 
         // create output directory if missing
         output = OutputHandler(input.getParameter("output_directory"));
@@ -95,10 +95,10 @@ namespace begrun {
 
     // free IC data not needed anymore
     void free_initial_conditions() {
-        std::vector<double>().swap(icData.seedpos);
+        std::vector<double>().swap(icData.pos);
         std::vector<double>().swap(icData.rho);
         std::vector<double>().swap(icData.vel);
-        std::vector<double>().swap(icData.Energy);
+        std::vector<double>().swap(icData.energy);
     }
 
     // prints Proteus banner

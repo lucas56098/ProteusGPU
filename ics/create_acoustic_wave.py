@@ -44,7 +44,7 @@ def create_acoustic_wave(
     print(f"  Delta rho/rho: {delta_rho/rho_0}")
     print(f"  Mesh mode: {mesh_mode} (perturbation = {perturbation})")
 
-    seedpos = seed_positions(
+    pos = seed_positions(
         num_seeds,
         dimension,
         extent=extent,
@@ -53,7 +53,7 @@ def create_acoustic_wave(
     )
 
     # plane wave along x with unit wavelength
-    x = seedpos[:, 0]
+    x = pos[:, 0]
     k = 2.0 * np.pi / extent
     s = np.sin(k * x)
 
@@ -64,7 +64,7 @@ def create_acoustic_wave(
     vel[:, 0] = delta_v * s
 
     # energy per volume
-    Energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel ** 2, axis=1)
+    energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel ** 2, axis=1)
 
     print("\n  Initial state summary:")
     print(f"    rho range: [{rho.min():.12f}, {rho.max():.12f}]")
@@ -77,10 +77,10 @@ def create_acoustic_wave(
         header_group.attrs["extent"] = extent
         header_group.attrs["gamma"] = gamma
 
-        f.create_dataset("seedpos", data=seedpos)
+        f.create_dataset("pos", data=pos)
         f.create_dataset("rho", data=rho)
         f.create_dataset("vel", data=vel)
-        f.create_dataset("Energy", data=Energy)
+        f.create_dataset("energy", data=energy)
 
     print(f"\nSuccessfully created {filename}\n")
 

@@ -38,10 +38,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 def load_snapshot(path):
     with h5py.File(path, 'r') as f:
-        seeds = f['cells/seeds'][:]
+        seeds = f['mesh/pos'][:]
         rho = f['hydro/rho'][:]
         vel = f['hydro/vel'][:]
-        E = f['hydro/Energy'][:]
+        E = f['hydro/energy'][:]
         dim = int(f['header'].attrs['dimension'])
         extent = float(f['header'].attrs['extent'])
         sim_time = float(f['header'].attrs['time'])
@@ -1180,7 +1180,7 @@ def add_common_render_args(p):
     p.add_argument('--bg', type=float, nargs=3, default=(0.0, 0.0, 0.0),
                    metavar=('R', 'G', 'B'),
                    help='screen background where rays miss the cube')
-    p.add_argument('--box-bg', type=float, nargs=3, default=(0.04, 0.04, 0.07),
+    p.add_argument('--box-bg', type=float, nargs=3, default=(0.0, 0.0, 0.0),
                    metavar=('R', 'G', 'B'),
                    help='in-cube background; kept slightly lighter than --bg '
                         'so the cube silhouette is visible')

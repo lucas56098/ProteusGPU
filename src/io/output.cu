@@ -247,7 +247,7 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
             H5Sclose(dataspace);
         }
 
-        // write Energy
+        // write energy
         if (primvar && primvar->E) {
             hsize_t dims_1d[1]   = {(hsize_t)n_hydro};
             hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);

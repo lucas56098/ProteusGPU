@@ -27,12 +27,12 @@ def create_riemann3d(
     print(f"  Mesh mode: {mesh_mode}")
 
     # Seedpoints
-    seedpos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
+    pos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
 
     # set hydro states based on octant
-    x = seedpos[:, 0]
-    y = seedpos[:, 1]
-    z = seedpos[:, 2]
+    x = pos[:, 0]
+    y = pos[:, 1]
+    z = pos[:, 2]
 
     mid = 0.5 * extent
 
@@ -75,7 +75,7 @@ def create_riemann3d(
     pressure += 1.0 # uniform
 
     # energy per volume: E = P/(gamma-1) + 0.5*rho*v^2
-    Energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
+    energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
 
     print("\n  Initial state summary:")
     print(f"    rho range: [{rho.min():.6f}, {rho.max():.6f}]")
@@ -83,7 +83,7 @@ def create_riemann3d(
     print(f"    vel_y range: [{vel[:,1].min():.6f}, {vel[:,1].max():.6f}]")
     print(f"    vel_z range: [{vel[:,2].min():.6f}, {vel[:,2].max():.6f}]")
     print(f"    pressure range: [{pressure.min():.6f}, {pressure.max():.6f}]")
-    print(f"    Energy range: [{Energy.min():.6f}, {Energy.max():.6f}]")
+    print(f"    energy range: [{energy.min():.6f}, {energy.max():.6f}]")
 
     # Write to HDF5
     with h5py.File(filename, "w") as f:
@@ -92,10 +92,10 @@ def create_riemann3d(
         header_group.attrs["extent"] = extent
         header_group.attrs["gamma"] = gamma
 
-        f.create_dataset("seedpos", data=seedpos)
+        f.create_dataset("pos", data=pos)
         f.create_dataset("rho", data=rho)
         f.create_dataset("vel", data=vel)
-        f.create_dataset("Energy", data=Energy)
+        f.create_dataset("energy", data=energy)
 
     print(f"\nSuccessfully created {filename}\n")
 

@@ -29,11 +29,11 @@ def create_kelvin_helmholtz(
     print(f"  Mesh mode: {mesh_mode}")
 
     # Seedpoints
-    seedpos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
+    pos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
 
     # set hydro states
-    x = seedpos[:, 0]
-    y = seedpos[:, 1]
+    x = pos[:, 0]
+    y = pos[:, 1]
 
     y_low = 0.25 * extent
     y_high = 0.75 * extent
@@ -65,13 +65,13 @@ def create_kelvin_helmholtz(
 
     # set energy (energy per volume)
     pressure = np.full(num_seeds, 2.5, dtype=np.float64)
-    Energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
+    energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
 
     print("\n  Initial state summary:")
     print(f"    rho range: [{rho.min():.6f}, {rho.max():.6f}]")
     print(f"    u range: [{u.min():.6f}, {u.max():.6f}]")
     print(f"    v perturbation range: [{v_pert.min():.6f}, {v_pert.max():.6f}]")
-    print(f"    Energy range: [{Energy.min():.6f}, {Energy.max():.6f}]")
+    print(f"    energy range: [{energy.min():.6f}, {energy.max():.6f}]")
 
     # Write to HDF5
     with h5py.File(filename, "w") as f:
@@ -80,10 +80,10 @@ def create_kelvin_helmholtz(
         header_group.attrs["extent"] = extent
         header_group.attrs["gamma"] = gamma
 
-        f.create_dataset("seedpos", data=seedpos)
+        f.create_dataset("pos", data=pos)
         f.create_dataset("rho", data=rho)
         f.create_dataset("vel", data=vel)
-        f.create_dataset("Energy", data=Energy)
+        f.create_dataset("energy", data=energy)
 
     print(f"\nSuccessfully created {filename}\n")
 

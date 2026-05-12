@@ -149,10 +149,10 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
 
     H5Gclose(header_group);
 
-    // read seedpos dataset
-    hid_t dataset_id = H5Dopen(file_id, "seedpos", H5P_DEFAULT);
+    // read pos (coordinates) dataset
+    hid_t dataset_id = H5Dopen(file_id, "pos", H5P_DEFAULT);
     if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open seedpos dataset" << std::endl;
+        std::cerr << "INPUT: Error! Could not open pos dataset" << std::endl;
         H5Fclose(file_id);
         return false;
     }
@@ -162,22 +162,22 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     int   rank         = H5Sget_simple_extent_ndims(dataspace_id);
 
     if (rank != 2) {
-        std::cerr << "INPUT: Error! seedpos dataset must be of shape N x DIM" << std::endl;
+        std::cerr << "INPUT: Error! pos dataset must be of shape N x DIM" << std::endl;
         H5Sclose(dataspace_id);
         H5Dclose(dataset_id);
         H5Fclose(file_id);
         return false;
     }
-    icData.seedpos_dims.resize(2);
-    H5Sget_simple_extent_dims(dataspace_id, icData.seedpos_dims.data(), NULL);
+    icData.pos_dims.resize(2);
+    H5Sget_simple_extent_dims(dataspace_id, icData.pos_dims.data(), NULL);
 
     // read the data
-    hsize_t totalElements = icData.seedpos_dims[0] * icData.seedpos_dims[1];
-    icData.seedpos.resize(totalElements);
-    herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.seedpos.data());
+    hsize_t totalElements = icData.pos_dims[0] * icData.pos_dims[1];
+    icData.pos.resize(totalElements);
+    herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.pos.data());
 
     if (status < 0) {
-        std::cerr << "INPUT: Error! Could not read seedpos data" << std::endl;
+        std::cerr << "INPUT: Error! Could not read pos data" << std::endl;
         H5Sclose(dataspace_id);
         H5Dclose(dataset_id);
         H5Fclose(file_id);
@@ -250,23 +250,23 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     H5Sclose(dataspace_id);
     H5Dclose(dataset_id);
 
-    // read Energy dataset
-    dataset_id = H5Dopen(file_id, "Energy", H5P_DEFAULT);
+    // read energy dataset
+    dataset_id = H5Dopen(file_id, "energy", H5P_DEFAULT);
     if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open Energy dataset" << std::endl;
+        std::cerr << "INPUT: Error! Could not open energy dataset" << std::endl;
         H5Fclose(file_id);
         return false;
     }
 
     dataspace_id = H5Dget_space(dataset_id);
-    hsize_t Energy_dims[1];
-    H5Sget_simple_extent_dims(dataspace_id, Energy_dims, NULL);
-    icData.Energy.resize(Energy_dims[0]);
+    hsize_t energy_dims[1];
+    H5Sget_simple_extent_dims(dataspace_id, energy_dims, NULL);
+    icData.energy.resize(energy_dims[0]);
 
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.Energy.data());
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.energy.data());
 
     if (status < 0) {
-        std::cerr << "INPUT: Error! Could not read Energy data" << std::endl;
+        std::cerr << "INPUT: Error! Could not read energy data" << std::endl;
         H5Sclose(dataspace_id);
         H5Dclose(dataset_id);
         H5Fclose(file_id);
@@ -335,31 +335,31 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     }
     H5Gclose(header_group);
 
-    // read cells/seeds -> icData.seedpos
-    hid_t cells_group = H5Gopen(file_id, "cells", H5P_DEFAULT);
-    if (cells_group < 0) {
-        std::cerr << "INPUT: Error! Could not open cells group in snapshot" << std::endl;
+    // read cells/seeds -> icData.pos
+    hid_t mesh_group = H5Gopen(file_id, "mesh", H5P_DEFAULT);
+    if (mesh_group < 0) {
+        std::cerr << "INPUT: Error! Could not open mesh group in snapshot" << std::endl;
         H5Fclose(file_id);
         return false;
     }
 
-    hid_t dataset_id = H5Dopen(cells_group, "seeds", H5P_DEFAULT);
+    hid_t dataset_id = H5Dopen(mesh_group, "pos", H5P_DEFAULT);
     if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open seeds dataset in snapshot" << std::endl;
-        H5Gclose(cells_group);
+        std::cerr << "INPUT: Error! Could not open pos dataset in snapshot" << std::endl;
+        H5Gclose(mesh_group);
         H5Fclose(file_id);
         return false;
     }
 
     hid_t dataspace_id = H5Dget_space(dataset_id);
-    icData.seedpos_dims.resize(2);
-    H5Sget_simple_extent_dims(dataspace_id, icData.seedpos_dims.data(), NULL);
-    hsize_t totalElements = icData.seedpos_dims[0] * icData.seedpos_dims[1];
-    icData.seedpos.resize(totalElements);
-    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.seedpos.data());
+    icData.pos_dims.resize(2);
+    H5Sget_simple_extent_dims(dataspace_id, icData.pos_dims.data(), NULL);
+    hsize_t totalElements = icData.pos_dims[0] * icData.pos_dims[1];
+    icData.pos.resize(totalElements);
+    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.pos.data());
     H5Sclose(dataspace_id);
     H5Dclose(dataset_id);
-    H5Gclose(cells_group);
+    H5Gclose(mesh_group);
 
     // read hydro/rho
     hid_t hydro_group = H5Gopen(file_id, "hydro", H5P_DEFAULT);
@@ -369,7 +369,7 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
         return false;
     }
 
-    hsize_t n = icData.seedpos_dims[0];
+    hsize_t n = icData.pos_dims[0];
 
     dataset_id = H5Dopen(hydro_group, "rho", H5P_DEFAULT);
     if (dataset_id < 0) {
@@ -394,16 +394,16 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.vel.data());
     H5Dclose(dataset_id);
 
-    // read hydro/Energy
-    dataset_id = H5Dopen(hydro_group, "Energy", H5P_DEFAULT);
+    // read hydro/energy
+    dataset_id = H5Dopen(hydro_group, "energy", H5P_DEFAULT);
     if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open Energy dataset in snapshot" << std::endl;
+        std::cerr << "INPUT: Error! Could not open energy dataset in snapshot" << std::endl;
         H5Gclose(hydro_group);
         H5Fclose(file_id);
         return false;
     }
-    icData.Energy.resize(n);
-    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.Energy.data());
+    icData.energy.resize(n);
+    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.energy.data());
     H5Dclose(dataset_id);
 
     H5Gclose(hydro_group);

@@ -27,14 +27,14 @@ def create_test_ic(filename="IC.hdf5", num_seeds=100, extent=1.0, dimension=3):
         
         print(f"  Created header group with attributes")
         
-        # Create seedpos dataset (num_seeds x dimension)
+        # Create seed positions dataset (num_seeds x dimension)
         rng = np.random.default_rng(424242)
-        seedpos = rng.uniform(0, extent, size=(num_seeds, dimension)).astype(np.float64)
-        f.create_dataset("seedpos", data=seedpos)
+        pos = rng.uniform(0, extent, size=(num_seeds, dimension)).astype(np.float64)
+        f.create_dataset("pos", data=pos)
         
-        print(f"  Created seedpos dataset: {seedpos.shape}")
-        print(f"    Min values: {seedpos.min(axis=0)}")
-        print(f"    Max values: {seedpos.max(axis=0)}")
+        print(f"  Created pos dataset: {pos.shape}")
+        print(f"    Min values: {pos.min(axis=0)}")
+        print(f"    Max values: {pos.max(axis=0)}")
         
         # Create hydro quantities
         rho = np.ones(num_seeds, dtype=np.float64)  # uniform density
@@ -45,9 +45,9 @@ def create_test_ic(filename="IC.hdf5", num_seeds=100, extent=1.0, dimension=3):
         f.create_dataset("vel", data=vel)
         print(f"  Created vel dataset: {vel.shape}")
         
-        Energy = np.ones(num_seeds, dtype=np.float64)  # uniform energy
-        f.create_dataset("Energy", data=Energy)
-        print(f"  Created Energy dataset: {Energy.shape}")
+        energy = np.ones(num_seeds, dtype=np.float64)  # uniform energy
+        f.create_dataset("energy", data=energy)
+        print(f"  Created energy dataset: {energy.shape}")
     
     print(f"Successfully created {filename}\n")
 

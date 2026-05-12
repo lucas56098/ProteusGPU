@@ -35,14 +35,14 @@ int main(int argc, char* argv[]) {
     int                snap_num = state.snap_num;
 
     // initialize primitive variables (rho, v, E) from IC
-    hsize_t          n_hydro  = icData.seedpos_dims[0];
+    hsize_t          n_hydro  = icData.pos_dims[0];
     hydro::primvars* primvar  = hydro::init(n_hydro);
     hydro::allocate_hydro_buffers(n_hydro);
     hydro::primvars* prim_new = hydro::prim_new_buffer();
 
     // build the initial Voronoi mesh from the seed positions
     VMesh* mesh = voronoi::allocate_mesh(n_hydro);
-    voronoi::compute_periodic_mesh(mesh, (POINT_TYPE*)icData.seedpos.data(), n_hydro, primvar, prim_new);
+    voronoi::compute_periodic_mesh(mesh, (POINT_TYPE*)icData.pos.data(), n_hydro, primvar, prim_new);
 
     // IC arrays are no longer needed — free their host memory
     begrun::free_initial_conditions();
@@ -67,7 +67,7 @@ int main(int argc, char* argv[]) {
 
     if (snap_num == 0) {
         // write snapshot at t=0 (if not restarted)
-        output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
+        output.snapshot(snap_num, mesh, primvar, icData.pos_dims[0], t_sim);
         snap_num += 1;
     }
 
@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
 
         // write snapshot
         if (t_sim >= t_nextoutput || t_sim >= t_end) {
-            output.snapshot(snap_num, mesh, primvar, icData.seedpos_dims[0], t_sim);
+            output.snapshot(snap_num, mesh, primvar, icData.pos_dims[0], t_sim);
             t_nextoutput += output_dt;
             snap_num += 1;
         }

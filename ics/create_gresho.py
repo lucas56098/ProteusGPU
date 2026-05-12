@@ -22,11 +22,11 @@ def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_
     print(f"  Mesh mode: {mesh_mode}")
 
     # Seedpoints
-    seedpos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
+    pos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
 
     # set hydro states
-    x = seedpos[:, 0] - 0.5 * extent
-    y = seedpos[:, 1] - 0.5 * extent
+    x = pos[:, 0] - 0.5 * extent
+    y = pos[:, 1] - 0.5 * extent
 
     radius = np.sqrt(x**2 + y**2)
     xi = radius / extent
@@ -58,7 +58,7 @@ def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_
     pressure[region_2] = 9.0 + 12.5 * xi[region_2] ** 2 - 20 * xi[region_2] + 4 * np.log(xi[region_2] / 0.2)
     pressure[region_3] = 3.0 + 4.0 * np.log(2.0)
 
-    Energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
+    energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
 
     print("\n  Initial state summary:")
     print(f"    rho range: [{rho.min():.6f}, {rho.max():.6f}]")
@@ -72,10 +72,10 @@ def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_
         header_group.attrs["extent"] = extent
         header_group.attrs["gamma"] = gamma
 
-        f.create_dataset("seedpos", data=seedpos)
+        f.create_dataset("pos", data=pos)
         f.create_dataset("rho", data=rho)
         f.create_dataset("vel", data=vel)
-        f.create_dataset("Energy", data=Energy)
+        f.create_dataset("energy", data=energy)
 
     print(f"\nSuccessfully created {filename}\n")
 

@@ -51,7 +51,7 @@ def create_cloud_crash(
     print(f"  Cloud speed:      {cloud_speed}")
     print(f"  Density contrast: {cloud_density_contrast}")
 
-    seedpos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
+    pos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
 
     centre = np.array([0.5 * extent] * 3)
 
@@ -92,7 +92,7 @@ def create_cloud_crash(
     w_accum = np.full(num_seeds, 1e-3)
 
     for i in range(n_clouds):
-        rel = seedpos - cloud_centres[i]
+        rel = pos - cloud_centres[i]
         d = np.linalg.norm(rel, axis=1) + 1e-30
 
         # spherical-harmonic-style surface deformation
@@ -113,14 +113,14 @@ def create_cloud_crash(
     vel = v_accum / w_accum[:, None]
 
     # small turbulent kick concentrated near the centre
-    r_c = np.linalg.norm(seedpos - centre, axis=1)
+    r_c = np.linalg.norm(pos - centre, axis=1)
     central_envelope = np.exp(-(r_c / (0.18 * extent)) ** 2)
     vel += rng.normal(0.0, central_turbulence, vel.shape) * central_envelope[:, None]
 
     # uniform pressure
     pressure = np.full(num_seeds, ambient_p)
 
-    Energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel ** 2, axis=1)
+    energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel ** 2, axis=1)
 
     cs_amb = np.sqrt(gamma * ambient_p / ambient_rho)
     cs_cloud = np.sqrt(gamma * ambient_p / (cloud_density_contrast * ambient_rho))
@@ -133,7 +133,7 @@ def create_cloud_crash(
     print(f"    c_s (cloud):        {cs_cloud:.3f}")
     print(f"    Mach (cloud→amb):   {cloud_speed / cs_amb:.2f}")
     print(f"    Mach (cloud-int):   {cloud_speed / cs_cloud:.2f}")
-    print(f"    Energy range:       [{Energy.min():.4f}, {Energy.max():.4f}]")
+    print(f"    energy range:       [{energy.min():.4f}, {energy.max():.4f}]")
 
     with h5py.File(filename, "w") as f:
         header_group = f.create_group("header")
@@ -141,10 +141,10 @@ def create_cloud_crash(
         header_group.attrs["extent"] = extent
         header_group.attrs["gamma"] = gamma
 
-        f.create_dataset("seedpos", data=seedpos)
+        f.create_dataset("pos", data=pos)
         f.create_dataset("rho", data=rho)
         f.create_dataset("vel", data=vel)
-        f.create_dataset("Energy", data=Energy)
+        f.create_dataset("energy", data=energy)
 
     print(f"\nSuccessfully created {filename}\n")
 
