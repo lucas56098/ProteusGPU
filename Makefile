@@ -125,6 +125,14 @@ ifeq ($(SYSTYPE),MPCDF)
 	CUDA_ARCH ?= sm_80
 endif
 
+ifeq ($(SYSTYPE),Jupiter)
+# JUWELS Booster (A100): module load CUDA/13 HDF5/1.14.6-serial
+        CXX_RELEASE = g++
+        HDF5_CFLAGS ?= -I/p/software/default/stages/2026/software/HDF5/1.14.6-GCCcore-14.3.0-serial/include
+        HDF5_LIBS ?= -L/p/software/default/stages/2026/software/HDF5/1.14.6-GCCcore-14.3.0-serial/lib -lhdf5
+        CUDA_ARCH ?= sm_80
+endif
+
 ifeq ($(SYSTYPE),HorekaGH200)
 # HorekaFTP (GH200): module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
 	CXX_RELEASE = nvc++
