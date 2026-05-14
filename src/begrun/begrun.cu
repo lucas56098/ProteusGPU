@@ -1,11 +1,16 @@
 #include "../global/allvars.h"
 #include "../io/input.h"
 #include "../io/output.h"
+#include "../mpi/decomp.h"
+#include "../mpi/halo.h"
+#include "../mpi/migrate.h"
+#include "../mpi/mpi_compat.h"
 #include "../profiler/profiler.h"
 #include "begrun.h"
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+
 
 namespace begrun {
 
@@ -13,36 +18,51 @@ namespace begrun {
     StartState begrun(int argc, char* argv[]) {
         PROFILE_START("BEGRUN");
 
-        // banner + dimension/mode line
+        // welcome messages
         print_banner();
 #ifdef dim_2D
 #ifdef CPU_DEBUG
-        std::cout << "BEGRUN: Running 2D mode on CPU" << std::endl;
+        logging::root() << "BEGRUN: Running 2D mode on CPU" << std::endl;
 #else
-        std::cout << "BEGRUN: Running 2D mode on GPU" << std::endl;
+        logging::root() << "BEGRUN: Running 2D mode on GPU" << std::endl;
 #endif
 #elif dim_3D
 #ifdef CPU_DEBUG
-        std::cout << "BEGRUN: Running 3D mode on CPU" << std::endl;
+        logging::root() << "BEGRUN: Running 3D mode on CPU" << std::endl;
 #else
-        std::cout << "BEGRUN: Running 3D mode on GPU" << std::endl;
+        logging::root() << "BEGRUN: Running 3D mode on GPU" << std::endl;
 #endif
 #endif
 
+        // parallelization summary: MPI, OpenMP, and GPUs
+#ifdef USE_MPI
+        logging::root() << "BEGRUN: MPI ranks      = " << proteus_mpi::nranks() << " (" << proteus_mpi::node_local_size()
+                        << " per node)" << std::endl;
+#endif
+#ifdef USE_OPENMP
+        logging::root() << "BEGRUN: OpenMP threads = " << logging::omp_threads() << " (per rank)" << std::endl;
+#endif
+#ifndef CPU_DEBUG
+        const int n_gpus  = proteus_mpi::gpus_per_node();
+        const int n_local = proteus_mpi::node_local_size();
+        logging::root() << "BEGRUN: GPUs per node  = " << n_gpus << " (" << n_local << " ranks/node, "
+                        << (double)n_local / (n_gpus > 0 ? n_gpus : 1) << " ranks/GPU)" << std::endl;
+#endif
+
 #ifdef DRY_RUN
-        std::cout << "Dry run for CI test successful, exiting." << std::endl;
+        logging::root() << "Dry run for CI test successful, exiting." << std::endl;
         exit(EXIT_SUCCESS);
 #endif
 
 #ifndef CPU_DEBUG
-        // raise per-thread CUDA stack to fit ConvexCell + KNN heap
-        cudaDeviceSetLimit(cudaLimitStackSize, 16384);
+        // init GPU
+        cudaDeviceSetLimit(cudaLimitStackSize, 8192); // (3D slow voronoi kernel needs ~5.7KB stack/thread -> use 8KB)
         int dev;
         cudaGetDevice(&dev);
         cudaDeviceProp prop;
         cudaGetDeviceProperties(&prop, dev);
-        std::cout << "CUDA: Using device " << dev << " (" << prop.name << "), SM " << prop.major << "." << prop.minor
-                  << std::endl;
+        logging::root() << "CUDA: rank 0 on device " << dev << " (" << prop.name << "), SM " << prop.major << "."
+                        << prop.minor << std::endl;
 #endif
 
         // parse the parameter file
@@ -59,23 +79,21 @@ namespace begrun {
 
         // todo: could simply always (assume) restart is desired if latest_n > 0, and drop need for restart_flag
         if (restart_flag == 1) {
-            // pick the highest-numbered snapshot in the output directory
             if (latest_n < 0) {
                 std::cerr << "RESTART: Error! No snapshots found in " << out_dir << std::endl;
                 exit(EXIT_FAILURE);
             }
 
             std::string snap_path = out_dir + "snapshot_" + std::to_string(latest_n) + ".hdf5";
-            std::cout << "RESTART: Loading snapshot " << snap_path << std::endl;
+            logging::root() << "RESTART: Loading snapshot " << snap_path << std::endl;
 
-            // load mesh + hydro state from the snapshot
             if (!input.readSnapshotFile(snap_path, icData, state.t_sim)) { exit(EXIT_FAILURE); }
             state.snap_num = latest_n + 1;
         } else {
             // fresh IC from the file in param.txt
             if (!input.readICFile(input.getParameter("ic_file"), icData)) { exit(EXIT_FAILURE); }
 
-	    // snapshots exist in output directory? we will start to overwrite them. likely unwanted.
+            // refuse to silently overwrite an existing snapshot series
             if (latest_n > 0) {
                 std::cerr << "RESTART: Stopping! Found existing snapshots in " << out_dir << " but no restart-flag." << std::endl;
                 exit(EXIT_FAILURE);
@@ -84,6 +102,12 @@ namespace begrun {
 
         // periodic ghost band thickness scales with mean inter-particle spacing
         buff = (1. / pow(icData.pos_dims[0], 1. / ((double)DIMENSION))) * 4;
+
+        // domain decomposition, halo buffers, migration headroom
+        proteus_mpi::decomp_init((int)icData.pos_dims[0], buff);
+        proteus_mpi::distribute_ic_local(icData, buff);
+        proteus_mpi::halo_init((int)icData.pos_dims[0], buff);
+        proteus_mpi::migrate_init((int)icData.pos_dims[0]);
 
         // create output directory if missing
         output = OutputHandler(input.getParameter("output_directory"));
@@ -99,29 +123,37 @@ namespace begrun {
         std::vector<double>().swap(icData.rho);
         std::vector<double>().swap(icData.vel);
         std::vector<double>().swap(icData.energy);
+        std::vector<uint64_t>().swap(icData.global_id);
     }
 
     // prints Proteus banner
     void print_banner() {
-        std::cout << "==========================================================================" << std::endl;
-        std::cout
-            << R"(                                                                                                                                                       
-          _____           _                    _____ _____  _    _ 
+        std::ostream& out = logging::root();
+        out << "==========================================================================" << std::endl;
+        out << R"(
+          _____           _                    _____ _____  _    _
          |  __ \         | |                  / ____|  __ \| |  | |
          | |__) | __ ___ | |_ ___ _   _ ___  | |  __| |__) | |  | |
          |  ___/ '__/ _ \| __/ _ \ | | / __| | | |_ |  ___/| |  | |
          | |   | | | (_) | ||  __/ |_| \__ \ | |__| | |    | |__| |
-         |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/ 
+         |_|   |_|  \___/ \__\___|\__,_|___/  \_____|_|     \____/
 
     )" << std::endl;
-        std::cout << "================================================================================" << std::endl;
-        std::cout << "A GPU accelerated moving mesh hydrodynamics code for astrophysical applications" << std::endl;
-        std::cout << "================================================================================" << std::endl;
-        std::cout << "Version: 0.7" << std::endl;
-        std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
-        std::cout << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
-        std::cout << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
-        std::cout << "================================================================================" << std::endl;
+        out << "       GPU-accelerated moving mesh hydrodynamics for astrophysics" << std::endl;
+        out << "==========================================================================" << std::endl;
+        #ifndef GIT_COMMIT
+        out << "Version: 0.8" << std::endl;
+        #else
+        #ifdef GIT_DIFFSTAT
+        out << "Version: 0.8 (commit " << GIT_COMMIT << ", " << GIT_DIFFSTAT << ")" << std::endl;
+        #else
+        out << "Version: 0.8 (commit " << GIT_COMMIT << ")" << std::endl;
+        #endif
+        #endif
+        out << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
+        out << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
+        out << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
+        out << "==========================================================================" << std::endl;
     }
 
     // loads parameters from param.txt

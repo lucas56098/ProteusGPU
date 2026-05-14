@@ -1,4 +1,6 @@
 #include "../global/gpu_compat.h"
+#include "../global/log.h"
+#include "../mpi/mpi_compat.h"
 #include "profiler.h"
 #include <algorithm>
 #include <sys/resource.h>
@@ -60,15 +62,16 @@ void Profiler::EndGPU(const std::string& name) {
 #endif
 }
 
-// Print combined results
+// print combined results — per-rank timings but only rank 0's view is surfaced
 void Profiler::PrintResults() {
-    std::cout << "\n=== Profiling Results (Wall Clock Time) ===\n";
+    std::ostream& out = logging::root();
+    out << "\n=== Profiling Results (Wall Clock Time, rank 0) ===\n";
     long long totalRuntime     = 0;
     long long parallelizedTime = 0;
 
     for (const auto& entry : m_Timings) {
         double timeInSeconds = entry.second / 1e6;
-        std::cout << "[PROFILE] " << entry.first << " took " << timeInSeconds << "s\n";
+        out << "[PROFILE] " << entry.first << " took " << timeInSeconds << "s\n";
 
         if (entry.first.find("(par)") != std::string::npos) { parallelizedTime += entry.second; }
 
@@ -77,13 +80,13 @@ void Profiler::PrintResults() {
 
     double parallelFraction = 0.0;
     if (totalRuntime > 0) { parallelFraction = static_cast<double>(parallelizedTime) / totalRuntime; }
-    std::cout << "\nTOTAL_RUNTIME: " << (totalRuntime / 1e6) << "s\n";
-    std::cout << "PARALLELIZED_TIME: " << (parallelizedTime / 1e6) << "s\n";
-    std::cout << "PARALLEL_FRACTION: " << parallelFraction * 100.0 << " %\n";
+    out << "\nTOTAL_RUNTIME: " << (totalRuntime / 1e6) << "s\n";
+    out << "PARALLELIZED_TIME: " << (parallelizedTime / 1e6) << "s\n";
+    out << "PARALLEL_FRACTION: " << parallelFraction * 100.0 << " %\n";
 
     // GPU kernel timing breakdown
     if (!m_GpuTimings.empty()) {
-        std::cout << "\n=== GPU Kernel Profiling (CUDA Events) ===\n";
+        out << "\n=== GPU Kernel Profiling (CUDA Events, rank 0) ===\n";
 
         // sort by cumulative time for reading
         std::vector<std::pair<std::string, double>> sorted(m_GpuTimings.begin(), m_GpuTimings.end());
@@ -97,14 +100,14 @@ void Profiler::PrintResults() {
         for (const auto& entry : sorted) {
             int    calls = m_GpuCounts[entry.first];
             double pct   = (gpu_total_ms > 0.0) ? (entry.second / gpu_total_ms * 100.0) : 0.0;
-            std::cout << "[GPU] " << entry.first << ": " << entry.second << " ms"
-                      << " (" << calls << " calls, " << (entry.second / calls) << " ms/call"
-                      << ", " << pct << "%)\n";
+            out << "[GPU] " << entry.first << ": " << entry.second << " ms"
+                << " (" << calls << " calls, " << (entry.second / calls) << " ms/call"
+                << ", " << pct << "%)\n";
         }
-        std::cout << "[GPU] TOTAL: " << gpu_total_ms << " ms\n";
+        out << "[GPU] TOTAL: " << gpu_total_ms << " ms\n";
     }
 
-    std::cout << "=========================\n";
+    out << "=========================\n";
 }
 
 // peak CPU RSS (high-water mark from the OS) and peak GPU memory we ever held
@@ -127,9 +130,11 @@ void print_max_memory_usage() {
         const long   pageSize = sysconf(_SC_PAGE_SIZE);
         const double totalRam = (pages > 0 && pageSize > 0) ? (double)pages * (double)pageSize : 0.0;
 
-        constexpr double MiB = 1024.0 * 1024.0;
-        std::cout << "MAIN: maximum CPU memory used: " << rssBytes / MiB << " MiB ("
-                  << totalRam / MiB << " MiB total)" << std::endl;
+        constexpr double MiB     = 1024.0 * 1024.0;
+        const double     rssMiB  = rssBytes / MiB;
+        const char*      tag     = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
+        logging::root() << "MAIN: maximum CPU memory used" << tag << ": " << rssMiB << " MiB ("
+                        << totalRam / MiB << " MiB total)" << std::endl;
     } else {
 
         std::cerr << "Error getting resource usage." << std::endl;
@@ -140,8 +145,10 @@ void print_max_memory_usage() {
     size_t gpu_free  = 0;
     size_t gpu_total = 0;
     cudaMemGetInfo(&gpu_free, &gpu_total);
-    constexpr double MiB = 1024.0 * 1024.0;
-    std::cout << "MAIN: maximum GPU memory used: " << g_gpu_bytes_peak() / MiB << " MiB ("
-              << (double)gpu_total / MiB << " MiB total)" << std::endl;
+    constexpr double MiB     = 1024.0 * 1024.0;
+    const double     peakMiB = (double)g_gpu_bytes_peak() / MiB;
+    const char*      tag     = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
+    logging::root() << "MAIN: maximum GPU memory used" << tag << ": " << peakMiB << " MiB ("
+                    << (double)gpu_total / MiB << " MiB total)" << std::endl;
 #endif
 }

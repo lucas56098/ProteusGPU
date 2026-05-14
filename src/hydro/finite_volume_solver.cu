@@ -1,5 +1,7 @@
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
+#include "../mpi/decomp.h"
+#include "../mpi/halo.h"
 #include "../profiler/profiler.h"
 #include "finite_volume_solver.h"
 #include "riemann.cu" // include directly for single translation unit compilation
@@ -30,16 +32,19 @@ namespace hydro {
     static primvars*                 s_prim_new = nullptr;
     static gradients::PrimGradients* s_grads    = nullptr;
 
-    // allocate primvars from IC data and copy into managed memory
+    // allocate primvars from IC data and copy into managed memory.
+    // ext sizes the array for both MPI ghost slots and migration growth headroom.
     primvars* init(int n_hydro) {
-        primvars* hydro_data = gpu_alloc<primvars>(1);
-        hydro_data->rho      = gpu_alloc<double>(n_hydro);
-        hydro_data->v        = gpu_alloc<POINT_TYPE>(n_hydro);
-        hydro_data->E        = gpu_alloc<double>(n_hydro);
+        const int ext = proteus_mpi::alloc_per_cell_size(n_hydro);
 
-        gpu_advise_gpu_preferred(hydro_data->rho, n_hydro * sizeof(double));
-        gpu_advise_gpu_preferred(hydro_data->v, n_hydro * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(hydro_data->E, n_hydro * sizeof(double));
+        primvars* hydro_data = gpu_alloc<primvars>(1);
+        hydro_data->rho      = gpu_alloc<double>(ext);
+        hydro_data->v        = gpu_alloc<POINT_TYPE>(ext);
+        hydro_data->E        = gpu_alloc<double>(ext);
+
+        gpu_advise_gpu_preferred(hydro_data->rho, ext * sizeof(double));
+        gpu_advise_gpu_preferred(hydro_data->v, ext * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(hydro_data->E, ext * sizeof(double));
 
         for (int i = 0; i < n_hydro; i++) {
             hydro_data->rho[i] = icData.rho[i];
@@ -51,7 +56,9 @@ namespace hydro {
 #endif
         }
 
-        std::cout << "HYDRO: Initialized primitive variables for " << n_hydro << " particles" << std::endl;
+        const int n_hydro_global = logging::sum_global((int)n_hydro);
+        logging::root() << "HYDRO: Initialized primitive variables for " << n_hydro_global << " particles"
+                        << std::endl;
         return hydro_data;
     }
 
@@ -91,6 +98,9 @@ namespace hydro {
         primvars*                 prim_new = s_prim_new;
         gradients::PrimGradients* grads    = s_grads;
 
+        // refresh MPI ghost primvars (stale after the previous step's prim_new↔primvar swap)
+        proteus_mpi::halo_exchange_primvars(mesh, primvar);
+
         // initialize new state from old primitive variables
 #ifndef CPU_DEBUG
         {
@@ -108,9 +118,12 @@ namespace hydro {
 
         // compute gradients from old state on old mesh
         gradients::compute_prim_gradients(mesh, primvar, grads);
+        proteus_mpi::halo_exchange_gradients(mesh, grads);
 
 #ifdef MOVING_MESH
         voronoi::compute_mesh_velocities(mesh, primvar, grads);
+        // refresh MPI ghost v_mesh — the upcoming flux reads it at neighbor indices
+        proteus_mpi::halo_exchange_vmesh(mesh);
 #endif
 
         // first half update (no time extrapolation)
@@ -143,6 +156,7 @@ namespace hydro {
 
         // recompute gradients on moved mesh for second half
         gradients::compute_prim_gradients(mesh, primvar, grads);
+        proteus_mpi::halo_exchange_gradients(mesh, grads);
 #endif
 
         // second half update (with time extrapolation)

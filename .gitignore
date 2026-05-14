@@ -9,6 +9,7 @@ visualize/
 .claude
 __pycache__/
 src_*
+interactive/
 
 # files
 ProteusGPU

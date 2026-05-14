@@ -1,4 +1,5 @@
 #include "../global/globals.h"
+#include "../mpi/extension.h"
 #include "../profiler/profiler.h"
 #include "knn.h"
 #include <iostream>
@@ -19,9 +20,11 @@ namespace knn {
 
     knn_problem* init_once(int n_hydro) {
 
-        // worst-case total points including periodic ghosts (same formula as periodic_mesh)
+        // worst-case total points: max_n_local + periodic ghosts + MPI ghosts
         double ghost_frac  = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-        int    max_n_total = (int)(n_hydro + 2.0 * ghost_frac * n_hydro) + 1;
+        int    n_grow      = proteus_mpi::max_n_local(n_hydro);
+        int    max_n_total = (int)(n_grow + 2.0 * ghost_frac * n_grow) + 1
+                           + proteus_mpi::g_n_mpi_capacity;
 
         knn_problem* knn = gpu_alloc<knn_problem>(1);
 

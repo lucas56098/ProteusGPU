@@ -1,6 +1,9 @@
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../hydro/riemann.h"
+#include "../mpi/decomp.h"
+#include "../mpi/halo.h"
+#include "../mpi/migrate.h"
 #include "../profiler/profiler.h"
 #include "../voronoi/voronoi.h"
 #include "periodic_mesh.h"
@@ -68,41 +71,20 @@ namespace voronoi {
     // periodic mesh computation, velocity, motion
     // ============================================================
 
-    // wrap seeds around unit-box boundaries with ghost copies, then build the mesh
-    // on the enlarged [-buff, 1+buff]^d domain (no rescaling step)
-    void compute_periodic_mesh(VMesh*           mesh,
-                               POINT_TYPE*      pts_data,
-                               hsize_t          num_points,
-                               hydro::primvars* primvar,
-                               hydro::primvars* primvar_aux) {
-        PROFILE_START("MESH_TOTAL");
-
-        double  ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-        hsize_t max_ghost_points = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
-
-        POINT_TYPE* pts      = mesh->scratch_pts;
-        hsize_t     n_ghosts = 0;
-        hsize_t     n_hydro  = num_points;
-
-        hsize_t* original_ids = mesh->ghost_ids;
-
-        // emit ghost copies of every hydro point that falls within `buff` of a face
-        PROFILE_START("GHOST_GEN (cpu)");
+    // regenerate periodic ghosts and copy pts_data → pts for the real-cell range;
+    // returns the number of ghosts emitted
+    static hsize_t regenerate_periodic_ghosts(hsize_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts,
+                                              hsize_t* original_ids, double buff_val) {
+        hsize_t n_ghosts = 0;
 #ifndef CPU_DEBUG
-        {
-            int* d_ghost_count = (int*)gpu_malloc(sizeof(int));
-            gpu_memset(d_ghost_count, 0, sizeof(int));
-
-            int tpb    = _MESH_BLOCK_SIZE_;
-            int blocks = ((int)n_hydro + tpb - 1) / tpb;
-            PROFILE_GPU_START("kernel_generate_ghosts");
-            kernel_generate_ghosts<<<blocks, tpb>>>(n_hydro, pts_data, pts, original_ids, d_ghost_count, buff);
-            PROFILE_GPU_END("kernel_generate_ghosts");
-
-            GPU_SYNC();
-            n_ghosts = (hsize_t)(*d_ghost_count);
-            gpu_free(d_ghost_count);
-        }
+        int* d_ghost_count = (int*)gpu_malloc(sizeof(int));
+        gpu_memset(d_ghost_count, 0, sizeof(int));
+        int tpb    = _MESH_BLOCK_SIZE_;
+        int blocks = ((int)n_hydro + tpb - 1) / tpb;
+        kernel_generate_ghosts<<<blocks, tpb>>>(n_hydro, pts_data, pts, original_ids, d_ghost_count, buff_val);
+        GPU_SYNC();
+        n_ghosts = (hsize_t)(*d_ghost_count);
+        gpu_free(d_ghost_count);
 #else
         for (hsize_t i = 0; i < n_hydro; i++) {
             pts[i] = pts_data[i];
@@ -116,12 +98,12 @@ namespace voronoi {
                         int sz = 0;
 #endif
                         if (sx == 0 && sy == 0 && sz == 0) continue;
-                        double xa = (sx == 1) ? 0.0 : (sx == -1) ? 1.0 - buff : 0.0;
-                        double xb = (sx == 1) ? buff : 1.0;
-                        double ya = (sy == 1) ? 0.0 : (sy == -1) ? 1.0 - buff : 0.0;
-                        double yb = (sy == 1) ? buff : 1.0;
-                        double za = (sz == 1) ? 0.0 : (sz == -1) ? 1.0 - buff : 0.0;
-                        double zb = (sz == 1) ? buff : 1.0;
+                        double xa = (sx == 1) ? 0.0 : (sx == -1) ? 1.0 - buff_val : 0.0;
+                        double xb = (sx == 1) ? buff_val : 1.0;
+                        double ya = (sy == 1) ? 0.0 : (sy == -1) ? 1.0 - buff_val : 0.0;
+                        double yb = (sy == 1) ? buff_val : 1.0;
+                        double za = (sz == 1) ? 0.0 : (sz == -1) ? 1.0 - buff_val : 0.0;
+                        double zb = (sz == 1) ? buff_val : 1.0;
                         if (is_in(pts[i], xa, xb, ya, yb, za, zb)) {
                             add_ghost(pts, i, &n_ghosts, &n_hydro, original_ids, (double)sx, (double)sy, (double)sz);
                         }
@@ -130,20 +112,182 @@ namespace voronoi {
             }
         }
 #endif
+        return n_ghosts;
+    }
 
-        PROFILE_END("GHOST_GEN (cpu)");
-        if (n_ghosts > max_ghost_points) {
-            std::cerr << "VORONOI: Error! ghost count " << n_ghosts << " exceeds estimated max " << max_ghost_points
-                      << ". Distribution is highly non-uniform." << std::endl;
-            exit(EXIT_FAILURE);
+    // wrap seeds around unit-box boundaries with ghost copies, then build the mesh
+    // on the enlarged [-buff, 1+buff]^d domain (no rescaling step)
+    void compute_periodic_mesh(VMesh*           mesh,
+                               POINT_TYPE*      pts_data,
+                               hsize_t          num_points,
+                               hydro::primvars* primvar,
+                               hydro::primvars* primvar_aux) {
+        PROFILE_START("MESH_TOTAL");
+
+        double  ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
+        hsize_t max_ghost_points = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
+
+        POINT_TYPE* pts      = mesh->scratch_pts;
+        hsize_t     n_hydro  = num_points;
+
+        hsize_t* original_ids = mesh->ghost_ids;
+
+        constexpr int MAX_WIDEN_ITERS   = 4;
+        constexpr int MAX_CASCADE_ITERS = 4;
+
+        const bool have_mpi_neighbors = proteus_mpi::g_halo.n_neighbors > 0;
+        // 2x the periodic-ghost band: a 1x band can falsely satisfy security_radius at iter 0
+        // when local cell density is non-uniform and the true K-th-nearest sits beyond the halo
+        const int W_base       = have_mpi_neighbors ? 2 * proteus_mpi::halo_default_width(buff) : 0;
+        hsize_t   n_ghosts     = 0;
+        hsize_t   n_mpi_ghosts = 0;
+        int       W_iter       = W_base;
+        int       last_iter    = 0;
+
+        // halo-widening loop: keep expanding the halo width until no cell fails security_radius.
+        // Lockstep Allreduce(SUM) on the per-rank failure count keeps all ranks in sync.
+        // cpu_fallback runs outside this loop — widening the halo addresses the root cause.
+        for (int iter = 0; iter < MAX_WIDEN_ITERS; iter++) {
+            last_iter = iter;
+
+            PROFILE_START("GHOST_GEN (cpu)");
+            n_ghosts = regenerate_periodic_ghosts(n_hydro, pts_data, pts, original_ids, buff);
+            PROFILE_END("GHOST_GEN (cpu)");
+            if (n_ghosts > max_ghost_points) {
+                std::cerr << "VORONOI: Error! ghost count " << n_ghosts << " exceeds estimated max " << max_ghost_points
+                          << ". Distribution is highly non-uniform." << std::endl;
+                exit(EXIT_FAILURE);
+            }
+
+            n_mpi_ghosts = 0;
+            if (have_mpi_neighbors) {
+                proteus_mpi::halo_build_exports(pts_data, (int)n_hydro, buff, W_iter);
+                proteus_mpi::halo_exchange_initial(mesh, primvar, pts, (int)(n_hydro + n_ghosts));
+                n_mpi_ghosts = (hsize_t)proteus_mpi::g_halo.n_mpi_ghosts;
+                for (int n = 0; n < proteus_mpi::g_halo.n_neighbors; n++) {
+                    int g_off = proteus_mpi::g_halo.ghost_offset[n];
+                    for (int j = 0; j < proteus_mpi::g_halo.recv_count[n]; j++) {
+                        int slot  = g_off + j;
+                        int ext_k = (int)n_hydro + slot;
+                        original_ids[(hsize_t)n_ghosts + (hsize_t)slot] = (hsize_t)ext_k;
+                    }
+                }
+            }
+            const hsize_t n_total = n_hydro + n_ghosts + n_mpi_ghosts;
+
+            voronoi::compute_mesh(mesh, pts, (int)n_total, primvar, primvar_aux, iter);
+
+            // iter == 0 permuted primvar into new-k order, but export_indices and pts_data
+            // are still in old-k order. To keep subsequent exchanges and iter > 0 rebuilds
+            // consistent with the post-permute primvar:
+            //   (1) remap export_indices via inv_gather (old_k → new_k);
+            //   (2) re-shuffle pts_data so KNN at iter > 0 indexes cells in new-k order;
+            //   (3) set orig_to_k_save = identity so the lookup pass1 gives k = orig.
+            if (iter == 0 && have_mpi_neighbors) {
+                static std::vector<unsigned int> inv_gather;
+                inv_gather.assign(n_hydro, 0u);
+                for (hsize_t new_k = 0; new_k < n_hydro; new_k++) {
+                    inv_gather[mesh->gather_perm[new_k]] = (unsigned int)new_k;
+                }
+                proteus_mpi::halo_remap_export_indices(inv_gather.data(), (int)n_hydro);
+
+                // re-shuffle pts_data: pts_data_new[new_k] = pts_data_old[gather_perm[new_k]].
+                // mesh->seeds isn't safe — failed cells carry stale positions from the prev step.
+                static std::vector<POINT_TYPE> pts_scratch;
+                pts_scratch.resize((size_t)n_hydro);
+                for (hsize_t new_k = 0; new_k < n_hydro; new_k++) {
+                    pts_scratch[new_k] = pts_data[mesh->gather_perm[new_k]];
+                }
+                for (hsize_t k = 0; k < n_hydro; k++) pts_data[k] = pts_scratch[k];
+
+                for (hsize_t k = 0; k < n_hydro; k++) mesh->orig_to_k_save[k] = (unsigned int)k;
+            }
+
+            int local_failed = 0;
+            for (hsize_t k = 0; k < n_hydro; k++) {
+                if (mesh->cell_status[k] != voronoi::success) local_failed++;
+            }
+            // halo-completeness sentinel: catches the silent-failure case where every cell
+            // reports success but some K-nearest sample reached the outermost halo layer,
+            // meaning closer cells beyond the halo may have been missed
+            const int local_outer = have_mpi_neighbors
+                                        ? voronoi::halo_completeness_flag(mesh, (int)n_ghosts) : 0;
+
+            int global_signal[2] = {local_failed, local_outer};
+#ifdef USE_MPI
+            if (have_mpi_neighbors) {
+                const int local_signal[2] = {local_failed, local_outer};
+                MPI_Allreduce(local_signal, global_signal, 2, MPI_INT, MPI_SUM, proteus_mpi::g_halo.comm);
+            }
+#endif
+            const int global_failed = global_signal[0];
+            const int global_outer  = global_signal[1];
+            if (global_failed == 0 && global_outer == 0) {
+                if (iter > 0) {
+                    logging::root() << "VORONOI: halo widening converged in " << (iter + 1) << " iteration(s)."
+                                    << std::endl;
+                }
+                break;
+            }
+            if (iter == MAX_WIDEN_ITERS - 1) {
+                logging::root() << "VORONOI: halo widening hit MAX_ITERS=" << MAX_WIDEN_ITERS
+                                << " (failed=" << global_failed << ", outer-reached=" << global_outer
+                                << ") — falling through to CPU fallback." << std::endl;
+                break;
+            }
+            W_iter += 2;
         }
 
-        hsize_t n_total = n_hydro + n_ghosts;
+        // cross-rank perturbation cascade. cpu_fallback may perturb seeds; if any perturbed cell
+        // sits in the boundary layer, the neighbor rank's MPI ghost copy is stale and we must
+        // refresh pts_data, regen halos, and rebuild the mesh. Lockstep on global perturbation count.
+        for (int cascade = 0; cascade < MAX_CASCADE_ITERS; cascade++) {
+            const int local_perturbed = voronoi::cpu_fallback_failed_cells(mesh);
 
-        // build the Voronoi mesh directly on the [-buff, 1+buff]^d (hydro + ghost) point set.
-        // KNN's bucket grid and BasicConvexCell's bounding planes both pick up mesh->buff /
-        // knn->buff so they enclose the ghost ring without any explicit rescaling step.
-        compute_mesh(mesh, pts, (int)n_total, primvar, primvar_aux);
+            int global_perturbed = local_perturbed;
+#ifdef USE_MPI
+            if (have_mpi_neighbors) {
+                MPI_Allreduce(&local_perturbed, &global_perturbed, 1, MPI_INT, MPI_SUM, proteus_mpi::g_halo.comm);
+            }
+#endif
+            if (global_perturbed == 0) {
+                if (cascade > 0) {
+                    logging::root() << "VORONOI: perturbation cascade converged in " << cascade << " round(s)."
+                                    << std::endl;
+                }
+                break;
+            }
+            if (cascade == MAX_CASCADE_ITERS - 1) {
+                logging::root() << "VORONOI: perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << " with "
+                                << global_perturbed << " cells perturbed in last round." << std::endl;
+                break;
+            }
+            if (!have_mpi_neighbors) break;  // single-rank: no cross-rank cascade
+
+            // push perturbed seed positions back into pts_data and rebuild halos + mesh
+            for (hsize_t k = 0; k < n_hydro; k++) {
+                pts_data[k].x = mesh->seeds[k].x;
+                pts_data[k].y = mesh->seeds[k].y;
+#ifdef dim_3D
+                pts_data[k].z = mesh->seeds[k].z;
+#endif
+            }
+            n_ghosts = regenerate_periodic_ghosts(n_hydro, pts_data, pts, original_ids, buff);
+            proteus_mpi::halo_build_exports(pts_data, (int)n_hydro, buff, W_iter);
+            proteus_mpi::halo_exchange_initial(mesh, primvar, pts, (int)(n_hydro + n_ghosts));
+            n_mpi_ghosts = (hsize_t)proteus_mpi::g_halo.n_mpi_ghosts;
+            for (int n = 0; n < proteus_mpi::g_halo.n_neighbors; n++) {
+                int g_off = proteus_mpi::g_halo.ghost_offset[n];
+                for (int j = 0; j < proteus_mpi::g_halo.recv_count[n]; j++) {
+                    int slot  = g_off + j;
+                    int ext_k = (int)n_hydro + slot;
+                    original_ids[(hsize_t)n_ghosts + (hsize_t)slot] = (hsize_t)ext_k;
+                }
+            }
+            const hsize_t n_total = n_hydro + n_ghosts + n_mpi_ghosts;
+            voronoi::compute_mesh(mesh, pts, (int)n_total, primvar, primvar_aux,
+                                  /*iter=*/last_iter + 1 + cascade);
+        }
 
         PROFILE_END("MESH_TOTAL");
     }
@@ -179,11 +323,17 @@ namespace voronoi {
         int blocks = ((int)n_hydro + tpb - 1) / tpb;
         kernel_move_mesh<<<blocks, tpb>>>(n_hydro, mesh, dt, pts);
         GPU_LAUNCH_CHECK();
+        GPU_SYNC();  // migrate_seeds reads pts on the host below
 #else
         for (hsize_t i = 0; i < n_hydro; i++) {
             move_mesh_for_cell(i, mesh, dt, pts);
         }
 #endif
+
+        // ship cells whose new bucket is owned by another rank; updates mesh->n_hydro
+        // and compacts/extends pts (== mesh->scratch_move) to match
+        proteus_mpi::migrate_seeds(mesh, primvar, primvar_aux);
+        n_hydro = mesh->n_hydro;
 
         compute_periodic_mesh(mesh, pts, n_hydro, primvar, primvar_aux);
     }

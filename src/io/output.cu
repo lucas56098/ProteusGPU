@@ -1,5 +1,6 @@
 #include "output.h"
 #include "../global/allvars.h"
+#include "../mpi/mpi_compat.h"
 #include "../voronoi/voronoi.h"
 #include "profiler/profiler.h"
 #include <iostream>
@@ -9,37 +10,55 @@
 OutputHandler::OutputHandler(const std::string& outputDir) : outputDirectory(outputDir) {}
 
 bool OutputHandler::initialize() {
-    // create output directory if it doesn't exist
-    struct stat st;
-    if (stat(outputDirectory.c_str(), &st) != 0) {
-        if (mkdir(outputDirectory.c_str(), 0755) != 0) {
-            std::cerr << "OUTPUT: Error! Could not create output directory: " << outputDirectory << std::endl;
-            return false;
+    // create output directory on rank 0 only to avoid mkdir races
+    bool ok = true;
+    if (proteus_mpi::is_root()) {
+        struct stat st;
+        if (stat(outputDirectory.c_str(), &st) != 0) {
+            if (mkdir(outputDirectory.c_str(), 0755) != 0) {
+                std::cerr << "OUTPUT: Error! Could not create output directory: " << outputDirectory << std::endl;
+                ok = false;
+            } else {
+                logging::root() << "OUTPUT: Created new output directory: " << outputDirectory << std::endl;
+            }
         }
-        std::cout << "OUTPUT: Created new output directory: " << outputDirectory << std::endl;
+        if (ok) logging::root() << "OUTPUT: directory: " << outputDirectory << std::endl;
     }
-    std::cout << "OUTPUT: directory: " << outputDirectory << std::endl;
-
-    return true;
+#ifdef USE_MPI
+    MPI_Barrier(MPI_COMM_WORLD);
+#endif
+    return ok;
 }
 
 // wrapper to convert Vmesh to meshData and then write the snapshot file
-void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int n_hydro, double t_sim) {
+void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int /*n_hydro_arg*/, double t_sim) {
     PROFILE_START("SNAPSHOTS");
+
+    // n_hydro_arg is the initial per-rank count; use mesh->n_hydro for the live (post-migration) count
+    const int n_hydro = (int)mesh->n_hydro;
 
     MeshCellData meshData;
     vmesh_to_meshdata(mesh, meshData);
 
-    std::vector<unsigned int> original_to_current(n_hydro);
-    for (int k = 0; k < n_hydro; k++) {
-        original_to_current[mesh->cell_to_original[k]] = (unsigned int)k;
+    // multi-rank: migration breaks the cell_to_original inverse (received cells share
+    // local-index labels), so write in current k order. Single-rank keeps stable file IDs.
+    const bool stable_id = (proteus_mpi::nranks() <= 1);
+
+    std::vector<unsigned int> original_to_current;
+    if (stable_id) {
+        original_to_current.assign(n_hydro, 0u);
+        for (int k = 0; k < n_hydro; k++) {
+            const unsigned int orig = mesh->cell_to_original[k];
+            if ((int)orig < n_hydro) original_to_current[orig] = (unsigned int)k;
+        }
     }
+
     std::vector<double>     rho_out(n_hydro);
     std::vector<POINT_TYPE> vel_out(n_hydro);
     std::vector<double>     E_out(n_hydro);
     if (primvar) {
         for (int file_id = 0; file_id < n_hydro; file_id++) {
-            unsigned int k = original_to_current[file_id];
+            unsigned int k = stable_id ? original_to_current[file_id] : (unsigned int)file_id;
             if (primvar->rho) rho_out[file_id] = primvar->rho[k];
             if (primvar->v)   vel_out[file_id] = primvar->v[k];
             if (primvar->E)   E_out[file_id]   = primvar->E[k];
@@ -50,7 +69,16 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
     primvar_inv.v   = primvar ? vel_out.data() : nullptr;
     primvar_inv.E   = primvar ? E_out.data()   : nullptr;
 
-    std::string output_file = "snapshot_" + std::to_string(snap_num) + ".hdf5";
+    // file-per-rank snapshots under multi-rank
+    std::string output_file = "snapshot_" + std::to_string(snap_num);
+    if (proteus_mpi::nranks() > 1) output_file += ".rank_" + std::to_string(proteus_mpi::rank());
+    output_file += ".hdf5";
+
+    if (proteus_mpi::nranks() > 1) {
+        std::cout << "OUTPUT: Writing snapshot to: " << outputDirectory << output_file << std::endl;
+    } else {
+        logging::root() << "OUTPUT: Writing snapshot to: " << outputDirectory << output_file << std::endl;
+    }
 
     if (!writeSnapshot(output_file, meshData, &primvar_inv, n_hydro, t_sim)) { exit(EXIT_FAILURE); }
 
@@ -70,15 +98,25 @@ void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
 
     meshData.seeds_dims = {(hsize_t)n_pts, DIMENSION};
 
-    // file_id -> current k (inverse of cell_to_original)
-    std::vector<unsigned int> original_to_current(n_pts);
-    for (int k = 0; k < n_pts; k++) {
-        original_to_current[mesh->cell_to_original[k]] = (unsigned int)k;
+    // multi-rank: write in current k order; single-rank keeps stable file IDs (see snapshot()).
+    const bool stable_id = (proteus_mpi::nranks() <= 1);
+
+    std::vector<unsigned int> original_to_current;
+    if (stable_id) {
+        original_to_current.assign(n_pts, 0u);
+        for (int k = 0; k < n_pts; k++) {
+            const unsigned int orig = mesh->cell_to_original[k];
+            if ((int)orig < n_pts) original_to_current[orig] = (unsigned int)k;
+        }
     }
+
+    auto k_for = [&](int file_id) -> unsigned int {
+        return stable_id ? original_to_current[file_id] : (unsigned int)file_id;
+    };
 
     meshData.seeds.resize(n_pts * DIMENSION);
     for (int file_id = 0; file_id < n_pts; file_id++) {
-        unsigned int k = original_to_current[file_id];
+        unsigned int k = k_for(file_id);
         meshData.seeds[file_id * DIMENSION + 0] = mesh->seeds[k].x;
         meshData.seeds[file_id * DIMENSION + 1] = mesh->seeds[k].y;
 #ifdef dim_3D
@@ -88,12 +126,12 @@ void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
 
     meshData.volumes.resize(n_pts);
     for (int file_id = 0; file_id < n_pts; file_id++) {
-        meshData.volumes[file_id] = mesh->volumes[original_to_current[file_id]];
+        meshData.volumes[file_id] = mesh->volumes[k_for(file_id)];
     }
 
     meshData.face_counts.resize(n_pts);
     for (int file_id = 0; file_id < n_pts; file_id++) {
-        meshData.face_counts[file_id] = (int)mesh->face_counts[original_to_current[file_id]];
+        meshData.face_counts[file_id] = (int)mesh->face_counts[k_for(file_id)];
     }
 }
 
@@ -103,8 +141,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
                                   int                    n_hydro,
                                   double                 t_sim) {
     std::string fullPath = outputDirectory + filename;
-
-    std::cout << "OUTPUT: Writing snapshot to: " << fullPath << std::endl;
 
     // create HDF5 file
     hid_t file_id = H5Fcreate(fullPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
@@ -276,7 +312,8 @@ void print_log(int                                   step,
                double                                t_end) {
 
     const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count();
-    std::cout << std::endl << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
-              << "  ETA = " << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
-              << std::endl;
+    logging::root() << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
+                    << "  ETA = "
+                    << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
+                    << std::endl;
 }

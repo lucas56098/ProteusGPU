@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Fast 2D Voronoi-like animation using nearest-neighbor rasterization.
-Each frame loads one snapshot_*.hdf5 file from an input directory.
+Each frame loads one snapshot_*.hdf5 file (single-rank) or one set of
+snapshot_*.rank_<r>.hdf5 files (multi-rank, with --n-ranks) from an input
+directory.
 """
 
 import argparse
@@ -48,10 +50,25 @@ def compute_quantity(quantity, rho, vel, energy):
     return values, label
 
 
-def discover_snapshots(input_dir, pattern):
+def _rank_path(rank0_path, rank):
+    """Given a path to a `*.rank_0.hdf5` file, return the sibling `*.rank_<rank>.hdf5`."""
+    name = rank0_path.name
+    if '.rank_0.hdf5' not in name:
+        raise ValueError(
+            f'Expected a `.rank_0.hdf5` anchor file, got: {name}'
+        )
+    return rank0_path.with_name(name.replace('.rank_0.hdf5', f'.rank_{rank}.hdf5'))
+
+
+def discover_snapshots(input_dir, pattern, n_ranks=None):
     input_path = Path(input_dir)
     if not input_path.is_dir():
         raise FileNotFoundError(f'Input path is not a directory: {input_dir}')
+
+    # In rank-aware mode, enumerate frames via their rank-0 files unless the
+    # user overrode --pattern themselves.
+    if n_ranks is not None and pattern == 'snapshot_*.hdf5':
+        pattern = 'snapshot_*.rank_0.hdf5'
 
     files = list(input_path.glob(pattern))
     if not files:
@@ -59,8 +76,9 @@ def discover_snapshots(input_dir, pattern):
             f'No files found in {input_dir} matching pattern "{pattern}"'
         )
 
-    # Numeric sort by snapshot index for names like snapshot_32.hdf5.
-    num_re = re.compile(r'.*?(\d+)\.hdf5$')
+    # Numeric sort by snapshot index. Matches both `snapshot_32.hdf5` and
+    # `snapshot_32.rank_0.hdf5`-style names.
+    num_re = re.compile(r'.*?(\d+)(?:\.rank_\d+)?\.hdf5$')
 
     def snapshot_key(path):
         m = num_re.match(path.name)
@@ -72,24 +90,43 @@ def discover_snapshots(input_dir, pattern):
     return files
 
 
-def read_snapshot(snapshot_path, quantity):
-    with h5py.File(snapshot_path, 'r') as f:
-        seeds = f['mesh/pos'][:]
-        header = f['header']
-        dimension = int(header.attrs['dimension'])
-        extent = float(header.attrs['extent'])
+def read_snapshot(snapshot_path, quantity, n_ranks=None):
+    if n_ranks is None:
+        files = [snapshot_path]
+    else:
+        files = [_rank_path(snapshot_path, r) for r in range(n_ranks)]
 
-        if dimension != 2:
-            raise ValueError(
-                f'{snapshot_path.name}: expected 2D data, got {dimension}D'
-            )
+    seeds_parts, rho_parts, vel_parts, energy_parts = [], [], [], []
+    counts = []
+    extent = None
 
-        rho = f['hydro/rho'][:]
-        vel = f['hydro/vel'][:]
-        energy = f['hydro/energy'][:]
+    for fp in files:
+        with h5py.File(fp, 'r') as f:
+            dimension = int(f['header'].attrs['dimension'])
+            if dimension != 2:
+                raise ValueError(
+                    f'{Path(fp).name}: expected 2D data, got {dimension}D'
+                )
+            if extent is None:
+                extent = float(f['header'].attrs['extent'])
+            s = f['mesh/pos'][:]
+            seeds_parts.append(s)
+            counts.append(len(s))
+            rho_parts.append(f['hydro/rho'][:])
+            vel_parts.append(f['hydro/vel'][:])
+            energy_parts.append(f['hydro/energy'][:])
+
+    seeds = np.concatenate(seeds_parts, axis=0)
+    rho = np.concatenate(rho_parts, axis=0)
+    vel = np.concatenate(vel_parts, axis=0)
+    energy = np.concatenate(energy_parts, axis=0)
+
+    rank_ids = None
+    if n_ranks is not None:
+        rank_ids = np.repeat(np.arange(n_ranks, dtype=np.int32), counts)
 
     values, label = compute_quantity(quantity, rho, vel, energy)
-    return seeds, values, label, extent
+    return seeds, values, label, extent, rank_ids
 
 
 def build_frame_image(seeds, values, extent, resolution):
@@ -118,20 +155,24 @@ def animate_2d_fast(
     dpi=120,
     fps=10,
     show_seeds=True,
+    n_ranks=None,
+    rank_colors=False,
 ):
     t_start = time.perf_counter()
 
-    snapshots = discover_snapshots(input_dir, pattern)
+    snapshots = discover_snapshots(input_dir, pattern, n_ranks=n_ranks)
     print(f'Found {len(snapshots)} snapshots')
     print(f'First: {snapshots[0].name}')
     print(f'Last : {snapshots[-1].name}')
+    if n_ranks is not None:
+        print(f'Multi-rank mode: concatenating {n_ranks} files per frame')
 
     # First pass: gather min/max, labels, and extents for stable color mapping.
     mins = []
     maxs = []
     extents = []
     for snap in snapshots:
-        seeds, values, label, extent = read_snapshot(snap, quantity)
+        seeds, values, label, extent, _ = read_snapshot(snap, quantity, n_ranks=n_ranks)
         mins.append(values.min())
         maxs.append(values.max())
         extents.append(extent)
@@ -170,10 +211,21 @@ def animate_2d_fast(
     )
 
     seed_scatter = None
+    use_rank_colors = show_seeds and rank_colors and n_ranks is not None
     if show_seeds:
-        seed_scatter = ax.scatter(
-            [], [], s=2.0, c='white', edgecolors='none', alpha=0.6, zorder=5
-        )
+        if use_rank_colors:
+            seed_cmap = plt.get_cmap('tab10' if n_ranks <= 10 else 'tab20')
+            # Initialize with one dummy point so the cmap+norm machinery is wired up;
+            # set_offsets/set_array will overwrite it on the first frame.
+            seed_scatter = ax.scatter(
+                [0.0], [0.0], c=[0], s=4.0, cmap=seed_cmap,
+                vmin=0, vmax=max(n_ranks - 1, 1),
+                edgecolors='none', alpha=1.0, zorder=5,
+            )
+        else:
+            seed_scatter = ax.scatter(
+                [], [], s=2.0, c='white', edgecolors='none', alpha=0.6, zorder=5
+            )
 
     ax.set_xlabel('x')
     ax.set_ylabel('y')
@@ -186,12 +238,14 @@ def animate_2d_fast(
     def update(frame_idx):
         snap = snapshots[frame_idx]
         t0 = time.perf_counter()
-        seeds, values, _, _ = read_snapshot(snap, quantity)
+        seeds, values, _, _, rank_ids = read_snapshot(snap, quantity, n_ranks=n_ranks)
         image = build_frame_image(seeds, values, extent, resolution)
         im.set_data(image)
 
         if seed_scatter is not None:
             seed_scatter.set_offsets(seeds[:, :2])
+            if use_rank_colors:
+                seed_scatter.set_array(rank_ids)
 
         ax.set_title(
             f'{label} | {snap.name} ({frame_idx + 1}/{len(snapshots)})'
@@ -260,7 +314,8 @@ if __name__ == '__main__':
         '--pattern',
         type=str,
         default='snapshot_*.hdf5',
-        help='Glob pattern for snapshot files (default: snapshot_*.hdf5)',
+        help='Glob pattern for snapshot files (default: snapshot_*.hdf5; '
+             'auto-switched to snapshot_*.rank_0.hdf5 when --n-ranks is set)',
     )
     parser.add_argument(
         '-q',
@@ -302,6 +357,26 @@ if __name__ == '__main__':
         action='store_true',
         help='Disable seed point overlay',
     )
+    parser.add_argument(
+        '-n',
+        '--n-ranks',
+        type=int,
+        default=None,
+        help=(
+            'Load and concatenate this many per-rank files per frame. '
+            'Frames are enumerated from the matching `*.rank_0.hdf5` files; '
+            'sibling rank files are derived by swapping `rank_0` -> `rank_<r>`. '
+            'Omit for single-file mode.'
+        ),
+    )
+    parser.add_argument(
+        '--rank-colors',
+        action='store_true',
+        help=(
+            'Color the seed overlay by owning rank using a categorical '
+            'colormap. Requires --n-ranks; ignored if seeds are disabled.'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -317,4 +392,6 @@ if __name__ == '__main__':
         dpi=args.dpi,
         fps=args.fps,
         show_seeds=not args.no_seeds,
+        n_ranks=args.n_ranks,
+        rank_colors=args.rank_colors,
     )

@@ -3,6 +3,7 @@
 
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
+#include "../mpi/halo.h"
 #include "../voronoi/periodic_mesh.h"
 #include "../voronoi/voronoi.h"
 #include <cmath>
@@ -50,13 +51,14 @@ namespace hydro {
 #endif
 
     inline void allocate_prim_buffer(hsize_t n_hydro, primvars* primvar) {
-        primvar->rho = gpu_alloc<double>(n_hydro);
-        primvar->v   = gpu_alloc<POINT_TYPE>(n_hydro);
-        primvar->E   = gpu_alloc<double>(n_hydro);
+        const hsize_t ext = (hsize_t)proteus_mpi::alloc_per_cell_size((int)n_hydro);
+        primvar->rho      = gpu_alloc<double>(ext);
+        primvar->v        = gpu_alloc<POINT_TYPE>(ext);
+        primvar->E        = gpu_alloc<double>(ext);
 
-        gpu_advise_gpu_preferred(primvar->rho, n_hydro * sizeof(double));
-        gpu_advise_gpu_preferred(primvar->v, n_hydro * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(primvar->E, n_hydro * sizeof(double));
+        gpu_advise_gpu_preferred(primvar->rho, ext * sizeof(double));
+        gpu_advise_gpu_preferred(primvar->v, ext * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(primvar->E, ext * sizeof(double));
     }
 
     inline void free_prim_buffer(primvars* primvar) {

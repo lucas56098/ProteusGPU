@@ -55,6 +55,10 @@ struct VMesh {
     unsigned int* cell_to_original; // [k] -> file id;   size n_hydro
     unsigned int* gather_perm;      // [new_k] -> old_k; size n_hydro
 
+    // stable [orig] -> k mapping captured after iter 0 of the halo-widening loop,
+    // reused by later iterations so primvar order stays aligned across them
+    unsigned int* orig_to_k_save;   // [orig] -> k;      size n_hydro
+
     // typed scratch pools — one per type, reused across every permute_inplace<T> call
     unsigned int* scratch_uint;     // size n_hydro
     double*       scratch_double;   // size n_hydro
@@ -80,14 +84,27 @@ namespace voronoi {
     void   free_mesh(VMesh* mesh);
 
     // ---- internal (used by compute_periodic_mesh in periodic_mesh.cu) ----
+    // iter == 0: full pipeline (atomic-counter pass1 + save orig_to_k + permute primvar).
+    // iter > 0: lookup-mode pass1 with saved orig_to_k; skips primvar permute.
     void compute_mesh(VMesh*           mesh,
                       POINT_TYPE*      pts_data,
                       int              n_total,
                       hydro::primvars* primvar,
-                      hydro::primvars* primvar_aux);
+                      hydro::primvars* primvar_aux,
+                      int              iter = 0);
 
     void compute_cells(VMesh* mesh);
-    void cpu_fallback_failed_cells(VMesh* mesh);
+
+    // returns the number of cells that were perturbed — caller uses this to decide
+    // whether a cross-rank cascade round (halo re-export + Voronoi rebuild) is needed
+    int cpu_fallback_failed_cells(VMesh* mesh);
+
+    // returns 1 iff any local cell's _K_-th nearest is an MPI ghost in the outermost
+    // halo layer. This is the silent-failure detector for the widen loop: the standard
+    // security_radius check can falsely pass when closer cells live beyond the halo,
+    // but if our K-th sample reached the outer layer there might be unsent cells just
+    // beyond. Caller Allreduces with LOR before deciding to widen.
+    int halo_completeness_flag(VMesh* mesh, int n_pgh);
 
 } // namespace voronoi
 

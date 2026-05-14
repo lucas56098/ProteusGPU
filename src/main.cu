@@ -3,6 +3,8 @@
 #include "hydro/finite_volume_solver.h"
 #include "io/input.h"
 #include "io/output.h"
+#include "mpi/halo.h"
+#include "mpi/mpi_init.h"
 #include "profiler/profiler.h"
 #include "voronoi/periodic_mesh.h"
 #include "voronoi/voronoi.h"
@@ -19,12 +21,15 @@
 
        GPU-accelerated moving mesh hydrodynamics for astrophysics
 ===========================================================================
-Version: 0.7
+Version: 0.8
 Authors: Lucas Schleuss, Dylan Nelson
 Institution: Institute of Theoretical Astrophysics, Heidelberg University
 ===========================================================================*/
 
 int main(int argc, char* argv[]) {
+
+    // initialize MPI (no-op single-node) and pin GPU per rank
+    proteus_mpi::init(&argc, &argv);
 
     PROFILE_START("TOTAL_RUNTIME");
     const auto wall_start = std::chrono::steady_clock::now();
@@ -51,9 +56,9 @@ int main(int argc, char* argv[]) {
     print_max_memory_usage();
 
     if (t_sim > 0.0) {
-        std::cout << "HYDRO: restarted from t = " << t_sim << " (snap_num = " << snap_num << ")" << std::endl;
+        logging::root() << "HYDRO: restarted from t = " << t_sim << " (snap_num = " << snap_num << ")" << std::endl;
     } else {
-        std::cout << "HYDRO: started" << std::endl;
+        logging::root() << "HYDRO: started" << std::endl;
     }
 
     // simulation control parameters
@@ -75,8 +80,9 @@ int main(int argc, char* argv[]) {
     PROFILE_START("HYDRO_MAIN");
     while (t_sim < t_end) {
 
-        // CFL timestep
+        // CFL timestep: local min, then Allreduce(MIN) so every rank uses the same dt
         double dt = hydro::dt_CFL(CFL, mesh, primvar);
+        proteus_mpi::halo_dt_allreduce(&dt);
 
         // limit dt to the next snapshot or t_end
         bool snap_to_output = false;
@@ -96,7 +102,7 @@ int main(int argc, char* argv[]) {
 
         // hydro step
         hydro::hydro_step(dt, mesh, primvar);
-        
+
         // snap t_sim exactly to the boundary we clamped to
         if (snap_to_end)         t_sim = t_end;
         else if (snap_to_output) t_sim = t_nextoutput;
@@ -111,21 +117,24 @@ int main(int argc, char* argv[]) {
         }
     }
     PROFILE_END("HYDRO_MAIN");
-    std::cout << "HYDRO: Finished after " << step << " steps at t = " << t_sim << std::endl;
+    logging::root() << "HYDRO: Finished after " << step << " steps at t = " << t_sim << std::endl;
 
-    // tear down all simulation buffers
+    // free all simulation buffers
     voronoi::free_mesh(mesh);
     hydro::free_prim(&primvar);
     hydro::free_hydro_buffers();
+    proteus_mpi::halo_free();
 
     // wall-clock runtime + peak memory + profiler dump
     const double total_wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
-    std::cout << "MAIN: Runtime = " << total_wall_s << " seconds" << std::endl;
+    logging::root() << "MAIN: Runtime = " << total_wall_s << " seconds" << std::endl;
     print_max_memory_usage();
-    std::cout << "MAIN: Done." << std::endl;
+    logging::root() << "MAIN: Done." << std::endl;
 
     PROFILE_END("TOTAL_RUNTIME");
     PROFILE_PRINT_RESULTS();
+
+    proteus_mpi::finalize();
 
     return 0;
 }

@@ -36,17 +36,42 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 
-def load_snapshot(path):
-    with h5py.File(path, 'r') as f:
-        seeds = f['mesh/pos'][:]
-        rho = f['hydro/rho'][:]
-        vel = f['hydro/vel'][:]
-        E = f['hydro/energy'][:]
-        dim = int(f['header'].attrs['dimension'])
-        extent = float(f['header'].attrs['extent'])
-        sim_time = float(f['header'].attrs['time'])
+def _rank_path(template, rank):
+    """Insert `.rank_<rank>` before the `.hdf5` extension in `template`."""
+    if template.endswith('.hdf5'):
+        return f"{template[:-5]}.rank_{rank}.hdf5"
+    return f"{template}.rank_{rank}.hdf5"
+
+
+def load_snapshot(path, n_ranks=None):
+    """Read one snapshot. With n_ranks set, `path` is treated as a template and
+    sibling `<stem>.rank_<r>.hdf5` files are concatenated (dimension/extent/time
+    are taken from rank 0)."""
+    files = [path] if n_ranks is None else [_rank_path(path, r) for r in range(n_ranks)]
+
+    seeds_parts, rho_parts, vel_parts, E_parts = [], [], [], []
+    dim = None
+    extent = None
+    sim_time = None
+
+    for fp in files:
+        with h5py.File(fp, 'r') as f:
+            if dim is None:
+                dim = int(f['header'].attrs['dimension'])
+                extent = float(f['header'].attrs['extent'])
+                sim_time = float(f['header'].attrs['time'])
+            seeds_parts.append(f['mesh/pos'][:])
+            rho_parts.append(f['hydro/rho'][:])
+            vel_parts.append(f['hydro/vel'][:])
+            E_parts.append(f['hydro/energy'][:])
+
     if dim != 3:
         raise ValueError(f"need 3D snapshot, got {dim}D")
+
+    seeds = np.concatenate(seeds_parts, axis=0)
+    rho = np.concatenate(rho_parts, axis=0)
+    vel = np.concatenate(vel_parts, axis=0)
+    E = np.concatenate(E_parts, axis=0)
     return seeds, rho, vel, E, extent, sim_time
 
 
@@ -854,6 +879,12 @@ class SnapshotProvider:
             return None, None, None
         path = self._path_for(snap_idx)
         base = os.path.splitext(os.path.basename(path))[0]
+        n_ranks = getattr(self.args, 'n_ranks', None)
+        if n_ranks is not None:
+            # Multi-rank concatenations are conceptually a different input than
+            # the single-file path of the same name; namespace them so caches
+            # from different --n-ranks runs don't collide.
+            base = f'{base}_nranks{n_ranks}'
         cache_dir = os.path.join(os.path.dirname(path) or '.', '_render_cache')
         seeds_p = os.path.join(cache_dir, f'{base}_seeds.npy')
         op_p    = os.path.join(cache_dir, f'{base}_{self.args.quantity}.npy')
@@ -895,7 +926,8 @@ class SnapshotProvider:
                 sim_t = float(fh['header'].attrs.get('time', 0.0))
             print(f"[cache] loaded snap {snap_idx} from {os.path.dirname(seeds_p)}")
         else:
-            full_seeds, rho, vel, E, extent, sim_t = load_snapshot(path)
+            n_ranks = getattr(self.args, 'n_ranks', None)
+            full_seeds, rho, vel, E, extent, sim_t = load_snapshot(path, n_ranks=n_ranks)
             seeds = full_seeds.astype(np.float32, copy=False)
             values_op = _extract_quantity(self.args.quantity, rho, vel, E)\
                             .astype(np.float32, copy=False)
@@ -1252,7 +1284,15 @@ def main():
     p.add_argument('--end-snap', type=int, default=None,
                    help='last snapshot index (inclusive)')
     p.add_argument('--snap-pattern', default='output/snapshot_{}.hdf5',
-                   help='format string for snapshot path; {} is the index')
+                   help='format string for snapshot path; {} is the index. '
+                        'With --n-ranks, each formatted path is treated as a '
+                        'single-file template; sibling .rank_<r>.hdf5 files are '
+                        'derived from it.')
+    p.add_argument('-n', '--n-ranks', type=int, default=None,
+                   help='Load and concatenate this many per-rank files per '
+                        'snapshot (treats --input / --snap-pattern paths as '
+                        'templates; reads <stem>.rank_<r>.hdf5 for r in 0..n-1). '
+                        'Omit for single-file mode.')
 
     p.add_argument('--frames', type=int, default=480)
     p.add_argument('--fps', type=int, default=30)
@@ -1289,6 +1329,8 @@ def main():
               f"(~{args.frames / n_snaps:.1f} frames per snap)")
     else:
         print(f"[mode] single snapshot: {args.input}")
+    if args.n_ranks is not None:
+        print(f"[mode] multi-rank: concatenating {args.n_ranks} files per snapshot")
     print(f"[fields] opacity='{args.quantity}'  color='{args.color_quantity}'")
 
     provider = SnapshotProvider(args)

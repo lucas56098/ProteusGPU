@@ -2,6 +2,7 @@
 #define STRUCTS_H
 #pragma once
 
+#include "../mpi/extension.h"
 #include "gpu_compat.h"
 namespace voronoi {
 
@@ -81,22 +82,23 @@ namespace gradients {
     };
 
     inline void allocate_grad(size_t n, PrimGradients* g) {
-        g->rho = gpu_alloc<POINT_TYPE>(n);
-        g->vx  = gpu_alloc<POINT_TYPE>(n);
-        g->vy  = gpu_alloc<POINT_TYPE>(n);
+        const size_t ext = (size_t)proteus_mpi::alloc_per_cell_size((int)n);
+        g->rho           = gpu_alloc<POINT_TYPE>(ext);
+        g->vx            = gpu_alloc<POINT_TYPE>(ext);
+        g->vy            = gpu_alloc<POINT_TYPE>(ext);
 #ifdef dim_3D
-        g->vz = gpu_alloc<POINT_TYPE>(n);
+        g->vz = gpu_alloc<POINT_TYPE>(ext);
 #endif
-        g->E = gpu_alloc<POINT_TYPE>(n);
-        g->n = n;
+        g->E = gpu_alloc<POINT_TYPE>(ext);
+        g->n = n; // local count; ghost slots [n, ext) filled by halo exchange
 
-        gpu_advise_gpu_preferred(g->rho, n * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(g->vx, n * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(g->vy, n * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(g->rho, ext * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(g->vx, ext * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(g->vy, ext * sizeof(POINT_TYPE));
 #ifdef dim_3D
-        gpu_advise_gpu_preferred(g->vz, n * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(g->vz, ext * sizeof(POINT_TYPE));
 #endif
-        gpu_advise_gpu_preferred(g->E, n * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(g->E, ext * sizeof(POINT_TYPE));
     }
 
     inline void free_grad(PrimGradients* g) {

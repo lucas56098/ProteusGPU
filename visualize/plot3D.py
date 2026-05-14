@@ -43,6 +43,10 @@ def main():
     p.add_argument('--azim-deg', type=float, default=0.0,
                    help='camera azimuth around the box, in degrees '
                         '(0 = +X axis; matches phi=0 of the animation orbit)')
+    p.add_argument('-n', '--n-ranks', type=int, default=None,
+                   help='Load and concatenate this many per-rank files (treats '
+                        '--input as a template; reads <stem>.rank_<r>.hdf5 for '
+                        'r in 0..n-1). Omit for single-file mode.')
 
     add_common_render_args(p)
     args = p.parse_args()
@@ -62,6 +66,8 @@ def main():
     backend = select_backend(args)
 
     print(f"[mode] single snapshot: {args.input}")
+    if args.n_ranks is not None:
+        print(f"[mode] multi-rank: concatenating {args.n_ranks} files")
     print(f"[fields] opacity='{args.quantity}'  color='{args.color_quantity}'")
 
     provider = SnapshotProvider(args)

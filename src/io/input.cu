@@ -49,7 +49,7 @@ bool InputHandler::loadParameters() {
     }
 
     file.close();
-    std::cout << "INPUT: Loaded " << parameters.size() << " parameters from " << paramFilePath << std::endl;
+    logging::root() << "INPUT: Loaded " << parameters.size() << " parameters from " << paramFilePath << std::endl;
     return true;
 }
 
@@ -277,7 +277,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     H5Dclose(dataset_id);
     H5Fclose(file_id);
 
-    std::cout << "INPUT: IC file " << filename << " loaded successfully!" << std::endl;
+    logging::root() << "INPUT: IC file " << filename << " loaded successfully!" << std::endl;
     return true;
 }
 
@@ -409,6 +409,6 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     H5Gclose(hydro_group);
     H5Fclose(file_id);
 
-    std::cout << "INPUT: Snapshot loaded successfully! (" << n << " cells, t = " << t_sim << ")" << std::endl;
+    logging::root() << "INPUT: Snapshot loaded successfully! (" << n << " cells, t = " << t_sim << ")" << std::endl;
     return true;
 }

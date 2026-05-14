@@ -14,15 +14,70 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 
+def _rank_path(template, rank):
+    """Insert `.rank_<rank>` before the `.hdf5` extension in `template`."""
+    if template.endswith('.hdf5'):
+        return f"{template[:-5]}.rank_{rank}.hdf5"
+    return f"{template}.rank_{rank}.hdf5"
+
+
+def load_snapshot(hdf5_file, n_ranks=None):
+    """
+    Load seeds + hydro fields from a single snapshot or a set of per-rank files.
+
+    With n_ranks=None, opens `hdf5_file` directly. Otherwise treats it as a
+    template and reads `<stem>.rank_<r>.hdf5` for r in range(n_ranks), then
+    concatenates. dimension/extent are taken from rank 0.
+
+    Returns (seeds, rho, vel, energy, dimension, extent, rank_ids), where
+    rank_ids is an int array assigning each cell to its owning rank in the
+    multi-rank case (None otherwise).
+    """
+    if n_ranks is None:
+        files = [hdf5_file]
+    else:
+        files = [_rank_path(hdf5_file, r) for r in range(n_ranks)]
+
+    seeds_parts, rho_parts, vel_parts, energy_parts = [], [], [], []
+    counts = []
+    dimension = None
+    extent = None
+
+    for fp in files:
+        with h5py.File(fp, 'r') as f:
+            if dimension is None:
+                dimension = int(f['header'].attrs['dimension'])
+                extent = float(f['header'].attrs['extent'])
+            s = f['mesh/pos'][:]
+            seeds_parts.append(s)
+            counts.append(len(s))
+            rho_parts.append(f['hydro/rho'][:])
+            vel_parts.append(f['hydro/vel'][:])
+            energy_parts.append(f['hydro/energy'][:])
+
+    seeds = np.concatenate(seeds_parts, axis=0)
+    rho = np.concatenate(rho_parts, axis=0)
+    vel = np.concatenate(vel_parts, axis=0)
+    energy = np.concatenate(energy_parts, axis=0)
+
+    rank_ids = None
+    if n_ranks is not None:
+        rank_ids = np.repeat(np.arange(n_ranks, dtype=np.int32), counts)
+
+    return seeds, rho, vel, energy, dimension, extent, rank_ids
+
+
 def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=None,
-                 resolution=1024, cmap_name='viridis', dpi=150, show_seeds=False):
+                 resolution=1024, cmap_name='viridis', dpi=150, show_seeds=False,
+                 n_ranks=None, rank_colors=False):
     """
     Fast rasterized nearest-neighbor plot of 2D Voronoi mesh.
 
     Parameters
     ----------
     hdf5_file : str
-        Path to mesh_output HDF5 file.
+        Path to mesh_output HDF5 file. When n_ranks is set, treated as a template:
+        sibling files are derived by inserting `.rank_<r>` before the `.hdf5` extension.
     quantity : str
         Hydro quantity to plot: 'rho', 'vel_mag', 'energy', 'pressure'.
     output_file : str or None
@@ -37,22 +92,19 @@ def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=No
         Output DPI when saving.
     show_seeds : bool
         Overlay seed points on the image.
+    n_ranks : int or None
+        If set, load from `n_ranks` per-rank files and concatenate.
+    rank_colors : bool
+        Color the seed overlay by owning rank. Requires show_seeds and n_ranks.
     """
     t_start = time.perf_counter()
 
-    with h5py.File(hdf5_file, 'r') as f:
-        seeds = f['mesh/pos'][:]
-        header = f['header']
-        dimension = header.attrs['dimension']
-        extent = header.attrs['extent']
+    seeds, rho, vel, energy, dimension, extent, rank_ids = load_snapshot(
+        hdf5_file, n_ranks)
 
-        if dimension != 2:
-            print(f"Error: This script is for 2D data only (got {dimension}D).")
-            return False
-
-        rho = f['hydro/rho'][:]
-        vel = f['hydro/vel'][:]
-        energy = f['hydro/energy'][:]
+    if dimension != 2:
+        print(f"Error: This script is for 2D data only (got {dimension}D).")
+        return False
 
     # Compute quantity
     if quantity == 'rho':
@@ -88,6 +140,8 @@ def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=No
 
     n_cells = len(seeds)
     print(f"Cells: {n_cells}")
+    if n_ranks is not None:
+        print(f"Multi-rank: concatenated {n_ranks} files")
     print(f"Domain: [0, {extent}]²")
     print(f"Plotting: {label}")
     print(f"Value range: [{values.min():.4e}, {values.max():.4e}]")
@@ -125,8 +179,14 @@ def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=No
                    aspect='equal')
 
     if show_seeds:
-        ax.scatter(seeds[:, 0], seeds[:, 1], s=0.1, c='white', edgecolors='none',
-                   alpha=0.3, zorder=5)
+        if rank_colors and rank_ids is not None:
+            seed_cmap = plt.get_cmap('tab10' if n_ranks <= 10 else 'tab20')
+            ax.scatter(seeds[:, 0], seeds[:, 1], s=4.0, c=rank_ids,
+                       cmap=seed_cmap, vmin=0, vmax=max(n_ranks - 1, 1),
+                       edgecolors='none', alpha=1.0, zorder=5)
+        else:
+            ax.scatter(seeds[:, 0], seeds[:, 1], s=0.1, c='white',
+                       edgecolors='none', alpha=0.3, zorder=5)
 
     ax.set_xlabel('x')
     ax.set_ylabel('y')
@@ -153,7 +213,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Fast 2D Voronoi-like plot via nearest-neighbor rasterization')
     parser.add_argument('-i', '--input', type=str, default='../output/mesh_output.hdf5',
-                        help='Input HDF5 file (default: ../output/mesh_output.hdf5)')
+                        help='Input HDF5 file (default: ../output/mesh_output.hdf5). '
+                             'With -n, treated as a template; reads <stem>.rank_<r>.hdf5.')
     parser.add_argument('-o', '--output', type=str, default=None,
                         help='Output image file (if not specified, displays plot)')
     parser.add_argument('-q', '--quantity', type=str, default='rho',
@@ -171,8 +232,16 @@ if __name__ == "__main__":
                         help='Output DPI (default: 150)')
     parser.add_argument('--seeds', action='store_true',
                         help='Overlay seed points on the image')
+    parser.add_argument('-n', '--n-ranks', type=int, default=None,
+                        help='Load and concatenate this many per-rank files '
+                             '(treats --input as a template; reads <stem>.rank_<r>.hdf5 '
+                             'for r in 0..n-1). Omit for single-file mode.')
+    parser.add_argument('--rank-colors', action='store_true',
+                        help='Color the seed overlay by owning rank using a '
+                             'categorical colormap. Requires --seeds and --n-ranks.')
 
     args = parser.parse_args()
 
     plot_2d_fast(args.input, args.quantity, args.output, args.vmin, args.vmax,
-                 args.resolution, args.cmap, args.dpi, args.seeds)
+                 args.resolution, args.cmap, args.dpi, args.seeds,
+                 args.n_ranks, args.rank_colors)

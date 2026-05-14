@@ -2,6 +2,7 @@
 #define INPUT_H
 
 #include "hdf5.h"
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -19,6 +20,9 @@ struct ICData {
     std::vector<double> rho;    // numSeeds
     std::vector<double> vel;    // dimension * numSeeds
     std::vector<double> energy; // numSeeds
+
+    // global cell ID, populated by proteus_mpi::distribute_ic_local at startup
+    std::vector<uint64_t> global_id;
 
     ICHeader header;
 };
