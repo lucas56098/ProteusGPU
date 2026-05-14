@@ -274,6 +274,7 @@ __global__ void raycast_voronoi(
     const float4* __restrict__ tf, int tf_n,
     float bg_r, float bg_g, float bg_b,
     float box_r, float box_g, float box_b,
+    float brightness,
     int do_shade,
     float light_x, float light_y, float light_z,
     float ambient, float shade_h,
@@ -416,6 +417,10 @@ __global__ void raycast_voronoi(
     Gc = Gc / (1.f + Gc) * 1.2f;
     B  = B  / (1.f + B)  * 1.2f;
 
+    R  *= brightness;
+    Gc *= brightness;
+    B  *= brightness;
+
     R  = fminf(fmaxf(R,  0.f), 1.f);
     Gc = fminf(fmaxf(Gc, 0.f), 1.f);
     B  = fminf(fmaxf(B,  0.f), 1.f);
@@ -441,7 +446,7 @@ def _cpu_raycast_strip(tree, values_op, values_c,
                        sample_pos, dt_over_ext, opacity_scale,
                        log_vmin_op, log_vmax_op, log_vmin_c, log_vmax_c,
                        tf_alpha, tf_rgb, tf_n,
-                       box_bg, shade=None):
+                       box_bg, brightness=1.0, shade=None):
     """Composite one strip given prebuilt sample positions. Returns (tile_h, W, 3)
     float32 in [0, 1] over hit pixels; non-hit values are arbitrary and must be
     masked by the caller. dt_over_ext is per-step distance / extent.
@@ -518,6 +523,7 @@ def _cpu_raycast_strip(tree, values_op, values_c,
     box_arr = np.asarray(box_bg, dtype=np.float32)
     rgb = rgb + (1.0 - A)[..., None] * box_arr
     rgb = rgb / (1.0 + rgb) * 1.2
+    rgb = rgb * float(brightness)
     rgb = np.clip(rgb, 0.0, 1.0)
     return rgb
 
@@ -554,7 +560,7 @@ class GPUBackend:
                      cam, fwd, right, up, fov,
                      W, H, n_steps,
                      log_vmin_op, log_vmax_op, log_vmin_c, log_vmax_c,
-                     opacity_scale, bg, box_bg, shade=None):
+                     opacity_scale, bg, box_bg, brightness=1.0, shade=None):
         if shade is None:
             do_shade, light, ambient, shade_h = 0, (0.0, 0.0, 1.0), 1.0, 0.0
         else:
@@ -584,6 +590,7 @@ class GPUBackend:
              self.tf, np.int32(self.tf_n),
              np.float32(bg[0]),     np.float32(bg[1]),     np.float32(bg[2]),
              np.float32(box_bg[0]), np.float32(box_bg[1]), np.float32(box_bg[2]),
+             np.float32(brightness),
              np.int32(do_shade),
              np.float32(light[0]), np.float32(light[1]), np.float32(light[2]),
              np.float32(ambient), np.float32(shade_h),
@@ -611,7 +618,7 @@ class CPUBackend:
                      cam, fwd, right, up, fov,
                      W, H, n_steps,
                      log_vmin_op, log_vmax_op, log_vmin_c, log_vmax_c,
-                     opacity_scale, bg, box_bg, shade=None):
+                     opacity_scale, bg, box_bg, brightness=1.0, shade=None):
         tree      = snap['tree']
         values_op = snap['values_op']
         values_c  = snap['values_c']
@@ -677,7 +684,7 @@ class CPUBackend:
                 opacity_scale,
                 log_vmin_op, log_vmax_op, log_vmin_c, log_vmax_c,
                 tf_alpha, tf_rgb, tf_n,
-                box_bg, shade=shade,
+                box_bg, brightness=brightness, shade=shade,
             )
             out[r0:r1] = np.where(tile_hit[..., None], rgb, out[r0:r1])
 
@@ -704,6 +711,59 @@ def _load_font(weight, size):
         if os.path.exists(path):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
+
+
+# 12 edges of the unit cube, expressed as pairs of corner indices in
+# {0..7}, where bit 0=X, bit 1=Y, bit 2=Z.
+_CUBE_EDGES = (
+    (0, 1), (0, 2), (0, 4),
+    (1, 3), (1, 5),
+    (2, 3), (2, 6),
+    (3, 7),
+    (4, 5), (4, 6),
+    (5, 7),
+    (6, 7),
+)
+
+
+def _project_world_to_pixel(P, cam, fwd, right, up, fov, W, H):
+    """Inverse of the kernel's ray equation: given a world point P, return
+    (i, j) pixel coords (floats) or None if behind the camera."""
+    rel = np.asarray(P, dtype=np.float32) - cam
+    df = float(rel @ fwd)
+    if df <= 1e-6:
+        return None
+    dr = float(rel @ right)
+    du = float(rel @ up)
+    aspect = W / H
+    i = ((dr / df) / (aspect * fov) + 1.0) * W * 0.5 - 0.5
+    j = (1.0 - (du / df) / fov) * H * 0.5 - 0.5
+    return (i, j)
+
+
+def draw_cube_edges_on_frame(frame_rgb, extent, cam, fwd, right, up, fov,
+                             W, H, color=(0.1, 0.1, 0.1), alpha=1.0, width=1):
+    """Overlay the 12 edges of the [0, extent]^3 cube onto an (H,W,3) uint8
+    frame using the same camera projection as the volume raycaster. Edges
+    whose endpoints are behind the camera are skipped."""
+    corners = np.array([
+        [(k & 1) * extent, ((k >> 1) & 1) * extent, ((k >> 2) & 1) * extent]
+        for k in range(8)
+    ], dtype=np.float32)
+    pts = [_project_world_to_pixel(c, cam, fwd, right, up, fov, W, H)
+           for c in corners]
+    a = int(round(max(0.0, min(1.0, float(alpha))) * 255))
+    rgba = (int(round(float(color[0]) * 255)),
+            int(round(float(color[1]) * 255)),
+            int(round(float(color[2]) * 255)), a)
+    img = Image.fromarray(frame_rgb).convert('RGBA')
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    for a_idx, b_idx in _CUBE_EDGES:
+        if pts[a_idx] is None or pts[b_idx] is None:
+            continue
+        d.line([pts[a_idx], pts[b_idx]], fill=rgba, width=max(1, int(width)))
+    return np.asarray(Image.alpha_composite(img, overlay).convert('RGB'))
 
 
 def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
@@ -871,7 +931,11 @@ class SnapshotProvider:
         if self._mode == 'single':
             return 0
         n = self.args.end_snap - self.args.start_snap + 1
-        return self.args.start_snap + min(n - 1, int(f / total_frames * n))
+        hold = max(0, int(getattr(self.args, 'hold_frames', 0) or 0))
+        evolve = max(1, total_frames - hold)
+        if f >= evolve:
+            return self.args.end_snap
+        return self.args.start_snap + min(n - 1, int(f / evolve * n))
 
     def _cache_paths(self, snap_idx):
         """Return (seeds_path, op_path, c_path). None entries if caching disabled."""
@@ -1097,8 +1161,17 @@ def render_one_frame(backend, snap, extent, args, ctx,
         args.width, args.height, args.n_steps,
         ctx['log_vmin_op'], ctx['log_vmax_op'],
         ctx['log_vmin_c'],  ctx['log_vmax_c'],
-        args.opacity_scale, ctx['bg'], ctx['box_bg'], shade=ctx['shade'],
+        args.opacity_scale, ctx['bg'], ctx['box_bg'],
+        brightness=args.brightness, shade=ctx['shade'],
     )
+    if args.cube_edges:
+        frame = draw_cube_edges_on_frame(
+            frame, extent, cam, fwd, right, up, ctx['fov'],
+            args.width, args.height,
+            color=tuple(args.cube_edge_color),
+            alpha=float(args.cube_edge_alpha),
+            width=int(args.cube_edge_width),
+        )
     if not args.no_overlay:
         frame = draw_overlay(frame, sim_t, args.scale_bar_unit,
                              ctx['scale_bar_pixels'],
@@ -1144,7 +1217,13 @@ def render_animation(provider, extent, args, backend):
                   f"{args.quantity}=[{op_min:.3e},{op_max:.3e}]  "
                   f"{args.color_quantity}=[{c_min:.3e},{c_max:.3e}]")
 
-            phi = 2 * np.pi * args.turns * f / args.frames
+            hold = max(0, int(args.hold_frames or 0))
+            evolve = max(1, args.frames - hold)
+            if f < evolve:
+                phi = 2 * np.pi * args.turns * f / evolve
+            else:
+                phi = 2 * np.pi * (args.turns
+                                   + args.hold_turns * (f - evolve) / max(1, hold))
             cam, fwd, right, up = orbit_camera(ctx['target'], ctx['radius'], elev, phi)
 
             sim_t = provider._times.get(snap_idx, 0.0)
@@ -1209,13 +1288,33 @@ def add_common_render_args(p):
     p.add_argument('--pmin', type=float, default=1.0)
     p.add_argument('--pmax', type=float, default=99.5)
 
+    p.add_argument('--brightness', type=float, default=1.0,
+                   help='final-stage RGB multiplier applied after tonemap, '
+                        'before the 0-1 clamp. >1 brightens, <1 darkens; '
+                        'default 1.0 (no change).')
+
     p.add_argument('--bg', type=float, nargs=3, default=(0.0, 0.0, 0.0),
                    metavar=('R', 'G', 'B'),
                    help='screen background where rays miss the cube')
     p.add_argument('--box-bg', type=float, nargs=3, default=(0.0, 0.0, 0.0),
                    metavar=('R', 'G', 'B'),
-                   help='in-cube background; kept slightly lighter than --bg '
-                        'so the cube silhouette is visible')
+                   help='in-cube background composited where rays exit the '
+                        'cube without saturating opacity (default black; pair '
+                        'with --cube-edges to keep the cube silhouette).')
+
+    p.add_argument('--no-cube-edges', dest='cube_edges', action='store_false',
+                   help='disable the bounding-cube wireframe (drawn on by '
+                        'default at low gray so the box silhouette stays '
+                        'visible against the dark background)')
+    p.set_defaults(cube_edges=True)
+    p.add_argument('--cube-edge-color', type=float, nargs=3,
+                   default=(0.1, 0.1, 0.1), metavar=('R', 'G', 'B'),
+                   help='RGB color of the bounding cube edges, 0-1 per '
+                        'channel (default 0.1 gray)')
+    p.add_argument('--cube-edge-alpha', type=float, default=1.0,
+                   help='opacity of the cube edges, 0-1 (default 1.0)')
+    p.add_argument('--cube-edge-width', type=int, default=1,
+                   help='line width in pixels for the cube edges (default 1)')
     p.add_argument('--no-cache', action='store_true')
     p.add_argument('--no-overlay', action='store_true',
                    help='disable HUD (time, length scale, brand, colorbar)')
@@ -1297,7 +1396,16 @@ def main():
     p.add_argument('--frames', type=int, default=480)
     p.add_argument('--fps', type=int, default=30)
     p.add_argument('--turns', type=float, default=1.0,
-                   help='full rotations across the animation')
+                   help='full rotations during the snapshot-evolution phase '
+                        '(or the whole animation if --hold-frames is 0)')
+    p.add_argument('--hold-frames', type=int, default=0,
+                   help='after evolving through start..end snapshots over the '
+                        'first (frames - hold-frames) frames, hold on '
+                        '--end-snap for this many additional frames (still '
+                        'rotating by --hold-turns). Default 0 (no hold phase).')
+    p.add_argument('--hold-turns', type=float, default=1.0,
+                   help='full rotations performed during the hold phase '
+                        '(only used when --hold-frames > 0); default 1.0.')
     p.add_argument('--crf', type=int, default=18)
     p.add_argument('--evict-cache', action='store_true',
                    help='delete each snapshot\'s cached .npy files as soon '
@@ -1322,11 +1430,27 @@ def main():
 
     backend = select_backend(args)
 
+    if args.hold_frames < 0:
+        print("ERROR: --hold-frames must be >= 0", file=sys.stderr)
+        sys.exit(2)
+    if args.hold_frames >= args.frames:
+        print("ERROR: --hold-frames must be < --frames "
+              f"(got hold={args.hold_frames}, frames={args.frames})",
+              file=sys.stderr)
+        sys.exit(2)
+
     if args.start_snap is not None:
         n_snaps = args.end_snap - args.start_snap + 1
-        print(f"[mode] time-evolving: snaps {args.start_snap}..{args.end_snap} "
-              f"({n_snaps} snapshots) over {args.frames} frames "
-              f"(~{args.frames / n_snaps:.1f} frames per snap)")
+        evolve_frames = args.frames - args.hold_frames
+        if args.hold_frames > 0:
+            print(f"[mode] time-evolving: snaps {args.start_snap}..{args.end_snap} "
+                  f"({n_snaps} snapshots) over {evolve_frames} evolve frames "
+                  f"(~{evolve_frames / n_snaps:.1f} frames per snap), "
+                  f"then hold on snap {args.end_snap} for {args.hold_frames} frames")
+        else:
+            print(f"[mode] time-evolving: snaps {args.start_snap}..{args.end_snap} "
+                  f"({n_snaps} snapshots) over {args.frames} frames "
+                  f"(~{args.frames / n_snaps:.1f} frames per snap)")
     else:
         print(f"[mode] single snapshot: {args.input}")
     if args.n_ranks is not None:

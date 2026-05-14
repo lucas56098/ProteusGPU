@@ -52,7 +52,7 @@ Runtime comparsion of Proteus (GPU/CPU) compared to AREPO for a $100^3$ shock tu
 Note: since Proteus does not support MPI/Multi-node yet, the runtime comparison estimates AREPOs runtime from a single core time to eliminate most of its MPI overhead. Additionally its worth to note that Proteus does not work well on inhomogenous seed distributions yet.
 
 A first run with 4 MPI tasks (still in early development).
-<img src="/docs/figures/kh_mpi4.gif" alt="Image" width="80%">
+<img src="/docs/figures/kh_mpi4.gif" alt="Image" width="80%"> <br>
 Seedpoints are colorcoded according to their rank. 
 
 
