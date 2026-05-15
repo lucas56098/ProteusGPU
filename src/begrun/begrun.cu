@@ -87,6 +87,11 @@ namespace begrun {
             std::string snap_path = out_dir + "snapshot_" + std::to_string(latest_n) + ".hdf5";
             logging::root() << "RESTART: Loading snapshot " << snap_path << std::endl;
 
+#ifdef USE_MPI
+            logging::root() << "RESTART: Not implemented! Cannot yet restart from multi-rank snapshot files." << std::endl;
+	    exit(EXIT_FAILURE);
+#endif
+
             if (!input.readSnapshotFile(snap_path, icData, state.t_sim)) { exit(EXIT_FAILURE); }
             state.snap_num = latest_n + 1;
         } else {

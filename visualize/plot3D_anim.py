@@ -37,15 +37,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 def _rank_path(template, rank):
-    """Insert `.rank_<rank>` before the `.hdf5` extension in `template`."""
+    """Insert `.<rank>` before the `.hdf5` extension in `template`."""
     if template.endswith('.hdf5'):
-        return f"{template[:-5]}.rank_{rank}.hdf5"
-    return f"{template}.rank_{rank}.hdf5"
+        return f"{template[:-5]}.{rank}.hdf5"
+    return f"{template}.{rank}.hdf5"
 
 
 def load_snapshot(path, n_ranks=None):
     """Read one snapshot. With n_ranks set, `path` is treated as a template and
-    sibling `<stem>.rank_<r>.hdf5` files are concatenated (dimension/extent/time
+    sibling `<stem>.<r>.hdf5` files are concatenated (dimension/extent/time
     are taken from rank 0)."""
     files = [path] if n_ranks is None else [_rank_path(path, r) for r in range(n_ranks)]
 
@@ -1385,12 +1385,12 @@ def main():
     p.add_argument('--snap-pattern', default='output/snapshot_{}.hdf5',
                    help='format string for snapshot path; {} is the index. '
                         'With --n-ranks, each formatted path is treated as a '
-                        'single-file template; sibling .rank_<r>.hdf5 files are '
+                        'single-file template; sibling .<r>.hdf5 files are '
                         'derived from it.')
     p.add_argument('-n', '--n-ranks', type=int, default=None,
                    help='Load and concatenate this many per-rank files per '
                         'snapshot (treats --input / --snap-pattern paths as '
-                        'templates; reads <stem>.rank_<r>.hdf5 for r in 0..n-1). '
+                        'templates; reads <stem>.<r>.hdf5 for r in 0..n-1). '
                         'Omit for single-file mode.')
 
     p.add_argument('--frames', type=int, default=480)

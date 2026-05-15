@@ -2,7 +2,7 @@
 """
 Fast 2D Voronoi-like animation using nearest-neighbor rasterization.
 Each frame loads one snapshot_*.hdf5 file (single-rank) or one set of
-snapshot_*.rank_<r>.hdf5 files (multi-rank, with --n-ranks) from an input
+snapshot_*.<r>.hdf5 files (multi-rank, with --n-ranks) from an input
 directory.
 """
 
@@ -77,8 +77,8 @@ def discover_snapshots(input_dir, pattern, n_ranks=None):
         )
 
     # Numeric sort by snapshot index. Matches both `snapshot_32.hdf5` and
-    # `snapshot_32.rank_0.hdf5`-style names.
-    num_re = re.compile(r'.*?(\d+)(?:\.rank_\d+)?\.hdf5$')
+    # `snapshot_32.0.hdf5`-style names.
+    num_re = re.compile(r'.*?(\d+)(?:\.\d+)?\.hdf5$')
 
     def snapshot_key(path):
         m = num_re.match(path.name)
@@ -315,7 +315,7 @@ if __name__ == '__main__':
         type=str,
         default='snapshot_*.hdf5',
         help='Glob pattern for snapshot files (default: snapshot_*.hdf5; '
-             'auto-switched to snapshot_*.rank_0.hdf5 when --n-ranks is set)',
+             'auto-switched to snapshot_*.0.hdf5 when --n-ranks is set)',
     )
     parser.add_argument(
         '-q',
@@ -364,8 +364,8 @@ if __name__ == '__main__':
         default=None,
         help=(
             'Load and concatenate this many per-rank files per frame. '
-            'Frames are enumerated from the matching `*.rank_0.hdf5` files; '
-            'sibling rank files are derived by swapping `rank_0` -> `rank_<r>`. '
+            'Frames are enumerated from the matching `*.0.hdf5` files; '
+            'sibling rank files are derived by swapping `0` -> `<r>`. '
             'Omit for single-file mode.'
         ),
     )

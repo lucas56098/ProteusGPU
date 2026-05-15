@@ -4,7 +4,6 @@ libs/
 output
 output*/
 run*/
-visualize/
 .vscode/
 .claude
 __pycache__/

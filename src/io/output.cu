@@ -71,7 +71,7 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
 
     // file-per-rank snapshots under multi-rank
     std::string output_file = "snapshot_" + std::to_string(snap_num);
-    if (proteus_mpi::nranks() > 1) output_file += ".rank_" + std::to_string(proteus_mpi::rank());
+    if (proteus_mpi::nranks() > 1) output_file += "." + std::to_string(proteus_mpi::rank());
     output_file += ".hdf5";
 
     if (proteus_mpi::nranks() > 1) {

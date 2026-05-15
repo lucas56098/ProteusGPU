@@ -15,10 +15,10 @@ from scipy.spatial import cKDTree
 
 
 def _rank_path(template, rank):
-    """Insert `.rank_<rank>` before the `.hdf5` extension in `template`."""
+    """Insert `.<rank>` before the `.hdf5` extension in `template`."""
     if template.endswith('.hdf5'):
-        return f"{template[:-5]}.rank_{rank}.hdf5"
-    return f"{template}.rank_{rank}.hdf5"
+        return f"{template[:-5]}.{rank}.hdf5"
+    return f"{template}.{rank}.hdf5"
 
 
 def load_snapshot(hdf5_file, n_ranks=None):
@@ -26,7 +26,7 @@ def load_snapshot(hdf5_file, n_ranks=None):
     Load seeds + hydro fields from a single snapshot or a set of per-rank files.
 
     With n_ranks=None, opens `hdf5_file` directly. Otherwise treats it as a
-    template and reads `<stem>.rank_<r>.hdf5` for r in range(n_ranks), then
+    template and reads `<stem>.<r>.hdf5` for r in range(n_ranks), then
     concatenates. dimension/extent are taken from rank 0.
 
     Returns (seeds, rho, vel, energy, dimension, extent, rank_ids), where
@@ -77,7 +77,7 @@ def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=No
     ----------
     hdf5_file : str
         Path to mesh_output HDF5 file. When n_ranks is set, treated as a template:
-        sibling files are derived by inserting `.rank_<r>` before the `.hdf5` extension.
+        sibling files are derived by inserting `.<r>` before the `.hdf5` extension.
     quantity : str
         Hydro quantity to plot: 'rho', 'vel_mag', 'energy', 'pressure'.
     output_file : str or None
@@ -214,7 +214,7 @@ if __name__ == "__main__":
         description='Fast 2D Voronoi-like plot via nearest-neighbor rasterization')
     parser.add_argument('-i', '--input', type=str, default='../output/mesh_output.hdf5',
                         help='Input HDF5 file (default: ../output/mesh_output.hdf5). '
-                             'With -n, treated as a template; reads <stem>.rank_<r>.hdf5.')
+                             'With -n, treated as a template; reads <stem>.<r>.hdf5.')
     parser.add_argument('-o', '--output', type=str, default=None,
                         help='Output image file (if not specified, displays plot)')
     parser.add_argument('-q', '--quantity', type=str, default='rho',
@@ -234,7 +234,7 @@ if __name__ == "__main__":
                         help='Overlay seed points on the image')
     parser.add_argument('-n', '--n-ranks', type=int, default=None,
                         help='Load and concatenate this many per-rank files '
-                             '(treats --input as a template; reads <stem>.rank_<r>.hdf5 '
+                             '(treats --input as a template; reads <stem>.<r>.hdf5 '
                              'for r in 0..n-1). Omit for single-file mode.')
     parser.add_argument('--rank-colors', action='store_true',
                         help='Color the seed overlay by owning rank using a '
