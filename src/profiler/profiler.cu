@@ -7,17 +7,15 @@
 #include <unistd.h>
 
 // CPU wall-clock profiling (chrono-based, works in all modes)
-
 std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> Profiler::m_StartTimes;
 std::unordered_map<std::string, long long>                                      Profiler::m_Timings;
+std::unordered_map<std::string, long long>                                      Profiler::m_TimingsDiff;
 
 // GPU event timing storage
 std::unordered_map<std::string, double> Profiler::m_GpuTimings;
 std::unordered_map<std::string, int>    Profiler::m_GpuCounts;
 
-#if !defined(CPU_DEBUG) && defined(CUDA)
 std::unordered_map<std::string, Profiler::GpuEventPair> Profiler::m_GpuEvents;
-#endif
 
 void Profiler::StartTimer(const std::string& name) {
     NVTX_PUSH(name.c_str());
@@ -25,16 +23,17 @@ void Profiler::StartTimer(const std::string& name) {
 }
 
 void Profiler::EndTimer(const std::string& name) {
-    auto endTime   = std::chrono::high_resolution_clock::now();
-    auto startTime = m_StartTimes[name];
-    m_Timings[name] += std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+    auto endTime        = std::chrono::high_resolution_clock::now();
+    auto startTime      = m_StartTimes[name];
+    m_TimingsDiff[name] = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+    m_Timings[name] += m_TimingsDiff[name];
     NVTX_POP();
 }
 
 // GPU event-based profiling (CUDA mode only)
 
 void Profiler::StartGPU(const std::string& name) {
-#if !defined(CPU_DEBUG) && defined(CUDA)
+#ifdef CUDA_PROFILING
     NVTX_PUSH(name.c_str());
     auto& ev = m_GpuEvents[name];
     if (!ev.start) {
@@ -48,7 +47,7 @@ void Profiler::StartGPU(const std::string& name) {
 }
 
 void Profiler::EndGPU(const std::string& name) {
-#if !defined(CPU_DEBUG) && defined(CUDA)
+#ifdef CUDA_PROFILING
     auto& ev = m_GpuEvents[name];
     cudaEventRecord((cudaEvent_t)ev.stop, 0);
     cudaEventSynchronize((cudaEvent_t)ev.stop);
@@ -110,6 +109,54 @@ void Profiler::PrintResults() {
     out << "=========================\n";
 }
 
+// print combined results (per timestep) — per-rank timings but only rank 0 writes
+void Profiler::PrintTimestep(int step, std::ostream& out) {
+
+    out << "# timestep = " << step << " (CPU timers) (cum time [s], diff time [s]):\n";
+
+    out << std::fixed << std::setprecision(6);
+
+    // get current total time
+    auto      endTime      = std::chrono::high_resolution_clock::now();
+    auto      startTime    = m_StartTimes["TOTAL_RUNTIME"];
+    long long totalRuntime = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+
+    out << step << ", " << std::setw(16) << std::left << "TOTAL_RUNTIME" << ", " << (totalRuntime / 1e6) << ", 0\n";
+
+    // timings per CPU region
+    for (const auto& entry : m_Timings) {
+        double timeCumSec  = entry.second / 1e6;
+        double timeDiffSec = m_TimingsDiff[entry.first] / 1e6;
+        out << step << ", " << std::setw(16) << std::left << entry.first << ", " << timeCumSec << ", " << timeDiffSec
+            << "\n";
+    }
+
+    // GPU kernel timing breakdown
+    if (!m_GpuTimings.empty()) {
+        out << "\n# timestep = " << step << " (GPU kernels) (time [ms], # calls, ms/call, fraction):\n";
+
+        // sort by cumulative time for reading
+        std::vector<std::pair<std::string, double>> sorted(m_GpuTimings.begin(), m_GpuTimings.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+
+        double gpu_total_ms = 0.0;
+        for (const auto& entry : sorted) {
+            gpu_total_ms += entry.second;
+        }
+
+        out << step << std::setw(33) << std::left << ", gpu_total, " << gpu_total_ms << "\n";
+
+        for (const auto& entry : sorted) {
+            int    calls = m_GpuCounts[entry.first];
+            double pct   = (gpu_total_ms > 0.0) ? (entry.second / gpu_total_ms * 100.0) : 0.0;
+            out << step << ", " << std::setw(33) << std::left << entry.first << ", " << entry.second << ", " << calls
+                << ", " << (entry.second / calls) << ", " << pct << "\n";
+        }
+    }
+
+    out << "\n\n";
+}
+
 // peak CPU RSS (high-water mark from the OS) and peak GPU memory we ever held
 void print_max_memory_usage() {
 
@@ -130,11 +177,11 @@ void print_max_memory_usage() {
         const long   pageSize = sysconf(_SC_PAGE_SIZE);
         const double totalRam = (pages > 0 && pageSize > 0) ? (double)pages * (double)pageSize : 0.0;
 
-        constexpr double MiB     = 1024.0 * 1024.0;
-        const double     rssMiB  = rssBytes / MiB;
-        const char*      tag     = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
-        logging::root() << "MAIN: maximum CPU memory used" << tag << ": " << rssMiB << " MiB ("
-                        << totalRam / MiB << " MiB total)" << std::endl;
+        constexpr double MiB    = 1024.0 * 1024.0;
+        const double     rssMiB = rssBytes / MiB;
+        const char*      tag    = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
+        logging::root() << "MAIN: maximum CPU memory used" << tag << ": " << rssMiB << " MiB (" << totalRam / MiB
+                        << " MiB total)" << std::endl;
     } else {
 
         std::cerr << "Error getting resource usage." << std::endl;
@@ -148,7 +195,7 @@ void print_max_memory_usage() {
     constexpr double MiB     = 1024.0 * 1024.0;
     const double     peakMiB = (double)g_gpu_bytes_peak() / MiB;
     const char*      tag     = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
-    logging::root() << "MAIN: maximum GPU memory used" << tag << ": " << peakMiB << " MiB ("
-                    << (double)gpu_total / MiB << " MiB total)" << std::endl;
+    logging::root() << "MAIN: maximum GPU memory used" << tag << ": " << peakMiB << " MiB (" << (double)gpu_total / MiB
+                    << " MiB total)" << std::endl;
 #endif
 }

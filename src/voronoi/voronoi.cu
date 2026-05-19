@@ -32,12 +32,21 @@ namespace voronoi {
     GLOBAL void kernel_init_cell_status(int n, Status* stat);
     GLOBAL void kernel_count_failures(int n, const Status* stat, int* fail_count);
     GLOBAL void kernel_collect_failed_cells(int n, const Status* stat, int* failed_indices, int* failed_count);
-    GLOBAL void kernel_compute_voronoi_cells_fast(
-        int n_hydro, double* d_stored_points, const knn_problem* knn, Status* stat, VMesh* mesh,
-        hsize_t* face_offset, int* overflow_flag);
-    GLOBAL void kernel_compute_voronoi_cells_slow(
-        int n_failed, const int* failed_ks, double* d_stored_points, const knn_problem* knn, Status* stat,
-        VMesh* mesh, hsize_t* face_offset, int* overflow_flag);
+    GLOBAL void kernel_compute_voronoi_cells_fast(int                n_hydro,
+                                                  double*            d_stored_points,
+                                                  const knn_problem* knn,
+                                                  Status*            stat,
+                                                  VMesh*             mesh,
+                                                  hsize_t*           face_offset,
+                                                  int*               overflow_flag);
+    GLOBAL void kernel_compute_voronoi_cells_slow(int                n_failed,
+                                                  const int*         failed_ks,
+                                                  double*            d_stored_points,
+                                                  const knn_problem* knn,
+                                                  Status*            stat,
+                                                  VMesh*             mesh,
+                                                  hsize_t*           face_offset,
+                                                  int*               overflow_flag);
 #endif
 
     // ============================================================
@@ -57,14 +66,14 @@ namespace voronoi {
         const hsize_t max_faces      = n_grow * _FACE_CAPACITY_MULT_;
         const hsize_t ext            = (hsize_t)proteus_mpi::alloc_per_cell_size((int)n_hydro);
 
-        VMesh* mesh           = gpu_alloc<VMesh>(1);
-        mesh->n_seeds         = 0;
-        mesh->n_hydro         = n_hydro;
-        mesh->num_faces       = 0;
-        mesh->face_capacity   = max_faces;
-        mesh->ghost_capacity  = max_ghosts;
-        mesh->total_capacity  = total;
-        mesh->buff            = buff;
+        VMesh* mesh          = gpu_alloc<VMesh>(1);
+        mesh->n_seeds        = 0;
+        mesh->n_hydro        = n_hydro;
+        mesh->num_faces      = 0;
+        mesh->face_capacity  = max_faces;
+        mesh->ghost_capacity = max_ghosts;
+        mesh->total_capacity = total;
+        mesh->buff           = buff;
 
         // per-cell — every n_hydro-indexed array is sized ext so it survives migration
         // growth and the MPI ghost band [n_hydro, n_hydro + n_mpi_ghosts)
@@ -95,7 +104,8 @@ namespace voronoi {
         mesh->cell_to_original = gpu_alloc<unsigned int>(ext);
         mesh->gather_perm      = gpu_alloc<unsigned int>(ext);
         mesh->orig_to_k_save   = gpu_alloc<unsigned int>(ext);
-        for (hsize_t i = 0; i < n_hydro; i++) mesh->cell_to_original[i] = (unsigned int)i;
+        for (hsize_t i = 0; i < n_hydro; i++)
+            mesh->cell_to_original[i] = (unsigned int)i;
 
         // typed scratch pools — ext-sized (see above)
         mesh->scratch_uint   = gpu_alloc<unsigned int>(ext);
@@ -113,18 +123,18 @@ namespace voronoi {
         mesh->knn = knn::init_once((int)n_hydro);
 
         // hint GPU-preferred placement for hot arrays
-        gpu_advise_gpu_preferred(mesh->seeds,            ext * sizeof(double3));
-        gpu_advise_gpu_preferred(mesh->com,              n_hydro * sizeof(double3));
-        gpu_advise_gpu_preferred(mesh->volumes,          n_hydro * sizeof(double));
-        gpu_advise_gpu_preferred(mesh->face_counts,      n_hydro * sizeof(hsize_t));
-        gpu_advise_gpu_preferred(mesh->face_ptr,         n_hydro * sizeof(hsize_t));
-        gpu_advise_gpu_preferred(mesh->cell_status,      n_hydro * sizeof(Status));
-        gpu_advise_gpu_preferred(mesh->neighbor_cell,    max_faces * sizeof(int));
-        gpu_advise_gpu_preferred(mesh->face_area,        max_faces * sizeof(double));
-        gpu_advise_gpu_preferred(mesh->real_sorted_ids,  n_hydro * sizeof(unsigned int));
-        gpu_advise_gpu_preferred(mesh->sid_to_neighbor,  total * sizeof(unsigned int));
+        gpu_advise_gpu_preferred(mesh->seeds, ext * sizeof(double3));
+        gpu_advise_gpu_preferred(mesh->com, n_hydro * sizeof(double3));
+        gpu_advise_gpu_preferred(mesh->volumes, n_hydro * sizeof(double));
+        gpu_advise_gpu_preferred(mesh->face_counts, n_hydro * sizeof(hsize_t));
+        gpu_advise_gpu_preferred(mesh->face_ptr, n_hydro * sizeof(hsize_t));
+        gpu_advise_gpu_preferred(mesh->cell_status, n_hydro * sizeof(Status));
+        gpu_advise_gpu_preferred(mesh->neighbor_cell, max_faces * sizeof(int));
+        gpu_advise_gpu_preferred(mesh->face_area, max_faces * sizeof(double));
+        gpu_advise_gpu_preferred(mesh->real_sorted_ids, n_hydro * sizeof(unsigned int));
+        gpu_advise_gpu_preferred(mesh->sid_to_neighbor, total * sizeof(unsigned int));
         gpu_advise_gpu_preferred(mesh->cell_to_original, n_hydro * sizeof(unsigned int));
-        gpu_advise_gpu_preferred(mesh->gather_perm,      n_hydro * sizeof(unsigned int));
+        gpu_advise_gpu_preferred(mesh->gather_perm, n_hydro * sizeof(unsigned int));
 
         return mesh;
     }
@@ -165,8 +175,7 @@ namespace voronoi {
     // ============================================================
 
 #ifndef CPU_DEBUG
-    template <typename T>
-    GLOBAL void kernel_gather(hsize_t n, const T* in, const unsigned int* perm, T* out) {
+    template <typename T> GLOBAL void kernel_gather(hsize_t n, const T* in, const unsigned int* perm, T* out) {
         hsize_t k = (hsize_t)blockIdx.x * blockDim.x + threadIdx.x;
         if (k < n) out[k] = in[perm[k]];
     }
@@ -182,10 +191,10 @@ namespace voronoi {
         if (sid >= n_total) return;
         const unsigned int orig = d_permutation[sid];
         if ((hsize_t)orig < n_hydro) {
-            const int k             = atomicAdd(counter, 1);
-            real_sorted_ids[k]      = (unsigned int)sid;
-            sid_to_neighbor[sid]    = (unsigned int)k;
-            orig_to_k[orig]         = (unsigned int)k;
+            const int k          = atomicAdd(counter, 1);
+            real_sorted_ids[k]   = (unsigned int)sid;
+            sid_to_neighbor[sid] = (unsigned int)k;
+            orig_to_k[orig]      = (unsigned int)k;
         }
     }
 
@@ -205,7 +214,7 @@ namespace voronoi {
             const unsigned int k = orig_to_k_save[orig];
             real_sorted_ids[k]   = (unsigned int)sid;
             sid_to_neighbor[sid] = k;
-            orig_to_k[orig]      = k;  // populate scratch_uint for pass2 (periodic-ghost branch)
+            orig_to_k[orig]      = k; // populate scratch_uint for pass2 (periodic-ghost branch)
         }
     }
 
@@ -261,12 +270,8 @@ namespace voronoi {
             GPU_LAUNCH_CHECK();
         }
 
-        kernel_build_index_pass2_remap_ghosts<<<blocks, tpb>>>(n_total,
-                                                               n_hydro,
-                                                               mesh->knn->d_permutation,
-                                                               mesh->ghost_ids,
-                                                               mesh->scratch_uint,
-                                                               mesh->sid_to_neighbor);
+        kernel_build_index_pass2_remap_ghosts<<<blocks, tpb>>>(
+            n_total, n_hydro, mesh->knn->d_permutation, mesh->ghost_ids, mesh->scratch_uint, mesh->sid_to_neighbor);
         GPU_LAUNCH_CHECK();
         GPU_SYNC();
 
@@ -323,10 +328,8 @@ namespace voronoi {
 #ifndef CPU_DEBUG
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = (int)((n + tpb - 1) / tpb);
-        kernel_gather<unsigned int><<<blocks, tpb>>>(n,
-                                                     mesh->knn->d_permutation,
-                                                     mesh->real_sorted_ids,
-                                                     mesh->gather_perm);
+        kernel_gather<unsigned int>
+            <<<blocks, tpb>>>(n, mesh->knn->d_permutation, mesh->real_sorted_ids, mesh->gather_perm);
         GPU_LAUNCH_CHECK();
 #else
         for (hsize_t k = 0; k < n; k++) {
@@ -339,20 +342,19 @@ namespace voronoi {
     // Default-stream serialization handles ordering between back-to-back calls.
     // The permutation only touches [0, n); the MPI-ghost-slot region [n, ext) is copied
     // verbatim from live to scratch so it survives the pointer swap.
-    template <typename T>
-    static void permute_inplace(T*& live, T*& scratch, hsize_t n, const unsigned int* perm) {
+    template <typename T> static void permute_inplace(T*& live, T*& scratch, hsize_t n, const unsigned int* perm) {
         const hsize_t ext = (hsize_t)proteus_mpi::extended_size((int)n);
 #ifndef CPU_DEBUG
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = (int)((n + tpb - 1) / tpb);
         kernel_gather<T><<<blocks, tpb>>>(n, live, perm, scratch);
         GPU_LAUNCH_CHECK();
-        if (ext > n) {
-            gpu_memcpy(scratch + n, live + n, (ext - n) * sizeof(T));
-        }
+        if (ext > n) { gpu_memcpy(scratch + n, live + n, (ext - n) * sizeof(T)); }
 #else
-        for (hsize_t k = 0; k < n; k++) scratch[k] = live[perm[k]];
-        for (hsize_t k = n; k < ext; k++) scratch[k] = live[k];
+        for (hsize_t k = 0; k < n; k++)
+            scratch[k] = live[perm[k]];
+        for (hsize_t k = n; k < ext; k++)
+            scratch[k] = live[k];
 #endif
         std::swap(live, scratch);
     }
@@ -365,16 +367,16 @@ namespace voronoi {
 
         if (primvar) {
             permute_inplace(primvar->rho, mesh->scratch_double, n, perm);
-            permute_inplace(primvar->v,   mesh->scratch_point,  n, perm);
-            permute_inplace(primvar->E,   mesh->scratch_double, n, perm);
+            permute_inplace(primvar->v, mesh->scratch_point, n, perm);
+            permute_inplace(primvar->E, mesh->scratch_double, n, perm);
         }
         if (primvar_aux) {
             permute_inplace(primvar_aux->rho, mesh->scratch_double, n, perm);
-            permute_inplace(primvar_aux->v,   mesh->scratch_point,  n, perm);
-            permute_inplace(primvar_aux->E,   mesh->scratch_double, n, perm);
+            permute_inplace(primvar_aux->v, mesh->scratch_point, n, perm);
+            permute_inplace(primvar_aux->E, mesh->scratch_double, n, perm);
         }
 #ifdef MOVING_MESH
-        permute_inplace(mesh->v_mesh,      mesh->scratch_point,  n, perm);
+        permute_inplace(mesh->v_mesh, mesh->scratch_point, n, perm);
         permute_inplace(mesh->old_volumes, mesh->scratch_double, n, perm);
 #endif
 
@@ -394,9 +396,9 @@ namespace voronoi {
                       hydro::primvars* primvar_aux,
                       int              iter) {
 
-        PROFILE_START("KNN (par)");
+        Profiler::StartTimer("KNN (par)");
         knn::prepare(mesh->knn, (const POINT_TYPE*)pts_data, n_total);
-        PROFILE_END("KNN (par)");
+        Profiler::EndTimer("KNN (par)");
 
         if ((hsize_t)n_total > mesh->total_capacity) {
             std::cerr << "VORONOI: Error! point count " << n_total << " exceeds pre-allocated capacity "
@@ -407,7 +409,7 @@ namespace voronoi {
         mesh->n_seeds   = (hsize_t)n_total;
         mesh->num_faces = 0;
 
-        PROFILE_START("PERMUTE (par)");
+        Profiler::StartTimer("PERMUTE (par)");
         build_index_maps(mesh, iter);
         if (iter == 0) {
             // snapshot pass1's orig_to_k so iter > 0 can reproduce the same k assignment
@@ -419,13 +421,13 @@ namespace voronoi {
         }
         // iter > 0: primvar already in iter-0-k order; build_index_maps used the saved
         // mapping, so sid_to_neighbor is consistent without a second permute
-        PROFILE_END("PERMUTE (par)");
+        Profiler::EndTimer("PERMUTE (par)");
 
-        PROFILE_START("VORONOI (par)");
+        Profiler::StartTimer("VORONOI (par)");
 
         const hsize_t n_hydro = mesh->n_hydro;
         gpu_memset(mesh->face_counts, 0, n_hydro * sizeof(hsize_t));
-        gpu_memset(mesh->face_ptr,    0, n_hydro * sizeof(hsize_t));
+        gpu_memset(mesh->face_ptr, 0, n_hydro * sizeof(hsize_t));
 
 #ifndef CPU_DEBUG
         const int tpb    = _MESH_BLOCK_SIZE_;
@@ -433,12 +435,13 @@ namespace voronoi {
         kernel_init_cell_status<<<blocks, tpb>>>((int)n_hydro, mesh->cell_status);
         GPU_LAUNCH_CHECK();
 #else
-        for (hsize_t i = 0; i < n_hydro; i++) mesh->cell_status[i] = security_radius_not_reached;
+        for (hsize_t i = 0; i < n_hydro; i++)
+            mesh->cell_status[i] = security_radius_not_reached;
 #endif
 
         compute_cells(mesh);
 
-        PROFILE_END("VORONOI (par)");
+        Profiler::EndTimer("VORONOI (par)");
     }
 
     // ============================================================
@@ -471,11 +474,11 @@ namespace voronoi {
             d_failed_indices          = gpu_alloc<int>(n_hydro);
             d_failed_indices_capacity = n_hydro;
         }
-        gpu_memset(d_face_offset,   0, sizeof(hsize_t));
+        gpu_memset(d_face_offset, 0, sizeof(hsize_t));
         gpu_memset(d_overflow_flag, 0, sizeof(int));
-        gpu_memset(d_failed_count,  0, sizeof(int));
+        gpu_memset(d_failed_count, 0, sizeof(int));
 
-        PROFILE_GPU_START("kernel_compute_voronoi_cells_fast");
+        Profiler::StartGPU("kernel_compute_voronoi_cells_fast");
         kernel_compute_voronoi_cells_fast<<<blocks, tpb>>>(n_hydro,
                                                            (double*)mesh->knn->d_stored_points,
                                                            mesh->knn,
@@ -483,19 +486,19 @@ namespace voronoi {
                                                            mesh,
                                                            d_face_offset,
                                                            d_overflow_flag);
-        PROFILE_GPU_END("kernel_compute_voronoi_cells_fast");
+        Profiler::EndGPU("kernel_compute_voronoi_cells_fast");
 
         {
             const int collect_tpb    = _MESH_BLOCK_SIZE_;
             const int collect_blocks = (n_hydro + collect_tpb - 1) / collect_tpb;
-            PROFILE_GPU_START("kernel_collect_failed_cells");
-            kernel_collect_failed_cells<<<collect_blocks, collect_tpb>>>(n_hydro, mesh->cell_status,
-                                                                         d_failed_indices, d_failed_count);
-            PROFILE_GPU_END("kernel_collect_failed_cells");
+            Profiler::StartGPU("kernel_collect_failed_cells");
+            kernel_collect_failed_cells<<<collect_blocks, collect_tpb>>>(
+                n_hydro, mesh->cell_status, d_failed_indices, d_failed_count);
+            Profiler::EndGPU("kernel_collect_failed_cells");
         }
 
         GPU_SYNC();
-        const int n_failed = *d_failed_count;
+        const int n_failed        = *d_failed_count;
         const int n_hydro_global  = logging::sum_global((int)n_hydro);
         const int n_failed_global = logging::sum_global(n_failed);
         logging::root() << "VORONOI: Generated " << n_hydro_global << " cells. ("
@@ -503,7 +506,7 @@ namespace voronoi {
 
         if (n_failed > 0) {
             const int slow_blocks = (n_failed + tpb - 1) / tpb;
-            PROFILE_GPU_START("kernel_compute_voronoi_cells_slow");
+            Profiler::StartGPU("kernel_compute_voronoi_cells_slow");
             kernel_compute_voronoi_cells_slow<<<slow_blocks, tpb>>>(n_failed,
                                                                     d_failed_indices,
                                                                     (double*)mesh->knn->d_stored_points,
@@ -512,7 +515,7 @@ namespace voronoi {
                                                                     mesh,
                                                                     d_face_offset,
                                                                     d_overflow_flag);
-            PROFILE_GPU_END("kernel_compute_voronoi_cells_slow");
+            Profiler::EndGPU("kernel_compute_voronoi_cells_slow");
         }
 
         GPU_SYNC();
@@ -532,9 +535,14 @@ namespace voronoi {
         for (int k = 0; k < n_hydro; k++) {
             if (overflow_flag) continue;
             const int seed_id = (int)mesh->real_sorted_ids[k];
-            compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_>(
-                k, seed_id, (double*)mesh->knn->d_stored_points, mesh->knn, mesh->cell_status, mesh,
-                &face_offset, &overflow_flag);
+            compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_>(k,
+                                                                              seed_id,
+                                                                              (double*)mesh->knn->d_stored_points,
+                                                                              mesh->knn,
+                                                                              mesh->cell_status,
+                                                                              mesh,
+                                                                              &face_offset,
+                                                                              &overflow_flag);
         }
 
         int n_failed = 0;
@@ -553,9 +561,14 @@ namespace voronoi {
                 if (overflow_flag) continue;
                 if (mesh->cell_status[k] == success) continue;
                 const int seed_id = (int)mesh->real_sorted_ids[k];
-                compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_>(
-                    k, seed_id, (double*)mesh->knn->d_stored_points, mesh->knn, mesh->cell_status, mesh,
-                    &face_offset, &overflow_flag);
+                compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_>(k,
+                                                                   seed_id,
+                                                                   (double*)mesh->knn->d_stored_points,
+                                                                   mesh->knn,
+                                                                   mesh->cell_status,
+                                                                   mesh,
+                                                                   &face_offset,
+                                                                   &overflow_flag);
             }
         }
 
@@ -594,14 +607,13 @@ namespace voronoi {
         }
     }
 
-    GLOBAL __launch_bounds__(_VORO_BLOCK_SIZE_, 16)
-        void kernel_compute_voronoi_cells_fast(int                n_hydro,
-                                               double*            d_stored_points,
-                                               const knn_problem* knn,
-                                               Status*            stat,
-                                               VMesh*             mesh,
-                                               hsize_t*           face_offset,
-                                               int*               overflow_flag) {
+    GLOBAL __launch_bounds__(_VORO_BLOCK_SIZE_, 16) void kernel_compute_voronoi_cells_fast(int     n_hydro,
+                                                                                           double* d_stored_points,
+                                                                                           const knn_problem* knn,
+                                                                                           Status*            stat,
+                                                                                           VMesh*             mesh,
+                                                                                           hsize_t* face_offset,
+                                                                                           int*     overflow_flag) {
         const int k = blockIdx.x * blockDim.x + threadIdx.x;
         if (k >= n_hydro) return;
         const int seed_id = (int)mesh->real_sorted_ids[k];
@@ -609,15 +621,14 @@ namespace voronoi {
             k, seed_id, d_stored_points, knn, stat, mesh, (unsigned long long*)face_offset, overflow_flag);
     }
 
-    GLOBAL __launch_bounds__(_VORO_BLOCK_SIZE_, 8)
-        void kernel_compute_voronoi_cells_slow(int                n_failed,
-                                               const int*         failed_ks,
-                                               double*            d_stored_points,
-                                               const knn_problem* knn,
-                                               Status*            stat,
-                                               VMesh*             mesh,
-                                               hsize_t*           face_offset,
-                                               int*               overflow_flag) {
+    GLOBAL __launch_bounds__(_VORO_BLOCK_SIZE_, 8) void kernel_compute_voronoi_cells_slow(int        n_failed,
+                                                                                          const int* failed_ks,
+                                                                                          double*    d_stored_points,
+                                                                                          const knn_problem* knn,
+                                                                                          Status*            stat,
+                                                                                          VMesh*             mesh,
+                                                                                          hsize_t* face_offset,
+                                                                                          int*     overflow_flag) {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= n_failed) return;
         const int k       = failed_ks[i];
@@ -678,270 +689,264 @@ namespace voronoi {
     // ============================================================
     // CPU fallback for cells that failed both GPU tiers
     // ============================================================
-    
-    // permanently perturbed seed breaks symmetry -> so we have to rebuilt 
+
+    // permanently perturbed seed breaks symmetry -> so we have to rebuilt
     // not only the cell but also its neighbours. If two neighbours perturb -> cascade
 
     namespace {
 
-    enum class FallbackOutcome { ok_unchanged, ok_perturbed, failed };
+        enum class FallbackOutcome { ok_unchanged, ok_perturbed, failed };
 
-    struct CellSids {
-        std::vector<int> offsets; // size n_hydro + 1
-        std::vector<int> flat;    // size offsets.back()
+        struct CellSids {
+            std::vector<int> offsets; // size n_hydro + 1
+            std::vector<int> flat;    // size offsets.back()
 
-        int        size_for(int k)  const { return offsets[k + 1] - offsets[k]; }
-        const int* begin_for(int k) const { return flat.data() + offsets[k]; }
-    };
+            int        size_for(int k) const { return offsets[k + 1] - offsets[k]; }
+            const int* begin_for(int k) const { return flat.data() + offsets[k]; }
+        };
 
-    CellSids build_cell_sids(const VMesh* mesh) {
-        const int n_hydro = (int)mesh->n_hydro;
-        const int n_seeds = (int)mesh->n_seeds;
-        CellSids  cs;
-        cs.offsets.assign(n_hydro + 1, 0);
-        for (int sid = 0; sid < n_seeds; sid++) {
-            const unsigned int k = mesh->sid_to_neighbor[sid];
-            if ((int)k < n_hydro) cs.offsets[k + 1]++;
+        CellSids build_cell_sids(const VMesh* mesh) {
+            const int n_hydro = (int)mesh->n_hydro;
+            const int n_seeds = (int)mesh->n_seeds;
+            CellSids  cs;
+            cs.offsets.assign(n_hydro + 1, 0);
+            for (int sid = 0; sid < n_seeds; sid++) {
+                const unsigned int k = mesh->sid_to_neighbor[sid];
+                if ((int)k < n_hydro) cs.offsets[k + 1]++;
+            }
+            for (int k = 0; k < n_hydro; k++)
+                cs.offsets[k + 1] += cs.offsets[k];
+            cs.flat.resize(cs.offsets[n_hydro]);
+            std::vector<int> cursor(n_hydro, 0);
+            for (int sid = 0; sid < n_seeds; sid++) {
+                const unsigned int k = mesh->sid_to_neighbor[sid];
+                if ((int)k < n_hydro) cs.flat[cs.offsets[k] + cursor[k]++] = sid;
+            }
+            return cs;
         }
-        for (int k = 0; k < n_hydro; k++) cs.offsets[k + 1] += cs.offsets[k];
-        cs.flat.resize(cs.offsets[n_hydro]);
-        std::vector<int> cursor(n_hydro, 0);
-        for (int sid = 0; sid < n_seeds; sid++) {
-            const unsigned int k = mesh->sid_to_neighbor[sid];
-            if ((int)k < n_hydro) cs.flat[cs.offsets[k] + cursor[k]++] = sid;
-        }
-        return cs;
-    }
 
-    void apply_perturbation(double*        d_stored_points,
-                            int            seed_id,
-                            int            attempt,
-                            double         scale,
-                            const int*     sids,
-                            size_t         n_sids,
-                            const double4* orig_positions) {
-        unsigned int hash = (unsigned int)(seed_id * 2654435761u + attempt * 40503u);
-        hash              = hash * 1103515245u + 12345u;
-        const double dx   = ((double)(hash & 0xFFFF) / 32768.0 - 1.0) * scale;
-        hash              = hash * 1103515245u + 12345u;
-        const double dy   = ((double)(hash & 0xFFFF) / 32768.0 - 1.0) * scale;
+        void apply_perturbation(double*        d_stored_points,
+                                int            seed_id,
+                                int            attempt,
+                                double         scale,
+                                const int*     sids,
+                                size_t         n_sids,
+                                const double4* orig_positions) {
+            unsigned int hash = (unsigned int)(seed_id * 2654435761u + attempt * 40503u);
+            hash              = hash * 1103515245u + 12345u;
+            const double dx   = ((double)(hash & 0xFFFF) / 32768.0 - 1.0) * scale;
+            hash              = hash * 1103515245u + 12345u;
+            const double dy   = ((double)(hash & 0xFFFF) / 32768.0 - 1.0) * scale;
 #ifdef dim_3D
-        hash              = hash * 1103515245u + 12345u;
-        const double dz   = ((double)(hash & 0xFFFF) / 32768.0 - 1.0) * scale;
+            hash            = hash * 1103515245u + 12345u;
+            const double dz = ((double)(hash & 0xFFFF) / 32768.0 - 1.0) * scale;
 #endif
-        for (size_t i = 0; i < n_sids; i++) {
-            const int sid                          = sids[i];
-            d_stored_points[DIMENSION * sid + 0]   = orig_positions[i].x + dx;
-            d_stored_points[DIMENSION * sid + 1]   = orig_positions[i].y + dy;
+            for (size_t i = 0; i < n_sids; i++) {
+                const int sid                        = sids[i];
+                d_stored_points[DIMENSION * sid + 0] = orig_positions[i].x + dx;
+                d_stored_points[DIMENSION * sid + 1] = orig_positions[i].y + dy;
 #ifdef dim_3D
-            d_stored_points[DIMENSION * sid + 2]   = orig_positions[i].z + dz;
+                d_stored_points[DIMENSION * sid + 2] = orig_positions[i].z + dz;
 #endif
+            }
         }
-    }
 
-    void rewind_perturbation(double*        d_stored_points,
-                             const int*     sids,
-                             size_t         n_sids,
-                             const double4* orig_positions) {
-        for (size_t i = 0; i < n_sids; i++) {
-            const int sid                        = sids[i];
-            d_stored_points[DIMENSION * sid + 0] = orig_positions[i].x;
-            d_stored_points[DIMENSION * sid + 1] = orig_positions[i].y;
+        void
+        rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4* orig_positions) {
+            for (size_t i = 0; i < n_sids; i++) {
+                const int sid                        = sids[i];
+                d_stored_points[DIMENSION * sid + 0] = orig_positions[i].x;
+                d_stored_points[DIMENSION * sid + 1] = orig_positions[i].y;
 #ifdef dim_3D
-            d_stored_points[DIMENSION * sid + 2] = orig_positions[i].z;
+                d_stored_points[DIMENSION * sid + 2] = orig_positions[i].z;
 #endif
-        }
-    }
-
-    void append_cell_to_mesh(VMesh* mesh, int k, const ConvexCell& cell) {
-        const int fc = count_cell_faces(cell);
-        ensure_face_capacity(mesh, mesh->num_faces + fc);
-        mesh->face_ptr[k]    = mesh->num_faces;
-        mesh->face_counts[k] = (hsize_t)fc;
-        extract_cell_all(cell, mesh, (hsize_t)k);
-        mesh->num_faces += (hsize_t)fc;
-    }
-
-    FallbackOutcome rebuild_cell_with_perturb_retry(VMesh*          mesh,
-                                                    int             k,
-                                                    double*         d_stored_points,
-                                                    const CellSids& cell_sids) {
-        const int     seed_id  = (int)mesh->real_sorted_ids[k];
-        const double4 seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
-        const int*    sids     = cell_sids.begin_for(k);
-        const size_t  n_sids   = (size_t)cell_sids.size_for(k);
-
-        std::vector<double4> orig_positions(n_sids);
-        for (size_t i = 0; i < n_sids; i++)
-            orig_positions[i] = point_from_ptr(d_stored_points + DIMENSION * sids[i]);
-
-        // exhaustive distance-sorted clip list
-        const int                           n_seeds = (int)mesh->n_seeds;
-        std::vector<std::pair<double, int>> dists;
-        dists.reserve(n_seeds - 1);
-        for (int j = 0; j < n_seeds; j++) {
-            if (j == seed_id) continue;
-            const double4 other = point_from_ptr(d_stored_points + DIMENSION * j);
-            const double  dx    = other.x - seed_pos.x;
-            const double  dy    = other.y - seed_pos.y;
-            const double  dz    = other.z - seed_pos.z;
-            dists.push_back({dx * dx + dy * dy + dz * dz, j});
-        }
-        std::sort(dists.begin(), dists.end());
-
-        constexpr int max_perturb = 9;
-        double        scale       = 1e-13;
-
-        for (int attempt = 0; attempt <= max_perturb; attempt++) {
-            if (attempt > 0)
-                apply_perturbation(d_stored_points, seed_id, attempt, scale,
-                                   sids, n_sids, orig_positions.data());
-
-            Status     status = success;
-            ConvexCell cell(seed_id, d_stored_points, &status, mesh->buff);
-            for (size_t di = 0; di < dists.size(); di++) {
-                const int j = dists[di].second;
-                cell.clip_by_plane(j);
-                if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * j))) break;
-                if (status != success) break;
-            }
-
-            if (status == success) {
-                append_cell_to_mesh(mesh, k, cell);
-                mesh->cell_status[k] = success;
-                std::cout << "VORONOI: cell " << k << " fallback succeeded (attempt " << attempt << ")."
-                          << std::endl;
-                return (attempt == 0) ? FallbackOutcome::ok_unchanged : FallbackOutcome::ok_perturbed;
-            }
-
-            if (attempt > 0)
-                rewind_perturbation(d_stored_points, sids, n_sids, orig_positions.data());
-            scale *= 10.0;
-        }
-        return FallbackOutcome::failed;
-    }
-
-    std::vector<int> collect_unique_neighbors(const VMesh* mesh, const std::vector<int>& sources) {
-        const int         n_hydro = (int)mesh->n_hydro;
-        std::vector<bool> seen(n_hydro, false);
-        std::vector<int>  result;
-        for (int k : sources) {
-            const hsize_t fp = mesh->face_ptr[k];
-            const hsize_t fc = mesh->face_counts[k];
-            for (hsize_t f = 0; f < fc; f++) {
-                const int kn = mesh->neighbor_cell[fp + f];
-                if (kn < 0 || kn >= n_hydro) continue; // box-boundary plane
-                if (seen[kn]) continue;
-                seen[kn] = true;
-                result.push_back(kn);
             }
         }
-        return result;
-    }
 
-    // initial_perturbed cells stay eligible for round-1 rebuild: if K_a, K_b both perturb
-    // AND are mutual neighbours, K_a was built against K_b_original and needs the rebuild.
-    void run_symmetry_pass(VMesh*                  mesh,
-                           double*                 d_stored_points,
-                           const CellSids&         cell_sids,
-                           const std::vector<int>& initial_perturbed) {
-        constexpr int MAX_ROUNDS = 4;
+        void append_cell_to_mesh(VMesh* mesh, int k, const ConvexCell& cell) {
+            const int fc = count_cell_faces(cell);
+            ensure_face_capacity(mesh, mesh->num_faces + fc);
+            mesh->face_ptr[k]    = mesh->num_faces;
+            mesh->face_counts[k] = (hsize_t)fc;
+            extract_cell_all(cell, mesh, (hsize_t)k);
+            mesh->num_faces += (hsize_t)fc;
+        }
 
-        std::vector<int>   work        = initial_perturbed;
-        int                rebuilt     = 0;
-        int                rounds      = 0;
-        unsigned long long face_offset = (unsigned long long)mesh->num_faces;
-        int                overflow    = 0;
+        FallbackOutcome
+        rebuild_cell_with_perturb_retry(VMesh* mesh, int k, double* d_stored_points, const CellSids& cell_sids) {
+            const int     seed_id  = (int)mesh->real_sorted_ids[k];
+            const double4 seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
+            const int*    sids     = cell_sids.begin_for(k);
+            const size_t  n_sids   = (size_t)cell_sids.size_for(k);
 
-        while (!work.empty()) {
-            if (++rounds > MAX_ROUNDS) {
-                std::cerr << "VORONOI: symmetry cascade did not converge after " << MAX_ROUNDS
-                          << " rounds, aborting." << std::endl;
-                exit(EXIT_FAILURE);
+            std::vector<double4> orig_positions(n_sids);
+            for (size_t i = 0; i < n_sids; i++)
+                orig_positions[i] = point_from_ptr(d_stored_points + DIMENSION * sids[i]);
+
+            // exhaustive distance-sorted clip list
+            const int                           n_seeds = (int)mesh->n_seeds;
+            std::vector<std::pair<double, int>> dists;
+            dists.reserve(n_seeds - 1);
+            for (int j = 0; j < n_seeds; j++) {
+                if (j == seed_id) continue;
+                const double4 other = point_from_ptr(d_stored_points + DIMENSION * j);
+                const double  dx    = other.x - seed_pos.x;
+                const double  dy    = other.y - seed_pos.y;
+                const double  dz    = other.z - seed_pos.z;
+                dists.push_back({dx * dx + dy * dy + dz * dz, j});
             }
+            std::sort(dists.begin(), dists.end());
 
-            std::vector<int> affected = collect_unique_neighbors(mesh, work);
-            if (affected.empty()) break;
+            constexpr int max_perturb = 9;
+            double        scale       = 1e-13;
 
-            std::vector<int> next_work;
-            for (int kn : affected) {
-                mesh->cell_status[kn] = security_radius_not_reached;
-                const int seed_id     = (int)mesh->real_sorted_ids[kn];
-                compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_>(
-                    kn, seed_id, d_stored_points, mesh->knn,
-                    mesh->cell_status, mesh, &face_offset, &overflow);
-                if (overflow) {
-                    std::cerr << "VORONOI: face overflow during symmetry rebuild — "
-                                 "increase _FACE_CAPACITY_MULT_ in Config.sh." << std::endl;
+            for (int attempt = 0; attempt <= max_perturb; attempt++) {
+                if (attempt > 0)
+                    apply_perturbation(d_stored_points, seed_id, attempt, scale, sids, n_sids, orig_positions.data());
+
+                Status     status = success;
+                ConvexCell cell(seed_id, d_stored_points, &status, mesh->buff);
+                for (size_t di = 0; di < dists.size(); di++) {
+                    const int j = dists[di].second;
+                    cell.clip_by_plane(j);
+                    if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * j))) break;
+                    if (status != success) break;
+                }
+
+                if (status == success) {
+                    append_cell_to_mesh(mesh, k, cell);
+                    mesh->cell_status[k] = success;
+                    std::cout << "VORONOI: cell " << k << " fallback succeeded (attempt " << attempt << ")."
+                              << std::endl;
+                    return (attempt == 0) ? FallbackOutcome::ok_unchanged : FallbackOutcome::ok_perturbed;
+                }
+
+                if (attempt > 0) rewind_perturbation(d_stored_points, sids, n_sids, orig_positions.data());
+                scale *= 10.0;
+            }
+            return FallbackOutcome::failed;
+        }
+
+        std::vector<int> collect_unique_neighbors(const VMesh* mesh, const std::vector<int>& sources) {
+            const int         n_hydro = (int)mesh->n_hydro;
+            std::vector<bool> seen(n_hydro, false);
+            std::vector<int>  result;
+            for (int k : sources) {
+                const hsize_t fp = mesh->face_ptr[k];
+                const hsize_t fc = mesh->face_counts[k];
+                for (hsize_t f = 0; f < fc; f++) {
+                    const int kn = mesh->neighbor_cell[fp + f];
+                    if (kn < 0 || kn >= n_hydro) continue; // box-boundary plane
+                    if (seen[kn]) continue;
+                    seen[kn] = true;
+                    result.push_back(kn);
+                }
+            }
+            return result;
+        }
+
+        // initial_perturbed cells stay eligible for round-1 rebuild: if K_a, K_b both perturb
+        // AND are mutual neighbours, K_a was built against K_b_original and needs the rebuild.
+        void run_symmetry_pass(VMesh*                  mesh,
+                               double*                 d_stored_points,
+                               const CellSids&         cell_sids,
+                               const std::vector<int>& initial_perturbed) {
+            constexpr int MAX_ROUNDS = 4;
+
+            std::vector<int>   work        = initial_perturbed;
+            int                rebuilt     = 0;
+            int                rounds      = 0;
+            unsigned long long face_offset = (unsigned long long)mesh->num_faces;
+            int                overflow    = 0;
+
+            while (!work.empty()) {
+                if (++rounds > MAX_ROUNDS) {
+                    std::cerr << "VORONOI: symmetry cascade did not converge after " << MAX_ROUNDS
+                              << " rounds, aborting." << std::endl;
                     exit(EXIT_FAILURE);
                 }
 
-                if (mesh->cell_status[kn] != success) {
-                    // KNN-based slow tier hit a degeneracy; fall through to perturb path.
-                    // Sync mesh->num_faces with face_offset because the helper appends via num_faces.
-                    mesh->num_faces       = (hsize_t)face_offset;
-                    FallbackOutcome outcome = rebuild_cell_with_perturb_retry(
-                        mesh, kn, d_stored_points, cell_sids);
-                    if (outcome == FallbackOutcome::failed) {
-                        std::cerr << "VORONOI: symmetry rebuild for cell " << kn
-                                  << " all fallback attempts FAILED." << std::endl;
-#ifdef USE_MPI
-                        MPI_Abort(MPI_COMM_WORLD, 1);
-#else
+                std::vector<int> affected = collect_unique_neighbors(mesh, work);
+                if (affected.empty()) break;
+
+                std::vector<int> next_work;
+                for (int kn : affected) {
+                    mesh->cell_status[kn] = security_radius_not_reached;
+                    const int seed_id     = (int)mesh->real_sorted_ids[kn];
+                    compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_>(
+                        kn, seed_id, d_stored_points, mesh->knn, mesh->cell_status, mesh, &face_offset, &overflow);
+                    if (overflow) {
+                        std::cerr << "VORONOI: face overflow during symmetry rebuild — "
+                                     "increase _FACE_CAPACITY_MULT_ in Config.sh."
+                                  << std::endl;
                         exit(EXIT_FAILURE);
-#endif
                     }
-                    face_offset = (unsigned long long)mesh->num_faces;
-                    if (outcome == FallbackOutcome::ok_perturbed) next_work.push_back(kn);
+
+                    if (mesh->cell_status[kn] != success) {
+                        // KNN-based slow tier hit a degeneracy; fall through to perturb path.
+                        // Sync mesh->num_faces with face_offset because the helper appends via num_faces.
+                        mesh->num_faces         = (hsize_t)face_offset;
+                        FallbackOutcome outcome = rebuild_cell_with_perturb_retry(mesh, kn, d_stored_points, cell_sids);
+                        if (outcome == FallbackOutcome::failed) {
+                            std::cerr << "VORONOI: symmetry rebuild for cell " << kn << " all fallback attempts FAILED."
+                                      << std::endl;
+#ifdef USE_MPI
+                            MPI_Abort(MPI_COMM_WORLD, 1);
+#else
+                            exit(EXIT_FAILURE);
+#endif
+                        }
+                        face_offset = (unsigned long long)mesh->num_faces;
+                        if (outcome == FallbackOutcome::ok_perturbed) next_work.push_back(kn);
+                    }
+                    rebuilt++;
                 }
-                rebuilt++;
+                work = std::move(next_work);
             }
-            work = std::move(next_work);
+            mesh->num_faces = (hsize_t)face_offset;
+
+            std::cout << "VORONOI: " << initial_perturbed.size() << " cell(s) permanently perturbed; " << rebuilt
+                      << " neighbour rebuild(s) over " << rounds << " round(s)." << std::endl;
         }
-        mesh->num_faces = (hsize_t)face_offset;
 
-        std::cout << "VORONOI: " << initial_perturbed.size() << " cell(s) permanently perturbed; "
-                  << rebuilt << " neighbour rebuild(s) over " << rounds << " round(s)." << std::endl;
-    }
+        void compact_face_arrays(VMesh* mesh) {
+            const hsize_t cap     = mesh->num_faces;
+            const int     n_hydro = (int)mesh->n_hydro;
 
-    void compact_face_arrays(VMesh* mesh) {
-        const hsize_t cap     = mesh->num_faces;
-        const int     n_hydro = (int)mesh->n_hydro;
-
-        std::vector<int>    neighbor_tmp(cap);
-        std::vector<double> area_tmp(cap);
+            std::vector<int>    neighbor_tmp(cap);
+            std::vector<double> area_tmp(cap);
 #ifdef MOVING_MESH
-        std::vector<double> fmid_tmp(cap * (DIMENSION - 1));
+            std::vector<double> fmid_tmp(cap * (DIMENSION - 1));
 #endif
 
-        hsize_t out = 0;
-        for (int k = 0; k < n_hydro; k++) {
-            const hsize_t fp = mesh->face_ptr[k];
-            const hsize_t fc = mesh->face_counts[k];
-            for (hsize_t i = 0; i < fc; i++) {
-                neighbor_tmp[out + i] = mesh->neighbor_cell[fp + i];
-                area_tmp[out + i]     = mesh->face_area[fp + i];
+            hsize_t out = 0;
+            for (int k = 0; k < n_hydro; k++) {
+                const hsize_t fp = mesh->face_ptr[k];
+                const hsize_t fc = mesh->face_counts[k];
+                for (hsize_t i = 0; i < fc; i++) {
+                    neighbor_tmp[out + i] = mesh->neighbor_cell[fp + i];
+                    area_tmp[out + i]     = mesh->face_area[fp + i];
+                }
+#ifdef MOVING_MESH
+                for (hsize_t i = 0; i < fc * (DIMENSION - 1); i++)
+                    fmid_tmp[out * (DIMENSION - 1) + i] = mesh->f_mid_local[fp * (DIMENSION - 1) + i];
+#endif
+                mesh->face_ptr[k] = out;
+                out += fc;
+            }
+
+            for (hsize_t i = 0; i < out; i++) {
+                mesh->neighbor_cell[i] = neighbor_tmp[i];
+                mesh->face_area[i]     = area_tmp[i];
             }
 #ifdef MOVING_MESH
-            for (hsize_t i = 0; i < fc * (DIMENSION - 1); i++)
-                fmid_tmp[out * (DIMENSION - 1) + i] = mesh->f_mid_local[fp * (DIMENSION - 1) + i];
+            for (hsize_t i = 0; i < out * (DIMENSION - 1); i++)
+                mesh->f_mid_local[i] = fmid_tmp[i];
 #endif
-            mesh->face_ptr[k] = out;
-            out += fc;
+            mesh->num_faces = out;
         }
 
-        for (hsize_t i = 0; i < out; i++) {
-            mesh->neighbor_cell[i] = neighbor_tmp[i];
-            mesh->face_area[i]     = area_tmp[i];
-        }
-#ifdef MOVING_MESH
-        for (hsize_t i = 0; i < out * (DIMENSION - 1); i++)
-            mesh->f_mid_local[i] = fmid_tmp[i];
-#endif
-        mesh->num_faces = out;
-    }
-
-    }
+    } // namespace
 
     int cpu_fallback_failed_cells(VMesh* mesh) {
         const int n_hydro         = (int)mesh->n_hydro;
@@ -977,8 +982,7 @@ namespace voronoi {
 
             const Status original = stat[k];
             if (original != security_radius_not_reached && original != needs_exact_predicates) {
-                std::cerr << "VORONOI: cell " << k << " failed with unrecoverable status: " << original
-                          << std::endl;
+                std::cerr << "VORONOI: cell " << k << " failed with unrecoverable status: " << original << std::endl;
 #ifdef USE_MPI
                 MPI_Abort(MPI_COMM_WORLD, 1);
 #else
@@ -988,15 +992,17 @@ namespace voronoi {
             std::cout << "VORONOI: cell " << k << " failed with status: " << original << std::endl;
 
             switch (rebuild_cell_with_perturb_retry(mesh, k, d_stored_points, cell_sids)) {
-                case FallbackOutcome::ok_unchanged: break;
-                case FallbackOutcome::ok_perturbed: perturbed_ks.push_back(k); break;
-                case FallbackOutcome::failed:
-                    std::cerr << "VORONOI: cell " << k << " all fallback attempts FAILED, aborting."
-                              << std::endl;
+            case FallbackOutcome::ok_unchanged:
+                break;
+            case FallbackOutcome::ok_perturbed:
+                perturbed_ks.push_back(k);
+                break;
+            case FallbackOutcome::failed:
+                std::cerr << "VORONOI: cell " << k << " all fallback attempts FAILED, aborting." << std::endl;
 #ifdef USE_MPI
-                    MPI_Abort(MPI_COMM_WORLD, 1);
+                MPI_Abort(MPI_COMM_WORLD, 1);
 #else
-                    exit(EXIT_FAILURE);
+                exit(EXIT_FAILURE);
 #endif
             }
         }
@@ -1056,9 +1062,8 @@ namespace voronoi {
 
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = (n_hydro + tpb - 1) / tpb;
-        kernel_halo_completeness_check<<<blocks, tpb>>>(n_hydro, mesh->knn, mesh->real_sorted_ids,
-                                                        pts_mpi_base, n_mpi,
-                                                        proteus_mpi::g_halo.is_outer_layer, d_flag);
+        kernel_halo_completeness_check<<<blocks, tpb>>>(
+            n_hydro, mesh->knn, mesh->real_sorted_ids, pts_mpi_base, n_mpi, proteus_mpi::g_halo.is_outer_layer, d_flag);
         GPU_LAUNCH_CHECK();
         GPU_SYNC();
         return *d_flag;

@@ -46,10 +46,6 @@ endif
 
 CUDA_MESSAGE = CUDA enabled
 
-# optionally link NVTX for profiling
-ifeq ($(PROFILING_ENABLED),ENABLE_PROFILING)
-	LDFLAGS += -lnvToolsExt
-endif
 
 # ============================================================
 # CPU_DEBUG mode: host compiler flags (g++/clang++)

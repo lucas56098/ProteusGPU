@@ -57,8 +57,7 @@ namespace hydro {
         }
 
         const int n_hydro_global = logging::sum_global((int)n_hydro);
-        logging::root() << "HYDRO: Initialized primitive variables for " << n_hydro_global << " particles"
-                        << std::endl;
+        logging::root() << "HYDRO: Initialized primitive variables for " << n_hydro_global << " particles" << std::endl;
         return hydro_data;
     }
 
@@ -87,7 +86,9 @@ namespace hydro {
         s_grads    = nullptr;
     }
 
-    primvars* prim_new_buffer() { return s_prim_new; }
+    primvars* prim_new_buffer() {
+        return s_prim_new;
+    }
 
     // ============================================================
     // Main routines
@@ -141,10 +142,10 @@ namespace hydro {
         {
             int tpb    = _HYDRO_BLOCK_SIZE_;
             int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-            PROFILE_GPU_START("kernel_volume_correct");
+            Profiler::StartGPU("kernel_volume_correct");
             kernel_volume_correct<<<blocks, tpb>>>(
                 mesh->n_hydro, mesh->old_volumes, mesh->volumes, prim_new->rho, prim_new->E);
-            PROFILE_GPU_END("kernel_volume_correct");
+            Profiler::EndGPU("kernel_volume_correct");
         }
 #else
         for (hsize_t i = 0; i < mesh->n_hydro; i++) {
@@ -189,15 +190,15 @@ namespace hydro {
                            const gradients::PrimGradients* grads,
                            primvars*                       prim_new) {
 
-        PROFILE_START("HYDRO_STEP (par)");
+        Profiler::StartTimer("HYDRO_STEP (par)");
 
 #ifndef CPU_DEBUG
         int tpb                = _HYDRO_BLOCK_SIZE_;
         int blocks             = ((int)mesh->n_hydro + tpb - 1) / tpb;
         int do_time_extrap_int = (dt_extrap != 0.0) ? 1 : 0;
-        PROFILE_GPU_START("kernel_flux_update");
+        Profiler::StartGPU("kernel_flux_update");
         kernel_flux_update<<<blocks, tpb>>>(dt_update, do_time_extrap_int, dt_extrap, mesh, prim_old, grads, prim_new);
-        PROFILE_GPU_END("kernel_flux_update");
+        Profiler::EndGPU("kernel_flux_update");
 #else
         const bool do_time_extrap = (dt_extrap != 0.0);
 #ifdef USE_OPENMP
@@ -208,12 +209,12 @@ namespace hydro {
         }
 #endif
 
-        PROFILE_END("HYDRO_STEP (par)");
+        Profiler::EndTimer("HYDRO_STEP (par)");
     }
 
     // global CFL timestep: min over all hydro cells
     double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar) {
-        PROFILE_START("CFL (par)");
+        Profiler::StartTimer("CFL (par)");
 
         double min_dt = 1e100;
 
@@ -225,9 +226,9 @@ namespace hydro {
 
         int tpb    = _HYDRO_BLOCK_SIZE_;
         int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        PROFILE_GPU_START("kernel_dt_CFL");
+        Profiler::StartGPU("kernel_dt_CFL");
         kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, d_min_dt);
-        PROFILE_GPU_END("kernel_dt_CFL");
+        Profiler::EndGPU("kernel_dt_CFL");
 
         GPU_SYNC();
         min_dt = *d_min_dt;
@@ -241,7 +242,7 @@ namespace hydro {
         }
 #endif
 
-        PROFILE_END("CFL (par)");
+        Profiler::EndTimer("CFL (par)");
         return min_dt;
     }
 

@@ -11,7 +11,7 @@ dim_3D                              # run in 3D mode
 #CUDA                                # run in GPU mode
 CPU_DEBUG                          # run in CPU mode
 
-#ENABLE_PROFILING                   # profiling of main routines
+#CUDA_PROFILING                      # enable profiling of GPU kernels
 
 ################################################################
 # hydro
@@ -21,7 +21,7 @@ MOVING_MESH                         # enable moving mesh hydrodynamics
 #_CELL_SHAPING_SPEED_=0.7            # mesh regularization speed fraction (default 0.7)
 #_CELL_SHAPING_FACTOR_=0.2           # regularization threshold in cell radii (default 0.2)
 
-_GAMMA_EOS_=1.6666666666666667      # adiabatic index (default 5/3)
+#_GAMMA_EOS_=1.6666666666666667      # adiabatic index (default 5/3)
 
 ################################################################
 # parallelization

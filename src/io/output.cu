@@ -1,7 +1,7 @@
-#include "output.h"
 #include "../global/allvars.h"
 #include "../mpi/mpi_compat.h"
 #include "../voronoi/voronoi.h"
+#include "output.h"
 #include "profiler/profiler.h"
 #include <iostream>
 #include <sys/stat.h>
@@ -31,8 +31,9 @@ bool OutputHandler::initialize() {
 }
 
 // wrapper to convert Vmesh to meshData and then write the snapshot file
-void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int /*n_hydro_arg*/, double t_sim) {
-    PROFILE_START("SNAPSHOTS");
+void OutputHandler::snapshot(
+    int snap_num, VMesh* mesh, const hydro::primvars* primvar, int /*n_hydro_arg*/, double t_sim) {
+    Profiler::StartTimer("SNAPSHOTS");
 
     // n_hydro_arg is the initial per-rank count; use mesh->n_hydro for the live (post-migration) count
     const int n_hydro = (int)mesh->n_hydro;
@@ -60,14 +61,14 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
         for (int file_id = 0; file_id < n_hydro; file_id++) {
             unsigned int k = stable_id ? original_to_current[file_id] : (unsigned int)file_id;
             if (primvar->rho) rho_out[file_id] = primvar->rho[k];
-            if (primvar->v)   vel_out[file_id] = primvar->v[k];
-            if (primvar->E)   E_out[file_id]   = primvar->E[k];
+            if (primvar->v) vel_out[file_id] = primvar->v[k];
+            if (primvar->E) E_out[file_id] = primvar->E[k];
         }
     }
     hydro::primvars primvar_inv;
     primvar_inv.rho = primvar ? rho_out.data() : nullptr;
     primvar_inv.v   = primvar ? vel_out.data() : nullptr;
-    primvar_inv.E   = primvar ? E_out.data()   : nullptr;
+    primvar_inv.E   = primvar ? E_out.data() : nullptr;
 
     // file-per-rank snapshots under multi-rank
     std::string output_file = "snapshot_" + std::to_string(snap_num);
@@ -82,7 +83,7 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
 
     if (!writeSnapshot(output_file, meshData, &primvar_inv, n_hydro, t_sim)) { exit(EXIT_FAILURE); }
 
-    PROFILE_END("SNAPSHOTS");
+    Profiler::EndTimer("SNAPSHOTS");
 }
 
 void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
@@ -116,7 +117,7 @@ void OutputHandler::vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData) {
 
     meshData.seeds.resize(n_pts * DIMENSION);
     for (int file_id = 0; file_id < n_pts; file_id++) {
-        unsigned int k = k_for(file_id);
+        unsigned int k                          = k_for(file_id);
         meshData.seeds[file_id * DIMENSION + 0] = mesh->seeds[k].x;
         meshData.seeds[file_id * DIMENSION + 1] = mesh->seeds[k].y;
 #ifdef dim_3D
@@ -304,16 +305,11 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
 }
 
 // prints current step, t, dt and ETA
-void print_log(int                                   step,
-               std::chrono::steady_clock::time_point wall,
-               double                                t_sim,
-               double                                dt,
-               double                                t_start,
-               double                                t_end) {
+void print_log(
+    int step, std::chrono::steady_clock::time_point wall, double t_sim, double dt, double t_start, double t_end) {
 
     const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count();
-    logging::root() << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt
-                    << "  ETA = "
+    logging::root() << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt << "  ETA = "
                     << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
                     << std::endl;
 }

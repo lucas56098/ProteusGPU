@@ -73,8 +73,8 @@ namespace voronoi {
 
     // regenerate periodic ghosts and copy pts_data → pts for the real-cell range;
     // returns the number of ghosts emitted
-    static hsize_t regenerate_periodic_ghosts(hsize_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts,
-                                              hsize_t* original_ids, double buff_val) {
+    static hsize_t regenerate_periodic_ghosts(
+        hsize_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts, hsize_t* original_ids, double buff_val) {
         hsize_t n_ghosts = 0;
 #ifndef CPU_DEBUG
         int* d_ghost_count = (int*)gpu_malloc(sizeof(int));
@@ -117,18 +117,15 @@ namespace voronoi {
 
     // wrap seeds around unit-box boundaries with ghost copies, then build the mesh
     // on the enlarged [-buff, 1+buff]^d domain (no rescaling step)
-    void compute_periodic_mesh(VMesh*           mesh,
-                               POINT_TYPE*      pts_data,
-                               hsize_t          num_points,
-                               hydro::primvars* primvar,
-                               hydro::primvars* primvar_aux) {
-        PROFILE_START("MESH_TOTAL");
+    void compute_periodic_mesh(
+        VMesh* mesh, POINT_TYPE* pts_data, hsize_t num_points, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
+        Profiler::StartTimer("MESH_TOTAL");
 
         double  ghost_frac       = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         hsize_t max_ghost_points = (hsize_t)(2.0 * ghost_frac * num_points) + 1;
 
-        POINT_TYPE* pts      = mesh->scratch_pts;
-        hsize_t     n_hydro  = num_points;
+        POINT_TYPE* pts     = mesh->scratch_pts;
+        hsize_t     n_hydro = num_points;
 
         hsize_t* original_ids = mesh->ghost_ids;
 
@@ -150,9 +147,9 @@ namespace voronoi {
         for (int iter = 0; iter < MAX_WIDEN_ITERS; iter++) {
             last_iter = iter;
 
-            PROFILE_START("GHOST_GEN (cpu)");
+            Profiler::StartTimer("GHOST_GEN (cpu)");
             n_ghosts = regenerate_periodic_ghosts(n_hydro, pts_data, pts, original_ids, buff);
-            PROFILE_END("GHOST_GEN (cpu)");
+            Profiler::EndTimer("GHOST_GEN (cpu)");
             if (n_ghosts > max_ghost_points) {
                 std::cerr << "VORONOI: Error! ghost count " << n_ghosts << " exceeds estimated max " << max_ghost_points
                           << ". Distribution is highly non-uniform." << std::endl;
@@ -167,8 +164,8 @@ namespace voronoi {
                 for (int n = 0; n < proteus_mpi::g_halo.n_neighbors; n++) {
                     int g_off = proteus_mpi::g_halo.ghost_offset[n];
                     for (int j = 0; j < proteus_mpi::g_halo.recv_count[n]; j++) {
-                        int slot  = g_off + j;
-                        int ext_k = (int)n_hydro + slot;
+                        int slot                                        = g_off + j;
+                        int ext_k                                       = (int)n_hydro + slot;
                         original_ids[(hsize_t)n_ghosts + (hsize_t)slot] = (hsize_t)ext_k;
                     }
                 }
@@ -198,9 +195,11 @@ namespace voronoi {
                 for (hsize_t new_k = 0; new_k < n_hydro; new_k++) {
                     pts_scratch[new_k] = pts_data[mesh->gather_perm[new_k]];
                 }
-                for (hsize_t k = 0; k < n_hydro; k++) pts_data[k] = pts_scratch[k];
+                for (hsize_t k = 0; k < n_hydro; k++)
+                    pts_data[k] = pts_scratch[k];
 
-                for (hsize_t k = 0; k < n_hydro; k++) mesh->orig_to_k_save[k] = (unsigned int)k;
+                for (hsize_t k = 0; k < n_hydro; k++)
+                    mesh->orig_to_k_save[k] = (unsigned int)k;
             }
 
             int local_failed = 0;
@@ -210,8 +209,7 @@ namespace voronoi {
             // halo-completeness sentinel: catches the silent-failure case where every cell
             // reports success but some K-nearest sample reached the outermost halo layer,
             // meaning closer cells beyond the halo may have been missed
-            const int local_outer = have_mpi_neighbors
-                                        ? voronoi::halo_completeness_flag(mesh, (int)n_ghosts) : 0;
+            const int local_outer = have_mpi_neighbors ? voronoi::halo_completeness_flag(mesh, (int)n_ghosts) : 0;
 
             int global_signal[2] = {local_failed, local_outer};
 #ifdef USE_MPI
@@ -262,7 +260,7 @@ namespace voronoi {
                                 << global_perturbed << " cells perturbed in last round." << std::endl;
                 break;
             }
-            if (!have_mpi_neighbors) break;  // single-rank: no cross-rank cascade
+            if (!have_mpi_neighbors) break; // single-rank: no cross-rank cascade
 
             // push perturbed seed positions back into pts_data and rebuild halos + mesh
             for (hsize_t k = 0; k < n_hydro; k++) {
@@ -279,17 +277,21 @@ namespace voronoi {
             for (int n = 0; n < proteus_mpi::g_halo.n_neighbors; n++) {
                 int g_off = proteus_mpi::g_halo.ghost_offset[n];
                 for (int j = 0; j < proteus_mpi::g_halo.recv_count[n]; j++) {
-                    int slot  = g_off + j;
-                    int ext_k = (int)n_hydro + slot;
+                    int slot                                        = g_off + j;
+                    int ext_k                                       = (int)n_hydro + slot;
                     original_ids[(hsize_t)n_ghosts + (hsize_t)slot] = (hsize_t)ext_k;
                 }
             }
             const hsize_t n_total = n_hydro + n_ghosts + n_mpi_ghosts;
-            voronoi::compute_mesh(mesh, pts, (int)n_total, primvar, primvar_aux,
+            voronoi::compute_mesh(mesh,
+                                  pts,
+                                  (int)n_total,
+                                  primvar,
+                                  primvar_aux,
                                   /*iter=*/last_iter + 1 + cascade);
         }
 
-        PROFILE_END("MESH_TOTAL");
+        Profiler::EndTimer("MESH_TOTAL");
     }
 
 #ifdef MOVING_MESH
@@ -299,9 +301,9 @@ namespace voronoi {
 #ifndef CPU_DEBUG
         int tpb    = _MESH_BLOCK_SIZE_;
         int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        PROFILE_GPU_START("kernel_mesh_velocities");
+        Profiler::StartGPU("kernel_mesh_velocities");
         kernel_mesh_velocities<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
-        PROFILE_GPU_END("kernel_mesh_velocities");
+        Profiler::EndGPU("kernel_mesh_velocities");
 #else
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
@@ -323,7 +325,7 @@ namespace voronoi {
         int blocks = ((int)n_hydro + tpb - 1) / tpb;
         kernel_move_mesh<<<blocks, tpb>>>(n_hydro, mesh, dt, pts);
         GPU_LAUNCH_CHECK();
-        GPU_SYNC();  // migrate_seeds reads pts on the host below
+        GPU_SYNC(); // migrate_seeds reads pts on the host below
 #else
         for (hsize_t i = 0; i < n_hydro; i++) {
             move_mesh_for_cell(i, mesh, dt, pts);
@@ -372,7 +374,7 @@ namespace voronoi {
                                        hsize_t* __restrict__ original_ids,
                                        int* __restrict__ d_ghost_count,
                                        double buff_val) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
+        hsize_t i      = blockIdx.x * blockDim.x + threadIdx.x;
         bool    active = (i < n_hydro);
 
         // copy real cell into scratch_pts (every thread does this so the [0, n_hydro) range is
@@ -429,9 +431,7 @@ namespace voronoi {
 
         // one atomicAdd per warp (skip if warp produced no ghosts)
         int warp_base = 0;
-        if ((threadIdx.x & 31) == 0 && warp_total > 0) {
-            warp_base = atomicAdd(d_ghost_count, warp_total);
-        }
+        if ((threadIdx.x & 31) == 0 && warp_total > 0) { warp_base = atomicAdd(d_ghost_count, warp_total); }
         warp_base = __shfl_sync(full_mask, warp_base, 0);
 
         if (!active || my_count == 0) return;

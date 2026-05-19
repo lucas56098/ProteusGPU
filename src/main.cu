@@ -31,7 +31,7 @@ int main(int argc, char* argv[]) {
     // initialize MPI (no-op single-node) and pin GPU per rank
     proteus_mpi::init(&argc, &argv);
 
-    PROFILE_START("TOTAL_RUNTIME");
+    Profiler::StartTimer("TOTAL_RUNTIME");
     const auto wall_start = std::chrono::steady_clock::now();
 
     // parse param file, read IC (or latest snapshot for a restart)
@@ -40,8 +40,8 @@ int main(int argc, char* argv[]) {
     int                snap_num = state.snap_num;
 
     // initialize primitive variables (rho, v, E) from IC
-    hsize_t          n_hydro  = icData.pos_dims[0];
-    hydro::primvars* primvar  = hydro::init(n_hydro);
+    hsize_t          n_hydro = icData.pos_dims[0];
+    hydro::primvars* primvar = hydro::init(n_hydro);
     hydro::allocate_hydro_buffers(n_hydro);
     hydro::primvars* prim_new = hydro::prim_new_buffer();
 
@@ -61,6 +61,11 @@ int main(int argc, char* argv[]) {
         logging::root() << "HYDRO: started" << std::endl;
     }
 
+    // diagnostic output text files
+    std::string profile_log_path = input.getParameter("output_directory") + "/" + "profile.txt";
+
+    logging::FileLogger profile_log(profile_log_path);
+
     // simulation control parameters
     const double t_start = t_sim;
     double       t_end   = input.getParameterDouble("time_end");
@@ -77,7 +82,8 @@ int main(int argc, char* argv[]) {
     }
 
     // hydro loop
-    PROFILE_START("HYDRO_MAIN");
+    Profiler::StartTimer("HYDRO_MAIN");
+
     while (t_sim < t_end) {
 
         // CFL timestep: local min, then Allreduce(MIN) so every rank uses the same dt
@@ -100,13 +106,18 @@ int main(int argc, char* argv[]) {
         // log info
         print_log(step, wall_start, t_sim, dt, t_start, t_end);
 
+        Profiler::PrintTimestep(step, profile_log.root());
+
         // hydro step
         hydro::hydro_step(dt, mesh, primvar);
 
         // snap t_sim exactly to the boundary we clamped to
-        if (snap_to_end)         t_sim = t_end;
-        else if (snap_to_output) t_sim = t_nextoutput;
-        else                     t_sim += dt;
+        if (snap_to_end)
+            t_sim = t_end;
+        else if (snap_to_output)
+            t_sim = t_nextoutput;
+        else
+            t_sim += dt;
         step++;
 
         // write snapshot
@@ -116,7 +127,7 @@ int main(int argc, char* argv[]) {
             snap_num += 1;
         }
     }
-    PROFILE_END("HYDRO_MAIN");
+    Profiler::EndTimer("HYDRO_MAIN");
     logging::root() << "HYDRO: Finished after " << step << " steps at t = " << t_sim << std::endl;
 
     // free all simulation buffers
@@ -127,12 +138,13 @@ int main(int argc, char* argv[]) {
 
     // wall-clock runtime + peak memory + profiler dump
     const double total_wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
-    logging::root() << "MAIN: Runtime = " << total_wall_s << " seconds" << std::endl;
-    print_max_memory_usage();
-    logging::root() << "MAIN: Done." << std::endl;
 
-    PROFILE_END("TOTAL_RUNTIME");
-    PROFILE_PRINT_RESULTS();
+    logging::root() << "MAIN: Done. (Total runtime = " << total_wall_s << " seconds (wallclock)" << std::endl;
+
+    print_max_memory_usage();
+
+    Profiler::EndTimer("TOTAL_RUNTIME");
+    Profiler::PrintResults();
 
     proteus_mpi::finalize();
 

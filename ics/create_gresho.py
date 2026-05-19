@@ -63,7 +63,7 @@ def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_
     print("\n  Initial state summary:")
     print(f"    rho range: [{rho.min():.6f}, {rho.max():.6f}]")
     print(f"    pressure range: [{pressure.min():.6f}, {pressure.max():.6f}]")
-    print(f"    Energy range: [{Energy.min():.6f}, {Energy.max():.6f}]")
+    print(f"    energy range: [{energy.min():.6f}, {energy.max():.6f}]")
 
     # Write to HDF5
     with h5py.File(filename, "w") as f:

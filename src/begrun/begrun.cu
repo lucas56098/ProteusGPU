@@ -16,7 +16,7 @@ namespace begrun {
 
     // setup: banner, CUDA init, params, IC, output dir
     StartState begrun(int argc, char* argv[]) {
-        PROFILE_START("BEGRUN");
+        Profiler::StartTimer("BEGRUN");
 
         // welcome messages
         print_banner();
@@ -118,7 +118,7 @@ namespace begrun {
         output = OutputHandler(input.getParameter("output_directory"));
         if (!output.initialize()) { exit(EXIT_FAILURE); }
 
-        PROFILE_END("BEGRUN");
+        Profiler::EndTimer("BEGRUN");
         return state;
     }
 

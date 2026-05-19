@@ -17,15 +17,15 @@ namespace gradients {
     // ============================================================
 
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
-        PROFILE_START("GRADIENTS (par)");
+        Profiler::StartTimer("GRADIENTS (par)");
         zero_grad(grads);
 
 #ifndef CPU_DEBUG
         int tpb    = _GRAD_BLOCK_SIZE_;
         int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        PROFILE_GPU_START("kernel_compute_gradients");
+        Profiler::StartGPU("kernel_compute_gradients");
         kernel_compute_gradients<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
-        PROFILE_GPU_END("kernel_compute_gradients");
+        Profiler::EndGPU("kernel_compute_gradients");
 #else
 #ifdef USE_OPENMP
 #pragma omp parallel for
@@ -35,7 +35,7 @@ namespace gradients {
         }
 #endif
 
-        PROFILE_END("GRADIENTS (par)");
+        Profiler::EndTimer("GRADIENTS (par)");
     }
 
     // ============================================================
@@ -93,8 +93,8 @@ namespace gradients {
         hsize_t face_start = mesh->face_ptr[i];
 
         for (hsize_t fj = 0; fj < face_count; fj++) {
-            hsize_t face_idx     = face_start + fj;
-            hsize_t neighbor     = (hsize_t)mesh->neighbor_cell[face_idx];
+            hsize_t face_idx = face_start + fj;
+            hsize_t neighbor = (hsize_t)mesh->neighbor_cell[face_idx];
 
             // separation vector and inverse-distance weighting
             POINT_TYPE dx    = point_diff(mesh->seeds[neighbor], mesh->seeds[i]);

@@ -16,6 +16,7 @@ def create_kelvin_helmholtz(
     dimension,
     extent=1.0,
     gamma=5.0 / 3.0,
+    width=0.5,
     mesh_mode="random",  # ["random", "cartesian"]
 ):
     if dimension not in (2, 3):
@@ -35,12 +36,8 @@ def create_kelvin_helmholtz(
     x = pos[:, 0]
     y = pos[:, 1]
 
-    y_low = 0.25 * extent
-    y_high = 0.75 * extent
-    if 0:
-        # dnelson change for vis
-        y_low = 0.4 * extent
-        y_high = 0.6 * extent
+    y_low = extent / 2 - width / 2
+    y_high = extent / 2 + width / 2
 
     sigma = 0.05 * extent / np.sqrt(2.0)
 

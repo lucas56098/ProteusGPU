@@ -10,8 +10,8 @@ namespace knn {
     // kernels
     GLOBAL void kernel_count_cells(const POINT_TYPE*, int, int, double, double, int*);
     GLOBAL void kernel_compute_ptrs(int*, int*, int*, int);
-    GLOBAL void kernel_scatter_points(
-        const POINT_TYPE*, int, int, double, double, int*, const int*, POINT_TYPE*, unsigned int*);
+    GLOBAL void
+    kernel_scatter_points(const POINT_TYPE*, int, int, double, double, int*, const int*, POINT_TYPE*, unsigned int*);
 #endif
 
     // ============================================================
@@ -23,16 +23,15 @@ namespace knn {
         // worst-case total points: max_n_local + periodic ghosts + MPI ghosts
         double ghost_frac  = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         int    n_grow      = proteus_mpi::max_n_local(n_hydro);
-        int    max_n_total = (int)(n_grow + 2.0 * ghost_frac * n_grow) + 1
-                           + proteus_mpi::g_n_mpi_capacity;
+        int    max_n_total = (int)(n_grow + 2.0 * ghost_frac * n_grow) + 1 + proteus_mpi::g_n_mpi_capacity;
 
         knn_problem* knn = gpu_alloc<knn_problem>(1);
 
         // pick grid resolution: ~3 points per cell on average is the sweet spot for KNN
-        knn->len_pts             = max_n_total;
-        knn->pts_capacity        = max_n_total;
-        knn->N_grid              = std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
-        knn->Npow                = (int)pow(knn->N_grid, DIMENSION);
+        knn->len_pts      = max_n_total;
+        knn->pts_capacity = max_n_total;
+        knn->N_grid       = std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
+        knn->Npow         = (int)pow(knn->N_grid, DIMENSION);
         // bucket grid spans [-buff, 1+buff]^d; cellFromPoint uses inv_boxsize to index into it
         knn->buff                = buff;
         knn->inv_boxsize         = 1.0 / (1.0 + 2.0 * buff);
@@ -166,7 +165,7 @@ namespace knn {
 #ifndef CPU_DEBUG
         int tpb = _KNN_BLOCK_SIZE_;
 
-        PROFILE_GPU_START("knn_grid_sort");
+        Profiler::StartGPU("knn_grid_sort");
 
         // 1) count points per grid cell
         int blocks1 = (len_pts + tpb - 1) / tpb;
@@ -180,10 +179,17 @@ namespace knn {
 
         // 3) scatter points into sorted positions
         gpu_memset(d_counters, 0, Npow * sizeof(int));
-        kernel_scatter_points<<<blocks1, tpb>>>(pts, len_pts, N_grid, buff_local, inv_boxsize, d_counters,
-                                                knn->d_ptrs, knn->d_stored_points, knn->d_permutation);
+        kernel_scatter_points<<<blocks1, tpb>>>(pts,
+                                                len_pts,
+                                                N_grid,
+                                                buff_local,
+                                                inv_boxsize,
+                                                d_counters,
+                                                knn->d_ptrs,
+                                                knn->d_stored_points,
+                                                knn->d_permutation);
 
-        PROFILE_GPU_END("knn_grid_sort");
+        Profiler::EndGPU("knn_grid_sort");
 
 #else
         // count points per grid cell
@@ -279,8 +285,8 @@ namespace knn {
         // bucket grid spans [-buff, 1+buff]^d, total width 1+2*buff. Shift by +buff so the grid
         // starts at 0, then map into [0, N_grid) via inv_boxsize = 1/(1+2*buff).
         const double scale = (double)N_grid * inv_boxsize;
-        int i = (int)floor((point.x + buff) * scale);
-        int j = (int)floor((point.y + buff) * scale);
+        int          i     = (int)floor((point.x + buff) * scale);
+        int          j     = (int)floor((point.y + buff) * scale);
 
         i = imax(0, imin(i, N_grid - 1));
         j = imax(0, imin(j, N_grid - 1));
