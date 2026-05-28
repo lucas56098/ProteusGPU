@@ -74,21 +74,29 @@ double InputHandler::getParameterDouble(const std::string& key) const {
     }
 }
 
-// find the latest snapshot_N.hdf5 in a directory, return N (or -1 if none found)
-int InputHandler::findLatestSnapshot(const std::string& dir) {
+// find the latest snapshot N in `dir`. Single-rank matches "snapshot_<N>.hdf5"; multi-rank matches
+// "snapshot_<N>.<rank>.hdf5" (each rank only looks for its own files). Returns N or -1 if none found.
+int InputHandler::findLatestSnapshot(const std::string& dir, int nranks, int rank) {
     DIR* d = opendir(dir.c_str());
     if (!d) return -1;
+
+    const std::string prefix = "snapshot_";
+    const std::string suffix = (nranks > 1) ? ("." + std::to_string(rank) + ".hdf5") : std::string(".hdf5");
+
     int            max_num = -1;
     struct dirent* entry;
     while ((entry = readdir(d)) != NULL) {
         std::string name(entry->d_name);
-        if (name.size() > 14 && name.substr(0, 9) == "snapshot_" && name.substr(name.size() - 5) == ".hdf5") {
-            std::string num_str = name.substr(9, name.size() - 14);
-            try {
-                int num = std::stoi(num_str);
-                if (num > max_num) max_num = num;
-            } catch (...) {}
-        }
+        if (name.size() <= prefix.size() + suffix.size()) continue;
+        if (name.compare(0, prefix.size(), prefix) != 0) continue;
+        if (name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
+
+        std::string num_str = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+        try {
+            size_t consumed = 0;
+            int    num      = std::stoi(num_str, &consumed);
+            if (consumed == num_str.size() && num > max_num) max_num = num;
+        } catch (...) {}
     }
     closedir(d);
     return max_num;
@@ -282,7 +290,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
 }
 
 // read a snapshot file into ICData for restart (seeds from cells/seeds, hydro from hydro/)
-bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData, double& t_sim) {
+bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData, SnapshotMeta& meta) {
 
     std::ifstream f(filename);
     if (!f.good()) {
@@ -325,7 +333,7 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
 
     hid_t attr_time = H5Aopen(header_group, "time", H5P_DEFAULT);
     if (attr_time >= 0) {
-        H5Aread(attr_time, H5T_NATIVE_DOUBLE, &t_sim);
+        H5Aread(attr_time, H5T_NATIVE_DOUBLE, &meta.t_sim);
         H5Aclose(attr_time);
     } else {
         std::cerr << "INPUT: Error! Could not read time attribute from snapshot" << std::endl;
@@ -333,6 +341,26 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
         H5Fclose(file_id);
         return false;
     }
+
+    // required restart metadata: refuse snapshots that pre-date these attributes
+    auto require_int_attr = [&](const char* name, int& out) -> bool {
+        if (H5Aexists(header_group, name) <= 0) {
+            std::cerr << "INPUT: Error! Snapshot missing required '" << name
+                      << "' attribute. Restart requires snapshots written by the current version." << std::endl;
+            return false;
+        }
+        hid_t a = H5Aopen(header_group, name, H5P_DEFAULT);
+        H5Aread(a, H5T_NATIVE_INT, &out);
+        H5Aclose(a);
+        return true;
+    };
+    if (!require_int_attr("step", meta.step) || !require_int_attr("n_global", meta.n_global)
+        || !require_int_attr("nranks", meta.nranks) || !require_int_attr("rank", meta.rank)) {
+        H5Gclose(header_group);
+        H5Fclose(file_id);
+        return false;
+    }
+
     H5Gclose(header_group);
 
     // read cells/seeds -> icData.pos
@@ -409,6 +437,7 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     H5Gclose(hydro_group);
     H5Fclose(file_id);
 
-    logging::root() << "INPUT: Snapshot loaded successfully! (" << n << " cells, t = " << t_sim << ")" << std::endl;
+    logging::root() << "INPUT: Snapshot loaded successfully! (" << n << " cells, t = " << meta.t_sim << ")"
+                    << std::endl;
     return true;
 }

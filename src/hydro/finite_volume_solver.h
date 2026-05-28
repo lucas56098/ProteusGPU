@@ -10,12 +10,9 @@
 
 namespace hydro {
 
-    // initialization and memory management
-    primvars* init(int n_hydro);
-    void      free_prim(primvars** primvar);
-    void      allocate_hydro_buffers(hsize_t n_hydro);
-    void      free_hydro_buffers();
-    primvars* prim_new_buffer();
+    // initialization and memory management — operate on global `sim`
+    void init_hydro(); // allocates primvar (from IC) + per-step scratch (prim_new, grads)
+    void free_hydro(); // frees everything init_hydro allocated
 
     // main routines
     void   hydro_step(double dt, VMesh* mesh, primvars* primvar);

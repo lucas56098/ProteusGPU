@@ -9,11 +9,12 @@
 // CPU wall-clock profiling (chrono-based, works in all modes)
 std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> Profiler::m_StartTimes;
 std::unordered_map<std::string, long long>                                      Profiler::m_Timings;
-std::unordered_map<std::string, long long>                                      Profiler::m_TimingsDiff;
+std::unordered_map<std::string, long long>                                      Profiler::m_PrevStepCum;
 
 // GPU event timing storage
 std::unordered_map<std::string, double> Profiler::m_GpuTimings;
 std::unordered_map<std::string, int>    Profiler::m_GpuCounts;
+std::unordered_map<std::string, double> Profiler::m_GpuPrevStepCum;
 
 std::unordered_map<std::string, Profiler::GpuEventPair> Profiler::m_GpuEvents;
 
@@ -23,10 +24,9 @@ void Profiler::StartTimer(const std::string& name) {
 }
 
 void Profiler::EndTimer(const std::string& name) {
-    auto endTime        = std::chrono::high_resolution_clock::now();
-    auto startTime      = m_StartTimes[name];
-    m_TimingsDiff[name] = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
-    m_Timings[name] += m_TimingsDiff[name];
+    auto endTime   = std::chrono::high_resolution_clock::now();
+    auto startTime = m_StartTimes[name];
+    m_Timings[name] += std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
     NVTX_POP();
 }
 
@@ -109,8 +109,8 @@ void Profiler::PrintResults() {
     out << "=========================\n";
 }
 
-// print combined results (per timestep) — per-rank timings but only rank 0 writes
-void Profiler::PrintTimestep(int step, std::ostream& out) {
+// write per-timestep CSV record to out (typically the profile log file) — per-rank timings but only rank 0 writes
+void Profiler::LogTimestep(int step, std::ostream& out) {
 
     out << "# timestep = " << step << " (CPU timers) (cum time [s], diff time [s]):\n";
 
@@ -121,12 +121,21 @@ void Profiler::PrintTimestep(int step, std::ostream& out) {
     auto      startTime    = m_StartTimes["TOTAL_RUNTIME"];
     long long totalRuntime = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
 
-    out << step << ", " << std::setw(16) << std::left << "TOTAL_RUNTIME" << ", " << (totalRuntime / 1e6) << ", 0\n";
+    {
+        const long long prevTotal      = m_PrevStepCum["TOTAL_RUNTIME"];
+        const double    totalDiffSec   = (totalRuntime - prevTotal) / 1e6;
+        m_PrevStepCum["TOTAL_RUNTIME"] = totalRuntime;
+        out << step << ", " << std::setw(16) << std::left << "TOTAL_RUNTIME" << ", " << (totalRuntime / 1e6) << ", "
+            << totalDiffSec << "\n";
+    }
 
-    // timings per CPU region
+    // timings per CPU region — diff is per-step delta of cumulative time
     for (const auto& entry : m_Timings) {
-        double timeCumSec  = entry.second / 1e6;
-        double timeDiffSec = m_TimingsDiff[entry.first] / 1e6;
+        const long long cumUs       = entry.second;
+        const long long prevCumUs   = m_PrevStepCum[entry.first];
+        const double    timeCumSec  = cumUs / 1e6;
+        const double    timeDiffSec = (cumUs - prevCumUs) / 1e6;
+        m_PrevStepCum[entry.first]  = cumUs;
         out << step << ", " << std::setw(16) << std::left << entry.first << ", " << timeCumSec << ", " << timeDiffSec
             << "\n";
     }

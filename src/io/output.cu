@@ -1,4 +1,5 @@
 #include "../global/allvars.h"
+#include "../mpi/decomp.h"
 #include "../mpi/mpi_compat.h"
 #include "../voronoi/voronoi.h"
 #include "output.h"
@@ -25,14 +26,18 @@ bool OutputHandler::initialize() {
         if (ok) logging::root() << "OUTPUT: directory: " << outputDirectory << std::endl;
     }
 #ifdef USE_MPI
-    MPI_Barrier(MPI_COMM_WORLD);
+    Profiler::StartTimer("MPI_COMM");
+    Profiler::StartTimer("MPI_WAIT");
+    MPI_Barrier(proteus_mpi::decomp.cart_comm);
+    Profiler::EndTimer("MPI_WAIT");
+    Profiler::EndTimer("MPI_COMM");
 #endif
     return ok;
 }
 
 // wrapper to convert Vmesh to meshData and then write the snapshot file
 void OutputHandler::snapshot(
-    int snap_num, VMesh* mesh, const hydro::primvars* primvar, int /*n_hydro_arg*/, double t_sim) {
+    int snap_num, VMesh* mesh, const hydro::primvars* primvar, int /*n_hydro_arg*/, double t_sim, int step) {
     Profiler::StartTimer("SNAPSHOTS");
 
     // n_hydro_arg is the initial per-rank count; use mesh->n_hydro for the live (post-migration) count
@@ -81,7 +86,14 @@ void OutputHandler::snapshot(
         logging::root() << "OUTPUT: Writing snapshot to: " << outputDirectory << output_file << std::endl;
     }
 
-    if (!writeSnapshot(output_file, meshData, &primvar_inv, n_hydro, t_sim)) { exit(EXIT_FAILURE); }
+    // restart metadata: global cell count + ranks topology, baked into every per-rank file
+    const int nranks   = proteus_mpi::nranks();
+    const int rank     = proteus_mpi::rank();
+    const int n_global = logging::sum_global(n_hydro);
+
+    if (!writeSnapshot(output_file, meshData, &primvar_inv, n_hydro, t_sim, step, n_global, nranks, rank)) {
+        exit(EXIT_FAILURE);
+    }
 
     Profiler::EndTimer("SNAPSHOTS");
 }
@@ -140,7 +152,11 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
                                   const MeshCellData&    meshData,
                                   const hydro::primvars* primvar,
                                   int                    n_hydro,
-                                  double                 t_sim) {
+                                  double                 t_sim,
+                                  int                    step,
+                                  int                    n_global,
+                                  int                    nranks,
+                                  int                    rank) {
     std::string fullPath = outputDirectory + filename;
 
     // create HDF5 file
@@ -191,6 +207,23 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
     H5Awrite(attr_time, H5T_NATIVE_DOUBLE, &t_sim);
     H5Aclose(attr_time);
 
+    hid_t attr_step = H5Acreate(header_group, "step", H5T_NATIVE_INT, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(attr_step, H5T_NATIVE_INT, &step);
+    H5Aclose(attr_step);
+
+    // restart metadata: required by readSnapshotFile for multi-rank restart
+    hid_t attr_n_global = H5Acreate(header_group, "n_global", H5T_NATIVE_INT, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(attr_n_global, H5T_NATIVE_INT, &n_global);
+    H5Aclose(attr_n_global);
+
+    hid_t attr_nranks = H5Acreate(header_group, "nranks", H5T_NATIVE_INT, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(attr_nranks, H5T_NATIVE_INT, &nranks);
+    H5Aclose(attr_nranks);
+
+    hid_t attr_rank = H5Acreate(header_group, "rank", H5T_NATIVE_INT, scalar_space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(attr_rank, H5T_NATIVE_INT, &rank);
+    H5Aclose(attr_rank);
+
     H5Sclose(scalar_space);
     H5Gclose(header_group);
 
@@ -226,20 +259,6 @@ bool OutputHandler::writeSnapshot(const std::string&     filename,
         }
         H5Sclose(dataspace_1d);
     }
-
-    // write face_counts (number of faces per cell) (disabled)
-    /*
-    if (!meshData.face_counts.empty()) {
-        hsize_t dims_1d[1]   = {meshData.face_counts.size()};
-        hid_t   dataspace_1d = H5Screate_simple(1, dims_1d, NULL);
-        hid_t   dataset_id =
-            H5Dcreate(mesh_group, "face_counts", H5T_NATIVE_INT, dataspace_1d, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (dataset_id >= 0) {
-            H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, meshData.face_counts.data());
-            H5Dclose(dataset_id);
-        }
-        H5Sclose(dataspace_1d);
-    }*/
 
     H5Gclose(mesh_group);
 
@@ -309,7 +328,7 @@ void print_log(
     int step, std::chrono::steady_clock::time_point wall, double t_sim, double dt, double t_start, double t_end) {
 
     const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count();
-    logging::root() << "HYDRO: Step " << step << "  t = " << t_sim << "  dt = " << dt << "  ETA = "
+    logging::root() << "\nSIM: Step " << step << "  t = " << t_sim << "  dt = " << dt << "  ETA = "
                     << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
                     << std::endl;
 }

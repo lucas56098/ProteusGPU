@@ -62,14 +62,14 @@ Seedpoints are colorcoded according to their rank.
 
 ## Roadmap
 
-* v0.1 - kNN and Voronoi mesh construction (2D and 3D, CPU)
-* v0.2 - first order FV hydro (static mesh, 2D and 3D, CPU)
-* v0.3 - second order FV hydro (static mesh, 2D and 3D, CPU)
-* v0.4 - moving mesh hydro (2D, CPU)
-* v0.5 - moving mesh hydro (3D, CPU)
-* v0.6 - GPU initial port (moving mesh hydro)
-* v0.7 - single GPU optimization
-* v0.8 - multi-GPU (distributed memory, MPI)
+* <span style = 'color:green'>v0.1 - kNN and Voronoi mesh construction (2D and 3D, CPU)</span>
+* <span style = 'color:green'>v0.2 - first order FV hydro (static mesh, 2D and 3D, CPU)</span>
+* <span style = 'color:green'>v0.3 - second order FV hydro (static mesh, 2D and 3D, CPU)</span>
+* <span style = 'color:green'>v0.4 - moving mesh hydro (2D, CPU)</span>
+* <span style = 'color:green'>v0.5 - moving mesh hydro (3D, CPU)</span>
+* <span style = 'color:green'>v0.6 - GPU initial port (moving mesh hydro)</span>
+* <span style = 'color:green'>v0.7 - single GPU optimization</span>
+* <span style = 'color:green'>v0.8 - multi-GPU (distributed memory, MPI)</span>
 * v0.9 - multi-GPU optimization
 * v1.0 - support for inhomogenous particle distributions
 

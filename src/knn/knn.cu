@@ -1,5 +1,5 @@
 #include "../global/globals.h"
-#include "../mpi/extension.h"
+#include "../global/structs.h"
 #include "../profiler/profiler.h"
 #include "knn.h"
 #include <iostream>
@@ -23,7 +23,7 @@ namespace knn {
         // worst-case total points: max_n_local + periodic ghosts + MPI ghosts
         double ghost_frac  = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         int    n_grow      = proteus_mpi::max_n_local(n_hydro);
-        int    max_n_total = (int)(n_grow + 2.0 * ghost_frac * n_grow) + 1 + proteus_mpi::g_n_mpi_capacity;
+        int    max_n_total = (int)(n_grow + 2.0 * ghost_frac * n_grow) + 1 + proteus_mpi::n_mpi_capacity;
 
         knn_problem* knn = gpu_alloc<knn_problem>(1);
 
@@ -198,7 +198,7 @@ namespace knn {
 #endif
         for (int id = 0; id < len_pts; id++) {
             int cell = cellFromPoint(N_grid, buff_local, inv_boxsize, pts[id]);
-            host_atomicAdd(d_counters + cell, 1);
+            portable_atomicAdd(d_counters + cell, 1);
         }
 
         // reserve memory ranges for each cell
@@ -211,7 +211,7 @@ namespace knn {
 #endif
             for (int id = 0; id < Npow; id++) {
                 int count = d_counters[id];
-                if (count > 0) { d_ptrs[id] = host_atomicAdd(d_globcounter, count); }
+                if (count > 0) { d_ptrs[id] = portable_atomicAdd(d_globcounter, count); }
             }
         }
 
@@ -229,7 +229,7 @@ namespace knn {
             for (int id = 0; id < len_pts; id++) {
                 POINT_TYPE p         = pts[id];
                 int        cell      = cellFromPoint(N_grid, buff_local, inv_boxsize, p);
-                int        pos       = d_ptrs[cell] + host_atomicAdd(d_counters + cell, 1);
+                int        pos       = d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1);
                 d_stored_points[pos] = p;
                 d_permutation[pos]   = id;
             }
@@ -247,14 +247,14 @@ namespace knn {
         int id = blockIdx.x * blockDim.x + threadIdx.x;
         if (id >= len_pts) return;
         int cell = cellFromPoint(N_grid, buff_local, inv_boxsize, pts[id]);
-        atomicAdd(d_counters + cell, 1);
+        portable_atomicAdd(d_counters + cell, 1);
     }
 
     GLOBAL void kernel_compute_ptrs(int* d_counters, int* d_ptrs, int* d_globcounter, int Npow) {
         int id = blockIdx.x * blockDim.x + threadIdx.x;
         if (id >= Npow) return;
         int count = d_counters[id];
-        if (count > 0) { d_ptrs[id] = atomicAdd(d_globcounter, count); }
+        if (count > 0) { d_ptrs[id] = portable_atomicAdd(d_globcounter, count); }
     }
 
     GLOBAL void kernel_scatter_points(const POINT_TYPE* pts,
@@ -270,7 +270,7 @@ namespace knn {
         if (id >= len_pts) return;
         POINT_TYPE p         = pts[id];
         int        cell      = cellFromPoint(N_grid, buff_local, inv_boxsize, p);
-        int        pos       = d_ptrs[cell] + atomicAdd(d_counters + cell, 1);
+        int        pos       = d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1);
         d_stored_points[pos] = p;
         d_permutation[pos]   = id;
     }

@@ -39,17 +39,22 @@ class OutputHandler {
     std::string getOutputDirectory() const { return outputDirectory; }
 
     // wrapper to convert mesh into meshData and then store snapshot
-    void snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int n_hydro, double t_sim);
+    void snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int n_hydro, double t_sim, int step);
 
     // convert VMesh (for hydro computation) to MeshCellData (for output)
     void vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData);
 
-    // write snapshot (mesh and hydro data) to HDF5 file
+    // write snapshot (mesh and hydro data) to HDF5 file. n_global / nranks / rank are written
+    // into the header so a same-decomposition restart can validate and skip IC redistribution.
     bool writeSnapshot(const std::string&     filename,
                        const MeshCellData&    meshData,
                        const hydro::primvars* primvar,
                        int                    n_hydro,
-                       double                 t_sim);
+                       double                 t_sim,
+                       int                    step,
+                       int                    n_global,
+                       int                    nranks,
+                       int                    rank);
 };
 
 void print_log(int                                   step,

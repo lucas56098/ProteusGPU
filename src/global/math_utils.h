@@ -14,14 +14,8 @@ HD inline double4 minus4(double4 A, double4 B) {
 HD inline double4 plus4(double4 A, double4 B) {
     return make_double4(A.x + B.x, A.y + B.y, A.z + B.z, A.w + B.w);
 }
-HD inline double dot4(double4 A, double4 B) {
-    return A.x * B.x + A.y * B.y + A.z * B.z + A.w * B.w;
-}
 HD inline double dot3(double4 A, double4 B) {
     return A.x * B.x + A.y * B.y + A.z * B.z;
-}
-HD inline double4 mul3(double s, double4 A) {
-    return make_double4(s * A.x, s * A.y, s * A.z, 1.);
 }
 HD inline double4 cross3(double4 A, double4 B) {
     return make_double4(A.y * B.z - A.z * B.y, A.z * B.x - A.x * B.z, A.x * B.y - A.y * B.x, 0);
@@ -80,8 +74,12 @@ HD inline double det4x4(double a11,
 // weighted least squares solvers
 #ifdef dim_2D
 HD inline bool solve_weighted_lsq_2d(double m00, double m01, double m11, double b0, double b1, POINT_TYPE* grad) {
-    double det = m00 * m11 - m01 * m01;
-    if (fabs(det) < 1e-14) { return false; }
+    double det = det2x2(m00, m01, m01, m11);
+    if (fabs(det) < 1e-14) {
+        grad->x = 0.0;
+        grad->y = 0.0;
+        return false;
+    }
 
     double inv00 = m11 / det;
     double inv01 = -m01 / det;
@@ -102,33 +100,27 @@ HD inline bool solve_weighted_lsq_3d(double      m00,
                                      double      b1,
                                      double      b2,
                                      POINT_TYPE* grad) {
-    double a11 = m00;
-    double a12 = m01;
-    double a13 = m02;
-    double a21 = m01;
-    double a22 = m11;
-    double a23 = m12;
-    double a31 = m02;
-    double a32 = m12;
-    double a33 = m22;
 
-    double det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
-    if (fabs(det) < 1e-18) { return false; }
+    const double det = det3x3(m00, m01, m02, m01, m11, m12, m02, m12, m22);
+    if (fabs(det) < 1e-18) {
+        grad->x = 0.0;
+        grad->y = 0.0;
+        grad->z = 0.0;
+        return false;
+    }
 
-    double inv_det = 1.0 / det;
-    double inv00   = (a22 * a33 - a23 * a32) * inv_det;
-    double inv01   = (a13 * a32 - a12 * a33) * inv_det;
-    double inv02   = (a12 * a23 - a13 * a22) * inv_det;
-    double inv10   = (a23 * a31 - a21 * a33) * inv_det;
-    double inv11   = (a11 * a33 - a13 * a31) * inv_det;
-    double inv12   = (a13 * a21 - a11 * a23) * inv_det;
-    double inv20   = (a21 * a32 - a22 * a31) * inv_det;
-    double inv21   = (a12 * a31 - a11 * a32) * inv_det;
-    double inv22   = (a11 * a22 - a12 * a21) * inv_det;
+    // inverse of a symmetric
+    const double inv_det = 1.0 / det;
+    const double inv00   = det2x2(m11, m12, m12, m22) * inv_det;
+    const double inv11   = det2x2(m00, m02, m02, m22) * inv_det;
+    const double inv22   = det2x2(m00, m01, m01, m11) * inv_det;
+    const double inv01   = -det2x2(m01, m02, m12, m22) * inv_det;
+    const double inv02   = det2x2(m01, m02, m11, m12) * inv_det;
+    const double inv12   = -det2x2(m00, m02, m01, m12) * inv_det;
 
     grad->x = inv00 * b0 + inv01 * b1 + inv02 * b2;
-    grad->y = inv10 * b0 + inv11 * b1 + inv12 * b2;
-    grad->z = inv20 * b0 + inv21 * b1 + inv22 * b2;
+    grad->y = inv01 * b0 + inv11 * b1 + inv12 * b2;
+    grad->z = inv02 * b0 + inv12 * b1 + inv22 * b2;
     return true;
 }
 #endif
@@ -164,7 +156,8 @@ HD inline POINT_TYPE point_mul(double s, const POINT_TYPE& p) {
     return out;
 }
 
-HD inline POINT_TYPE point_diff(const double3& a, const double3& b) {
+// periodic seed-to-seed difference (assumes boxsize 1)
+HD inline POINT_TYPE point_diff_periodic(const double3& a, const double3& b) {
 #ifdef dim_2D
     POINT_TYPE out = {wrap_periodic_delta(a.x - b.x), wrap_periodic_delta(a.y - b.y)};
 #else
@@ -181,15 +174,13 @@ HD inline geom compute_geom(double3 delta) {
     double inv_nn = 1.0 / nn;
     g.n           = {delta.x * inv_nn, delta.y * inv_nn, delta.z * inv_nn};
 
-    if (g.n.x != 0.0 || g.n.y != 0.0) {
-        g.m = {-g.n.y, g.n.x, 0.0};
+    const double xy_sq = g.n.x * g.n.x + g.n.y * g.n.y;
+    if (xy_sq > 1e-12) {
+        double inv_mm = 1.0 / sqrt(xy_sq);
+        g.m           = {-g.n.y * inv_mm, g.n.x * inv_mm, 0.0};
     } else {
         g.m = {1.0, 0.0, 0.0};
     }
-
-    double mm     = sqrt(g.m.x * g.m.x + g.m.y * g.m.y + g.m.z * g.m.z);
-    double inv_mm = 1.0 / mm;
-    g.m           = {g.m.x * inv_mm, g.m.y * inv_mm, g.m.z * inv_mm};
 
     g.p = {g.n.y * g.m.z - g.n.z * g.m.y, g.n.z * g.m.x - g.n.x * g.m.z, g.n.x * g.m.y - g.n.y * g.m.x};
 

@@ -5,4 +5,5 @@
 InputHandler  input;
 ICData        icData;
 OutputHandler output;
-double        buff = 0.5; // will be reduced once IC loaded
+SimState      sim   = {};
+double        buff  = 0.5; // will be reduced once IC loaded

@@ -2,7 +2,6 @@
 #define MPI_MIGRATE_H
 #pragma once
 
-#include "extension.h"
 #include "global/gpu_compat.h"
 #include "mpi_compat.h"
 
@@ -25,6 +24,9 @@ void migrate_init(int n_local_initial);
 
 // main entry, called from voronoi::move_mesh; updates mesh->n_hydro in place
 void migrate_seeds(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new);
+
+// number of cells this rank sent in the most recent migrate_seeds call (0 before any call)
+int last_n_migrated();
 
 }  // namespace proteus_mpi
 

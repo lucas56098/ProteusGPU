@@ -12,6 +12,15 @@ struct ICHeader {
     int dimension;
 };
 
+// snapshot header metadata returned by readSnapshotFile (used for restart bookkeeping)
+struct SnapshotMeta {
+    double t_sim    = 0.0; // simulation time at write
+    int    step     = 0;   // step counter at write
+    int    n_global = 0;   // total cell count across all ranks
+    int    nranks   = 0;   // ranks the snapshot was written with
+    int    rank     = 0;   // which rank wrote this file
+};
+
 struct ICData {
     std::vector<double>  pos;      // dimension * numSeeds
     std::vector<hsize_t> pos_dims; // [numSeeds, dimension]
@@ -49,11 +58,13 @@ class InputHandler {
     // read initial conditions from a HDF5 file
     bool readICFile(const std::string& filename, ICData& icData);
 
-    // read a snapshot file into ICData (for restart) and return the simulation time
-    bool readSnapshotFile(const std::string& filename, ICData& icData, double& t_sim);
+    // read a snapshot file into ICData (for restart); populates meta with header bookkeeping.
+    // Requires the restart metadata attrs (n_global, nranks, rank) to be present.
+    bool readSnapshotFile(const std::string& filename, ICData& icData, SnapshotMeta& meta);
 
-    // find the latest snapshot_N.hdf5 in a directory, return N (or -1 if none found)
-    static int findLatestSnapshot(const std::string& dir);
+    // find the latest snapshot N in a directory; matches "snapshot_N.hdf5" when nranks==1,
+    // or "snapshot_N.<rank>.hdf5" otherwise. Returns N or -1 if none found.
+    static int findLatestSnapshot(const std::string& dir, int nranks, int rank);
 };
 
 #endif // INPUT_H

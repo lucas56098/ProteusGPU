@@ -18,7 +18,6 @@ namespace gradients {
 
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
         Profiler::StartTimer("GRADIENTS (par)");
-        zero_grad(grads);
 
 #ifndef CPU_DEBUG
         int tpb    = _GRAD_BLOCK_SIZE_;
@@ -97,7 +96,7 @@ namespace gradients {
             hsize_t neighbor = (hsize_t)mesh->neighbor_cell[face_idx];
 
             // separation vector and inverse-distance weighting
-            POINT_TYPE dx    = point_diff(mesh->seeds[neighbor], mesh->seeds[i]);
+            POINT_TYPE dx    = point_diff_periodic(mesh->seeds[neighbor], mesh->seeds[i]);
             double     dist2 = point_dot(dx, dx);
             if (dist2 < 1e-24) continue;
 
@@ -178,7 +177,7 @@ namespace gradients {
         for (hsize_t fj = 0; fj < face_count; fj++) {
             hsize_t    face_idx = face_start + fj;
             hsize_t    neighbor = (hsize_t)mesh->neighbor_cell[face_idx];
-            POINT_TYPE dx       = point_diff(mesh->seeds[neighbor], mesh->seeds[i]);
+            POINT_TYPE dx       = point_diff_periodic(mesh->seeds[neighbor], mesh->seeds[i]);
             POINT_TYPE d        = point_mul(0.5, dx);
 
             alpha_rho = fmin(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));

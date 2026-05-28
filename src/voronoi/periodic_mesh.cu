@@ -8,6 +8,7 @@
 #include "../voronoi/voronoi.h"
 #include "periodic_mesh.h"
 #include <cmath>
+#include <cstring>
 #include <iostream>
 
 namespace voronoi {
@@ -132,14 +133,22 @@ namespace voronoi {
         constexpr int MAX_WIDEN_ITERS   = 4;
         constexpr int MAX_CASCADE_ITERS = 4;
 
-        const bool have_mpi_neighbors = proteus_mpi::g_halo.n_neighbors > 0;
-        // 2x the periodic-ghost band: a 1x band can falsely satisfy security_radius at iter 0
-        // when local cell density is non-uniform and the true K-th-nearest sits beyond the halo
-        const int W_base       = have_mpi_neighbors ? 2 * proteus_mpi::halo_default_width(buff) : 0;
-        hsize_t   n_ghosts     = 0;
-        hsize_t   n_mpi_ghosts = 0;
-        int       W_iter       = W_base;
-        int       last_iter    = 0;
+        // Empirical startup margin on top of the periodic-buff-derived W_base.
+        // Avoids the typical first-step widening iteration on non-trivial ICs
+        // (e.g. KH at moderate density) by starting wide enough that the
+        // completeness check passes on the first build.
+        constexpr int W_STARTUP_MARGIN  = 2;
+        const bool have_mpi_neighbors = proteus_mpi::halo.n_neighbors > 0;
+        const int  W_base             = have_mpi_neighbors
+                                            ? proteus_mpi::halo_default_width(buff) + W_STARTUP_MARGIN
+                                            : 0;
+        // sticky across steps: start from whatever the last build converged at. If widening
+        // didn't fire last step we'll try shrinking by 1 below to track changing density.
+        static int s_last_W           = 0;
+        hsize_t    n_ghosts           = 0;
+        hsize_t    n_mpi_ghosts       = 0;
+        int        W_iter             = have_mpi_neighbors ? std::max(W_base, s_last_W) : 0;
+        int        last_iter          = 0;
 
         // halo-widening loop: keep expanding the halo width until no cell fails security_radius.
         // Lockstep Allreduce(SUM) on the per-rank failure count keeps all ranks in sync.
@@ -159,19 +168,19 @@ namespace voronoi {
             n_mpi_ghosts = 0;
             if (have_mpi_neighbors) {
                 proteus_mpi::halo_build_exports(pts_data, (int)n_hydro, buff, W_iter);
-                proteus_mpi::halo_exchange_initial(mesh, primvar, pts, (int)(n_hydro + n_ghosts));
-                n_mpi_ghosts = (hsize_t)proteus_mpi::g_halo.n_mpi_ghosts;
-                for (int n = 0; n < proteus_mpi::g_halo.n_neighbors; n++) {
-                    int g_off = proteus_mpi::g_halo.ghost_offset[n];
-                    for (int j = 0; j < proteus_mpi::g_halo.recv_count[n]; j++) {
-                        int slot                                        = g_off + j;
+                proteus_mpi::halo_exchange_seeds(mesh, pts, (int)(n_hydro + n_ghosts));
+                n_mpi_ghosts = (hsize_t)proteus_mpi::halo.n_mpi_ghosts;
+                for (int n = 0; n < proteus_mpi::halo.n_neighbors; n++) {
+                    int ghost_off = proteus_mpi::halo.ghost_offset[n];
+                    for (int j = 0; j < proteus_mpi::halo.recv_count[n]; j++) {
+                        int slot                                        = ghost_off + j;
                         int ext_k                                       = (int)n_hydro + slot;
                         original_ids[(hsize_t)n_ghosts + (hsize_t)slot] = (hsize_t)ext_k;
                     }
                 }
             }
             const hsize_t n_total = n_hydro + n_ghosts + n_mpi_ghosts;
-
+            mesh->pts_mpi_base    = (int)(n_hydro + n_ghosts);
             voronoi::compute_mesh(mesh, pts, (int)n_total, primvar, primvar_aux, iter);
 
             // iter == 0 permuted primvar into new-k order, but export_indices and pts_data
@@ -181,41 +190,62 @@ namespace voronoi {
             //   (2) re-shuffle pts_data so KNN at iter > 0 indexes cells in new-k order;
             //   (3) set orig_to_k_save = identity so the lookup pass1 gives k = orig.
             if (iter == 0 && have_mpi_neighbors) {
+                Profiler::StartTimer("MPI_COMM");
+                Profiler::StartTimer("MPI_REMAP");
                 static std::vector<unsigned int> inv_gather;
-                inv_gather.assign(n_hydro, 0u);
+                inv_gather.resize((size_t)n_hydro);
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
                 for (hsize_t new_k = 0; new_k < n_hydro; new_k++) {
                     inv_gather[mesh->gather_perm[new_k]] = (unsigned int)new_k;
                 }
                 proteus_mpi::halo_remap_export_indices(inv_gather.data(), (int)n_hydro);
 
-                // re-shuffle pts_data: pts_data_new[new_k] = pts_data_old[gather_perm[new_k]].
-                // mesh->seeds isn't safe — failed cells carry stale positions from the prev step.
                 static std::vector<POINT_TYPE> pts_scratch;
                 pts_scratch.resize((size_t)n_hydro);
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
                 for (hsize_t new_k = 0; new_k < n_hydro; new_k++) {
                     pts_scratch[new_k] = pts_data[mesh->gather_perm[new_k]];
                 }
-                for (hsize_t k = 0; k < n_hydro; k++)
-                    pts_data[k] = pts_scratch[k];
+                std::memcpy(pts_data, pts_scratch.data(), (size_t)n_hydro * sizeof(POINT_TYPE));
 
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
                 for (hsize_t k = 0; k < n_hydro; k++)
                     mesh->orig_to_k_save[k] = (unsigned int)k;
+                Profiler::EndTimer("MPI_REMAP");
+                Profiler::EndTimer("MPI_COMM");
             }
 
+            Profiler::StartTimer("MPI_COMM");
             int local_failed = 0;
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static) reduction(+:local_failed)
+#endif
             for (hsize_t k = 0; k < n_hydro; k++) {
                 if (mesh->cell_status[k] != voronoi::success) local_failed++;
             }
             // halo-completeness sentinel: catches the silent-failure case where every cell
             // reports success but some K-nearest sample reached the outermost halo layer,
             // meaning closer cells beyond the halo may have been missed
+            Profiler::StartTimer("MPI_COMPLETE");
             const int local_outer = have_mpi_neighbors ? voronoi::halo_completeness_flag(mesh, (int)n_ghosts) : 0;
+            Profiler::EndTimer("MPI_COMPLETE");
+            Profiler::EndTimer("MPI_COMM");
 
             int global_signal[2] = {local_failed, local_outer};
 #ifdef USE_MPI
             if (have_mpi_neighbors) {
                 const int local_signal[2] = {local_failed, local_outer};
-                MPI_Allreduce(local_signal, global_signal, 2, MPI_INT, MPI_SUM, proteus_mpi::g_halo.comm);
+                Profiler::StartTimer("MPI_COMM");
+                Profiler::StartTimer("MPI_REDUCE");
+                MPI_Allreduce(local_signal, global_signal, 2, MPI_INT, MPI_SUM, proteus_mpi::decomp.cart_comm);
+                Profiler::EndTimer("MPI_REDUCE");
+                Profiler::EndTimer("MPI_COMM");
             }
 #endif
             const int global_failed = global_signal[0];
@@ -239,22 +269,31 @@ namespace voronoi {
         // cross-rank perturbation cascade. cpu_fallback may perturb seeds; if any perturbed cell
         // sits in the boundary layer, the neighbor rank's MPI ghost copy is stale and we must
         // refresh pts_data, regen halos, and rebuild the mesh. Lockstep on global perturbation count.
+        int cascade_iters_used    = 0;
+        int cascade_perturbed_sum = 0;
         for (int cascade = 0; cascade < MAX_CASCADE_ITERS; cascade++) {
             const int local_perturbed = voronoi::cpu_fallback_failed_cells(mesh);
+            cascade_perturbed_sum += local_perturbed;
 
             int global_perturbed = local_perturbed;
 #ifdef USE_MPI
             if (have_mpi_neighbors) {
-                MPI_Allreduce(&local_perturbed, &global_perturbed, 1, MPI_INT, MPI_SUM, proteus_mpi::g_halo.comm);
+                Profiler::StartTimer("MPI_COMM");
+                Profiler::StartTimer("MPI_REDUCE");
+                MPI_Allreduce(&local_perturbed, &global_perturbed, 1, MPI_INT, MPI_SUM, proteus_mpi::decomp.cart_comm);
+                Profiler::EndTimer("MPI_REDUCE");
+                Profiler::EndTimer("MPI_COMM");
             }
 #endif
             if (global_perturbed == 0) {
+                cascade_iters_used = cascade;
                 if (cascade > 0) {
                     logging::root() << "VORONOI: perturbation cascade converged in " << cascade << " round(s)."
                                     << std::endl;
                 }
                 break;
             }
+            cascade_iters_used = cascade + 1;
             if (cascade == MAX_CASCADE_ITERS - 1) {
                 logging::root() << "VORONOI: perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << " with "
                                 << global_perturbed << " cells perturbed in last round." << std::endl;
@@ -272,23 +311,80 @@ namespace voronoi {
             }
             n_ghosts = regenerate_periodic_ghosts(n_hydro, pts_data, pts, original_ids, buff);
             proteus_mpi::halo_build_exports(pts_data, (int)n_hydro, buff, W_iter);
-            proteus_mpi::halo_exchange_initial(mesh, primvar, pts, (int)(n_hydro + n_ghosts));
-            n_mpi_ghosts = (hsize_t)proteus_mpi::g_halo.n_mpi_ghosts;
-            for (int n = 0; n < proteus_mpi::g_halo.n_neighbors; n++) {
-                int g_off = proteus_mpi::g_halo.ghost_offset[n];
-                for (int j = 0; j < proteus_mpi::g_halo.recv_count[n]; j++) {
-                    int slot                                        = g_off + j;
+            proteus_mpi::halo_exchange_seeds(mesh, pts, (int)(n_hydro + n_ghosts));
+            n_mpi_ghosts = (hsize_t)proteus_mpi::halo.n_mpi_ghosts;
+            for (int n = 0; n < proteus_mpi::halo.n_neighbors; n++) {
+                int ghost_off = proteus_mpi::halo.ghost_offset[n];
+                for (int j = 0; j < proteus_mpi::halo.recv_count[n]; j++) {
+                    int slot                                        = ghost_off + j;
                     int ext_k                                       = (int)n_hydro + slot;
                     original_ids[(hsize_t)n_ghosts + (hsize_t)slot] = (hsize_t)ext_k;
                 }
             }
             const hsize_t n_total = n_hydro + n_ghosts + n_mpi_ghosts;
+            mesh->pts_mpi_base    = (int)(n_hydro + n_ghosts);
             voronoi::compute_mesh(mesh,
                                   pts,
                                   (int)n_total,
                                   primvar,
                                   primvar_aux,
                                   /*iter=*/last_iter + 1 + cascade);
+        }
+
+        // Mesh is final. Compute the used-MPI-ghost subset (which slots actually
+        // appear as Voronoi-face neighbors of any local cell) and refresh primvars
+        // and v_mesh on that subset. Unused ghosts are skipped — their primvars
+        // stay stale but are never read in the gradient/flux paths.
+        if (have_mpi_neighbors) {
+            proteus_mpi::halo_build_used_subset(mesh);
+            proteus_mpi::halo_exchange_primvars(mesh, primvar);
+#ifdef MOVING_MESH
+            proteus_mpi::halo_exchange_v_mesh(mesh);
+#endif
+        }
+
+        // sticky W with slow decay. Lock in the wider W if widening fired this
+        // step; otherwise let it shrink by 1 every few steady steps so a one-off
+        // density spike at startup doesn't permanently inflate the halo.
+        if (have_mpi_neighbors) {
+            static int s_steady_count = 0;
+            if (last_iter > 0) {
+                s_last_W       = std::max(s_last_W, W_iter);
+                s_steady_count = 0;
+            } else {
+                s_steady_count++;
+                if (s_steady_count >= 5 && s_last_W > W_base) {
+                    s_last_W       = std::max(W_base, s_last_W - 1);
+                    s_steady_count = 0;
+                }
+            }
+        }
+
+        // local halo send counts
+        int send_total_local = 0;
+        for (int n = 0; n < proteus_mpi::halo.n_neighbors; n++) send_total_local += proteus_mpi::halo.send_count[n];
+        const int send_used_local = proteus_mpi::halo.n_used_send;
+
+        // global reductions for the per-step summary
+        const int widen_global    = logging::max_global(last_iter);          // 0 = no widening fired
+        const int cascade_global  = logging::max_global(cascade_iters_used); // 0 = no perturb cascade
+        const int perturbed_total = logging::sum_global(cascade_perturbed_sum);
+        const int send_total_g    = logging::sum_global(send_total_local);
+        const int send_used_g     = logging::sum_global(send_used_local);
+        const int migrated_g      = logging::sum_global(proteus_mpi::last_n_migrated());
+
+        // VORONOI: retries — printed only when anomalies occurred
+        if (widen_global > 0 || cascade_global > 0 || perturbed_total > 0) {
+            logging::root() << "VORONOI: retries widen=" << widen_global
+                            << " cascade=" << cascade_global
+                            << " perturbed=" << perturbed_total << std::endl;
+        }
+
+        // MPI: per-step halo+migrate summary
+        if (send_total_g > 0 || migrated_g > 0) {
+            const double pct_used = (send_total_g > 0) ? 100.0 * send_used_g / (double)send_total_g : 0.0;
+            logging::root() << "MPI: send_used=" << send_used_g << "/" << send_total_g
+                            << " (" << pct_used << "% used)  migrated=" << migrated_g << std::endl;
         }
 
         Profiler::EndTimer("MESH_TOTAL");
@@ -431,7 +527,7 @@ namespace voronoi {
 
         // one atomicAdd per warp (skip if warp produced no ghosts)
         int warp_base = 0;
-        if ((threadIdx.x & 31) == 0 && warp_total > 0) { warp_base = atomicAdd(d_ghost_count, warp_total); }
+        if ((threadIdx.x & 31) == 0 && warp_total > 0) { warp_base = portable_atomicAdd(d_ghost_count, warp_total); }
         warp_base = __shfl_sync(full_mask, warp_base, 0);
 
         if (!active || my_count == 0) return;

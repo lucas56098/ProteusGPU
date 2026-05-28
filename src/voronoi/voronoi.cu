@@ -60,7 +60,7 @@ namespace voronoi {
         const double  ghost_frac     = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         const hsize_t n_grow         = (hsize_t)proteus_mpi::max_n_local((int)n_hydro);
         const hsize_t max_pgh        = (hsize_t)(2.0 * ghost_frac * n_grow) + 1;
-        const hsize_t max_mpi_ghosts = (hsize_t)proteus_mpi::g_n_mpi_capacity;
+        const hsize_t max_mpi_ghosts = (hsize_t)proteus_mpi::n_mpi_capacity;
         const hsize_t max_ghosts     = max_pgh + max_mpi_ghosts;
         const hsize_t total          = n_grow + max_ghosts;
         const hsize_t max_faces      = n_grow * _FACE_CAPACITY_MULT_;
@@ -82,7 +82,9 @@ namespace voronoi {
         mesh->volumes     = gpu_calloc<double>(ext);
         mesh->face_counts = gpu_calloc<hsize_t>(ext);
         mesh->face_ptr    = gpu_calloc<hsize_t>(ext);
-        mesh->cell_status = gpu_alloc<Status>(ext);
+        mesh->cell_status    = gpu_alloc<Status>(ext);
+        mesh->cell_hit_outer = gpu_calloc<unsigned char>(ext);
+        mesh->pts_mpi_base   = 0;
 #ifdef MOVING_MESH
         mesh->v_mesh      = gpu_calloc<POINT_TYPE>(ext);
         mesh->old_volumes = gpu_calloc<double>(ext);
@@ -191,7 +193,7 @@ namespace voronoi {
         if (sid >= n_total) return;
         const unsigned int orig = d_permutation[sid];
         if ((hsize_t)orig < n_hydro) {
-            const int k          = atomicAdd(counter, 1);
+            const int k          = portable_atomicAdd(counter, 1);
             real_sorted_ids[k]   = (unsigned int)sid;
             sid_to_neighbor[sid] = (unsigned int)k;
             orig_to_k[orig]      = (unsigned int)k;
@@ -428,6 +430,7 @@ namespace voronoi {
         const hsize_t n_hydro = mesh->n_hydro;
         gpu_memset(mesh->face_counts, 0, n_hydro * sizeof(hsize_t));
         gpu_memset(mesh->face_ptr, 0, n_hydro * sizeof(hsize_t));
+        gpu_memset(mesh->cell_hit_outer, 0, n_hydro * sizeof(unsigned char));
 
 #ifndef CPU_DEBUG
         const int tpb    = _MESH_BLOCK_SIZE_;
@@ -596,13 +599,13 @@ namespace voronoi {
 
     GLOBAL void kernel_count_failures(int n, const Status* stat, int* fail_count) {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i < n && stat[i] != success) atomicAdd(fail_count, 1);
+        if (i < n && stat[i] != success) portable_atomicAdd(fail_count, 1);
     }
 
     GLOBAL void kernel_collect_failed_cells(int n, const Status* stat, int* failed_indices, int* failed_count) {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i < n && stat[i] != success) {
-            const int slot       = atomicAdd(failed_count, 1);
+            const int slot       = portable_atomicAdd(failed_count, 1);
             failed_indices[slot] = i;
         }
     }
@@ -658,13 +661,22 @@ namespace voronoi {
 
         BasicConvexCell<MAX_P, MAX_T> cell(seed_id, d_stored_points, &(stat[k]), mesh->buff);
 
+        // only read by the MPI completeness piggyback below; suppress unused warning when
+        // built without USE_MPI or on the device side (where that block is excluded)
+        int  __attribute__((unused)) v_terminate = K - 1;
+        bool __attribute__((unused)) early_break = false;
         for (int v = 0; v < K; v++) {
             const unsigned int z = local_knn[v];
             cell.clip_by_plane(z);
-            if (stat[k] != success) break;
+            if (stat[k] != success) {
+                v_terminate = v;
+                break;
+            }
 
             if (v >= 2 * DIMENSION &&
                 cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * z))) {
+                v_terminate = v;
+                early_break = true;
                 break;
             }
         }
@@ -673,9 +685,34 @@ namespace voronoi {
             stat[k] = security_radius_not_reached;
         }
 
+#ifndef __CUDA_ARCH__
+#ifdef USE_MPI
+        // Completeness piggyback (CPU). Fire only when the Voronoi cell
+        // succeeded by an early break *before* v=K-1, the deciding clip plane
+        // was an outermost-layer MPI ghost, and this is a fast-tier build
+        // (K small). For slow-tier (K=190) cells the K-NN sphere routinely
+        // reaches the outer halo even though the cell is geometrically
+        // correct — flagging them just triggers spurious widening.
+        if (stat[k] == success && early_break && v_terminate < K - 1 && K <= 50) {
+            const int                  n_mpi_ghosts = proteus_mpi::halo.n_mpi_ghosts;
+            const unsigned char* const is_outer     = proteus_mpi::halo.is_outer_layer;
+            const int                  pts_mpi_base = mesh->pts_mpi_base;
+            if (n_mpi_ghosts > 0 && is_outer != nullptr) {
+                const unsigned int orig = knn->d_permutation[local_knn[v_terminate]];
+                if ((int)orig >= pts_mpi_base) {
+                    const int slot = (int)orig - pts_mpi_base;
+                    if (slot >= 0 && slot < n_mpi_ghosts && is_outer[slot]) {
+                        mesh->cell_hit_outer[k] = 1;
+                    }
+                }
+            }
+        }
+#endif
+#endif
+
         if (stat[k] == success) {
             const int     fc        = count_cell_faces(cell);
-            const hsize_t my_offset = (hsize_t)portable_atomicAdd(face_offset, (unsigned long long)fc);
+            const hsize_t my_offset = portable_atomicAdd(face_offset, (hsize_t)fc);
             if (my_offset + (hsize_t)fc > mesh->face_capacity) {
                 portable_atomicExch(overflow_flag, 1);
                 return;
@@ -888,13 +925,8 @@ namespace voronoi {
                         mesh->num_faces         = (hsize_t)face_offset;
                         FallbackOutcome outcome = rebuild_cell_with_perturb_retry(mesh, kn, d_stored_points, cell_sids);
                         if (outcome == FallbackOutcome::failed) {
-                            std::cerr << "VORONOI: symmetry rebuild for cell " << kn << " all fallback attempts FAILED."
-                                      << std::endl;
-#ifdef USE_MPI
-                            MPI_Abort(MPI_COMM_WORLD, 1);
-#else
-                            exit(EXIT_FAILURE);
-#endif
+                            proteus_mpi::exit_failure(
+                                "VORONOI: symmetry rebuild for cell %d all fallback attempts FAILED.\n", (int)kn);
                         }
                         face_offset = (unsigned long long)mesh->num_faces;
                         if (outcome == FallbackOutcome::ok_perturbed) next_work.push_back(kn);
@@ -982,12 +1014,7 @@ namespace voronoi {
 
             const Status original = stat[k];
             if (original != security_radius_not_reached && original != needs_exact_predicates) {
-                std::cerr << "VORONOI: cell " << k << " failed with unrecoverable status: " << original << std::endl;
-#ifdef USE_MPI
-                MPI_Abort(MPI_COMM_WORLD, 1);
-#else
-                exit(EXIT_FAILURE);
-#endif
+                proteus_mpi::exit_failure("VORONOI: cell %d failed with unrecoverable status: %d\n", (int)k, (int)original);
             }
             std::cout << "VORONOI: cell " << k << " failed with status: " << original << std::endl;
 
@@ -998,12 +1025,7 @@ namespace voronoi {
                 perturbed_ks.push_back(k);
                 break;
             case FallbackOutcome::failed:
-                std::cerr << "VORONOI: cell " << k << " all fallback attempts FAILED, aborting." << std::endl;
-#ifdef USE_MPI
-                MPI_Abort(MPI_COMM_WORLD, 1);
-#else
-                exit(EXIT_FAILURE);
-#endif
+                proteus_mpi::exit_failure("VORONOI: cell %d all fallback attempts FAILED, aborting.\n", (int)k);
             }
         }
 
@@ -1049,11 +1071,11 @@ namespace voronoi {
 #endif
 
     int halo_completeness_flag(VMesh* mesh, int n_pgh) {
-        if (proteus_mpi::g_halo.n_neighbors == 0 || proteus_mpi::g_halo.n_mpi_ghosts == 0) return 0;
+        if (proteus_mpi::halo.n_neighbors == 0 || proteus_mpi::halo.n_mpi_ghosts == 0) return 0;
 
         const int n_hydro      = (int)mesh->n_hydro;
         const int pts_mpi_base = n_hydro + n_pgh;
-        const int n_mpi        = proteus_mpi::g_halo.n_mpi_ghosts;
+        const int n_mpi        = proteus_mpi::halo.n_mpi_ghosts;
 
 #ifndef CPU_DEBUG
         static int* d_flag = nullptr;
@@ -1063,24 +1085,21 @@ namespace voronoi {
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = (n_hydro + tpb - 1) / tpb;
         kernel_halo_completeness_check<<<blocks, tpb>>>(
-            n_hydro, mesh->knn, mesh->real_sorted_ids, pts_mpi_base, n_mpi, proteus_mpi::g_halo.is_outer_layer, d_flag);
+            n_hydro, mesh->knn, mesh->real_sorted_ids, pts_mpi_base, n_mpi, proteus_mpi::halo.is_outer_layer, d_flag);
         GPU_LAUNCH_CHECK();
         GPU_SYNC();
         return *d_flag;
 #else
-        unsigned int knearest[_K_];
+        (void)pts_mpi_base;
+        (void)n_mpi;
+        int flag = 0;
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static) reduction(|:flag)
+#endif
         for (int k = 0; k < n_hydro; k++) {
-            const int sid_self = (int)mesh->real_sorted_ids[k];
-            knn::knn_for_point<_K_>(sid_self, mesh->knn, knearest);
-            for (int i = 0; i < _K_; i++) {
-                const unsigned int orig = mesh->knn->d_permutation[knearest[i]];
-                if ((int)orig < pts_mpi_base) continue;
-                const int slot = (int)orig - pts_mpi_base;
-                if (slot < 0 || slot >= n_mpi) continue;
-                if (proteus_mpi::g_halo.is_outer_layer[slot]) return 1;
-            }
+            if (mesh->cell_hit_outer[k]) flag = 1;
         }
-        return 0;
+        return flag;
 #endif
     }
 

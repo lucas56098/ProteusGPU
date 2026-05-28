@@ -2,8 +2,8 @@
 #define STRUCTS_H
 #pragma once
 
-#include "../mpi/extension.h"
 #include "gpu_compat.h"
+
 namespace voronoi {
 
     // status codes for voronoi mesh generation
@@ -41,7 +41,40 @@ namespace hydro {
     // flux_t: alias for prim when used for fluxes
     using flux_t = prim;
 
+    // unphysical primvar-state check
+    enum UnphysCount {
+        UNPHYS_RHO = 0, // rho <= 0
+        UNPHYS_E   = 1, // E <= 0
+        UNPHYS_NAN = 2, // any field NaN
+        UNPHYS_N   = 3
+    };
+
 } // namespace hydro
+
+// per cell array sizing for MPI ghosts and migration
+namespace proteus_mpi {
+
+    // total MPI-ghost capacity
+    extern int n_mpi_capacity;
+
+    // migration headroom on n_local
+    constexpr double ALLOC_GROWTH = 1.5;
+
+    inline int max_n_local(int n_initial) {
+        return (int)((double)n_initial * ALLOC_GROWTH);
+    }
+
+    // runtime live size
+    inline int extended_size(int n_local) {
+        return n_local + n_mpi_capacity;
+    }
+
+    // allocated size
+    inline int alloc_per_cell_size(int n_initial) {
+        return max_n_local(n_initial) + n_mpi_capacity;
+    }
+
+} // namespace proteus_mpi
 
 namespace gradients {
 
@@ -65,7 +98,7 @@ namespace gradients {
         POINT_TYPE* vz;
 #endif
         POINT_TYPE* E;
-        size_t     n; // number of cells
+        size_t      n; // number of cells
 
         // load single-cell gradients from SoA arrays
         HD inline PrimGradient load(size_t i) const {
@@ -80,54 +113,6 @@ namespace gradients {
             return g;
         }
     };
-
-    inline void allocate_grad(size_t n, PrimGradients* g) {
-        const size_t ext = (size_t)proteus_mpi::alloc_per_cell_size((int)n);
-        g->rho           = gpu_alloc<POINT_TYPE>(ext);
-        g->vx            = gpu_alloc<POINT_TYPE>(ext);
-        g->vy            = gpu_alloc<POINT_TYPE>(ext);
-#ifdef dim_3D
-        g->vz = gpu_alloc<POINT_TYPE>(ext);
-#endif
-        g->E = gpu_alloc<POINT_TYPE>(ext);
-        g->n = n; // local count; ghost slots [n, ext) filled by halo exchange
-
-        gpu_advise_gpu_preferred(g->rho, ext * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(g->vx, ext * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(g->vy, ext * sizeof(POINT_TYPE));
-#ifdef dim_3D
-        gpu_advise_gpu_preferred(g->vz, ext * sizeof(POINT_TYPE));
-#endif
-        gpu_advise_gpu_preferred(g->E, ext * sizeof(POINT_TYPE));
-    }
-
-    inline void free_grad(PrimGradients* g) {
-        gpu_free(g->rho);
-        gpu_free(g->vx);
-        gpu_free(g->vy);
-#ifdef dim_3D
-        gpu_free(g->vz);
-#endif
-        gpu_free(g->E);
-        g->rho = nullptr;
-        g->vx  = nullptr;
-        g->vy  = nullptr;
-#ifdef dim_3D
-        g->vz = nullptr;
-#endif
-        g->E = nullptr;
-        g->n = 0;
-    }
-
-    inline void zero_grad(PrimGradients* g) {
-        gpu_memset(g->rho, 0, g->n * sizeof(POINT_TYPE));
-        gpu_memset(g->vx, 0, g->n * sizeof(POINT_TYPE));
-        gpu_memset(g->vy, 0, g->n * sizeof(POINT_TYPE));
-#ifdef dim_3D
-        gpu_memset(g->vz, 0, g->n * sizeof(POINT_TYPE));
-#endif
-        gpu_memset(g->E, 0, g->n * sizeof(POINT_TYPE));
-    }
 
 } // namespace gradients
 

@@ -2,15 +2,19 @@
 #define MPI_HALO_H
 #pragma once
 
-#include "extension.h"
 #include "global/gpu_compat.h"
 #include "mpi_compat.h"
 
-// Halo exchange between Cartesian neighbors. A layer of cells at each rank-rank
-// boundary is imported from the appropriate Cart neighbor; imports live in the
-// extended per-cell arrays at indices [n_hydro, n_hydro + n_mpi_ghosts).
+// Halo exchange between Cartesian neighbors. The pipeline is:
+//   1. halo_build_exports: identify boundary-layer cells per direction.
+//   2. halo_exchange_seeds: ship seed positions (full halo, every widening
+//      iteration). Mesh build only needs seeds.
+//   3. halo_build_used_subset: after the mesh converges, scan neighbor_cell
+//      to identify which MPI ghosts are actually referenced by local faces,
+//      then exchange a bitmap with senders so they know which subset to pack.
+//   4. halo_exchange_primvars / _gradients / _v_mesh: ship only the used subset.
+//      These are the per-step refresh paths and run in the hydro hot loop.
 
-// forward decls
 struct VMesh;
 namespace hydro {
     struct primvars;
@@ -21,94 +25,105 @@ namespace gradients {
 
 namespace proteus_mpi {
 
-// 3^DIMENSION - 1
 #ifdef dim_3D
 constexpr int HALO_MAX_NEIGHBORS = 26;
 #else
 constexpr int HALO_MAX_NEIGHBORS = 8;
 #endif
 
+// SoA-style packed payload for primvar refresh (one MPI message per neighbor)
+struct HaloPrimCell {
+    double     rho;
+    POINT_TYPE v;
+    double     E;
+};
+
+// naming: send_count/recv_count are full-halo per-neighbor arrays;
+// n_used_send/n_used_recv are used-subset totals; send_n_outer is the
+// outermost-layer split of the full halo.
 struct MpiHalo {
-    // Cart neighbor table (populated at init)
     int    n_neighbors;
     int    neighbor_ranks[HALO_MAX_NEIGHBORS];
-    int    neighbor_dirs[HALO_MAX_NEIGHBORS][3];   // (dx,dy,dz) ∈ {-1,0,+1}^d \ {0}
-    double neighbor_shift[HALO_MAX_NEIGHBORS][3];  // periodic-wrap shift for outgoing seeds
+    int    neighbor_dirs[HALO_MAX_NEIGHBORS][3];
+    double neighbor_shift[HALO_MAX_NEIGHBORS][3];
 
-    // capacities (one-shot at init)
     int n_mpi_capacity;
-    int per_dir_capacity;
+    int use_neighbor_coll;
 
-    // per-rebuild state. send/recv buffers have per-direction stride per_dir_capacity:
-    // neighbor n's slot j lives at sendbuf[n * per_dir_capacity + j].
+    // full halo layout (built by halo_build_exports, used by halo_exchange_seeds)
     int n_mpi_ghosts;
     int send_count[HALO_MAX_NEIGHBORS];
     int recv_count[HALO_MAX_NEIGHBORS];
-    int ghost_offset[HALO_MAX_NEIGHBORS + 1];  // imported cell j from neighbor n → [n_hydro + ghost_offset[n] + j]
+    int send_offset[HALO_MAX_NEIGHBORS + 1];
+    int ghost_offset[HALO_MAX_NEIGHBORS + 1];
 
-    int* export_indices;
+    int send_n_outer[HALO_MAX_NEIGHBORS];
+    int recv_n_outer[HALO_MAX_NEIGHBORS];
 
-    // preallocated send/recv buffers, SoA-packed per quantity
-    POINT_TYPE* sendbuf_seed;
-    POINT_TYPE* recvbuf_seed;
-    double*     sendbuf_rho;
-    double*     recvbuf_rho;
-    POINT_TYPE* sendbuf_v;
-    POINT_TYPE* recvbuf_v;
-    double*     sendbuf_E;
-    double*     recvbuf_E;
-    POINT_TYPE* sendbuf_vmesh;
-    POINT_TYPE* recvbuf_vmesh;
+    int*           export_indices;
+    unsigned char* dir_of_slot;
 
-    // gradient buffers pack (3 + DIMENSION) POINT_TYPE-sized components per cell
-    POINT_TYPE* sendbuf_grad;
-    POINT_TYPE* recvbuf_grad;
+    // used subset (built by halo_build_used_subset after the mesh converges,
+    // consumed by halo_exchange_primvars/_gradients/_v_mesh)
+    int  used_send_count[HALO_MAX_NEIGHBORS];
+    int  used_recv_count[HALO_MAX_NEIGHBORS];
+    int  used_send_offset[HALO_MAX_NEIGHBORS + 1];
+    int  used_recv_offset[HALO_MAX_NEIGHBORS + 1];
+    int  n_used_send;
+    int  n_used_recv;
+    int  used_subset_ready;       // 0 until halo_build_used_subset has run
 
-    // completeness sentinel: ghost is in the deepest layer (from receiver POV) of what
-    // was shipped. If a local cell's K-nearest reaches such a ghost, closer cells may
-    // exist beyond the halo and we must widen. send/recv layout matches the seed buffer
-    // (per-direction stride per_dir_capacity); is_outer_layer is the flat by-ghost-slot
-    // form, indexed as ghost_offset[n] + j.
-    unsigned char* sendbuf_outer;
-    unsigned char* recvbuf_outer;
+    int* used_export_indices; // [used_send_slot] -> local cell k
+    int* used_to_full_slot;   // [used_recv_slot] -> full ghost slot
+
+    // scratch bitmaps reused each rebuild (one byte per slot)
+    unsigned char* send_used_bitmap;
+    unsigned char* recv_used_bitmap;
+
+    // send/recv buffers
+    POINT_TYPE*   sendbuf_seed;
+    POINT_TYPE*   recvbuf_seed;
+    HaloPrimCell* sendbuf_prim;
+    HaloPrimCell* recvbuf_prim;
+    POINT_TYPE*   sendbuf_v_mesh;
+    POINT_TYPE*   recvbuf_v_mesh;
+    POINT_TYPE*   sendbuf_grad;
+    POINT_TYPE*   recvbuf_grad;
+
+    // is_outer_layer is derived from positional packing in halo_exchange_seeds
     unsigned char* is_outer_layer;
 
 #ifdef USE_MPI
-    MPI_Comm    comm;
-    MPI_Request reqs[2 * HALO_MAX_NEIGHBORS];
+    MPI_Comm     graph_comm;
+    MPI_Datatype mpi_prim_t;
+    MPI_Datatype mpi_point_t;
+    MPI_Datatype mpi_grad_cell_t;
 #endif
 };
 
-extern MpiHalo g_halo;
+extern MpiHalo halo;
 
-// one-shot init: builds Cart neighbor table and allocates send/recv buffers.
-// per_dir_capacity is derived analytically from the brick dims and the worst-case
-// halo width. single-node: no-op.
 void halo_init(int n_local, double buff);
 void halo_free();
 
-// build per-rebuild export-index lists from local seeds. W = halo-layer thickness
-// in buckets; pass 0 to auto-derive from buff/N_grid.
 void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff, int W = 0);
-
-// default halo width in buckets, matching the periodic-ghost band thickness
-int halo_default_width(double buff);
-
-// remap export_indices from old-k (pre-permute) to new-k (post-permute) so subsequent
-// halo_exchange_* calls within a hydro step pack the right cells
+int  halo_default_width(double buff);
 void halo_remap_export_indices(const unsigned int* inv_gather, int n_local);
 
-// initial exchange: seeds, primvars, v_mesh. Receivers populate the extended slots
-// of mesh->seeds, primvar, mesh->v_mesh and append seed positions to pts at offset
-// pts_mpi_base. Sets g_halo.n_mpi_ghosts.
-void halo_exchange_initial(VMesh* mesh, hydro::primvars* primvar, POINT_TYPE* pts, int pts_mpi_base);
+// ship seed positions on the full halo. receivers populate pts[pts_mpi_base..]
+// and mesh->seeds[n_hydro..]. sets halo.n_mpi_ghosts and is_outer_layer.
+void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base);
 
-// refresh primvars / gradients / v_mesh in MPI ghost slots before each compute
+// after mesh build, identify the subset of MPI ghosts that local faces
+// reference, exchange the bitmap with senders, and build the compact used-
+// subset arrays consumed by the per-quantity exchanges below.
+void halo_build_used_subset(VMesh* mesh);
+
+// per-quantity refreshes — use the compact used subset
 void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar);
 void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads);
-void halo_exchange_vmesh(VMesh* mesh);
+void halo_exchange_v_mesh(VMesh* mesh);
 
-// in-place global Allreduce(MIN) of dt
 void halo_dt_allreduce(double* dt);
 
 }  // namespace proteus_mpi

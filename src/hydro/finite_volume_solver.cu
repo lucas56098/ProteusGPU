@@ -2,6 +2,7 @@
 #include "../gradients/gradients.h"
 #include "../mpi/decomp.h"
 #include "../mpi/halo.h"
+#include "../mpi/mpi_compat.h"
 #include "../profiler/profiler.h"
 #include "finite_volume_solver.h"
 #include "riemann.cu" // include directly for single translation unit compilation
@@ -12,7 +13,8 @@ namespace hydro {
     // forward declarations
     HD void flux_update_for_cell(
         hsize_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
-    HD double dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*);
+    HD double   dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*);
+    static void check_unphysical_state(VMesh*, const primvars*);
 
 #ifndef CPU_DEBUG
     // kernels
@@ -22,72 +24,49 @@ namespace hydro {
     kernel_copy_primvars(hsize_t, const double*, const POINT_TYPE*, const double*, double*, POINT_TYPE*, double*);
     GLOBAL void kernel_dt_CFL(double, hsize_t, const VMesh*, const primvars*, double*);
     GLOBAL void kernel_volume_correct(hsize_t, const double*, const double*, double*, double*);
+    GLOBAL void kernel_check_unphysical(hsize_t, const primvars*, int*);
 #endif
 
     // ============================================================
     // Allocation and initialization
     // ============================================================
 
-    // step-scratch primvars buffer + gradient buffer (reused every hydro step)
-    static primvars*                 s_prim_new = nullptr;
-    static gradients::PrimGradients* s_grads    = nullptr;
+    void init_hydro() {
+        const int n_hydro = (int)sim.n_hydro;
 
-    // allocate primvars from IC data and copy into managed memory.
-    // ext sizes the array for both MPI ghost slots and migration growth headroom.
-    primvars* init(int n_hydro) {
-        const int ext = proteus_mpi::alloc_per_cell_size(n_hydro);
-
-        primvars* hydro_data = gpu_alloc<primvars>(1);
-        hydro_data->rho      = gpu_alloc<double>(ext);
-        hydro_data->v        = gpu_alloc<POINT_TYPE>(ext);
-        hydro_data->E        = gpu_alloc<double>(ext);
-
-        gpu_advise_gpu_preferred(hydro_data->rho, ext * sizeof(double));
-        gpu_advise_gpu_preferred(hydro_data->v, ext * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(hydro_data->E, ext * sizeof(double));
-
+        // primvar container + arrays, copy IC into managed memory
+        sim.primvar = gpu_alloc<primvars>(1);
+        allocate_prim_buffer(sim.n_hydro, sim.primvar);
         for (int i = 0; i < n_hydro; i++) {
-            hydro_data->rho[i] = icData.rho[i];
-            hydro_data->E[i]   = icData.energy[i];
-            hydro_data->v[i].x = icData.vel[DIMENSION * i];
-            hydro_data->v[i].y = icData.vel[DIMENSION * i + 1];
+            sim.primvar->rho[i] = icData.rho[i];
+            sim.primvar->E[i]   = icData.energy[i];
+            sim.primvar->v[i].x = icData.vel[DIMENSION * i];
+            sim.primvar->v[i].y = icData.vel[DIMENSION * i + 1];
 #ifdef dim_3D
-            hydro_data->v[i].z = icData.vel[DIMENSION * i + 2];
+            sim.primvar->v[i].z = icData.vel[DIMENSION * i + 2];
 #endif
         }
 
-        const int n_hydro_global = logging::sum_global((int)n_hydro);
+        // per-step scratch
+        sim.prim_new = gpu_alloc<primvars>(1);
+        allocate_prim_buffer(sim.n_hydro, sim.prim_new);
+        sim.grads = gpu_alloc<gradients::PrimGradients>(1);
+        gradients::allocate_grad(sim.n_hydro, sim.grads);
+
+        const int n_hydro_global = logging::sum_global(n_hydro);
         logging::root() << "HYDRO: Initialized primitive variables for " << n_hydro_global << " particles" << std::endl;
-        return hydro_data;
     }
 
-    void free_prim(primvars** primvar) {
-        gpu_free((*primvar)->rho);
-        gpu_free((*primvar)->v);
-        gpu_free((*primvar)->E);
-        gpu_free(*primvar);
-        *primvar = NULL;
-    }
-
-    // allocate the per-step scratch buffers used by hydro_step (s_prim_new, s_grads)
-    void allocate_hydro_buffers(hsize_t n_hydro) {
-        s_prim_new = gpu_alloc<primvars>(1);
-        allocate_prim_buffer(n_hydro, s_prim_new);
-        s_grads = gpu_alloc<gradients::PrimGradients>(1);
-        gradients::allocate_grad(n_hydro, s_grads);
-    }
-
-    void free_hydro_buffers() {
-        free_prim_buffer(s_prim_new);
-        gradients::free_grad(s_grads);
-        gpu_free(s_prim_new);
-        gpu_free(s_grads);
-        s_prim_new = nullptr;
-        s_grads    = nullptr;
-    }
-
-    primvars* prim_new_buffer() {
-        return s_prim_new;
+    void free_hydro() {
+        free_prim_buffer(sim.primvar);
+        free_prim_buffer(sim.prim_new);
+        gradients::free_grad(sim.grads);
+        gpu_free(sim.primvar);
+        gpu_free(sim.prim_new);
+        gpu_free(sim.grads);
+        sim.primvar  = nullptr;
+        sim.prim_new = nullptr;
+        sim.grads    = nullptr;
     }
 
     // ============================================================
@@ -96,10 +75,10 @@ namespace hydro {
 
     void hydro_step(double dt, VMesh* mesh, primvars* primvar) {
 
-        primvars*                 prim_new = s_prim_new;
-        gradients::PrimGradients* grads    = s_grads;
+        primvars*                 prim_new = sim.prim_new;
+        gradients::PrimGradients* grads    = sim.grads;
 
-        // refresh MPI ghost primvars (stale after the previous step's prim_new↔primvar swap)
+        // refresh MPI ghost primvars
         proteus_mpi::halo_exchange_primvars(mesh, primvar);
 
         // initialize new state from old primitive variables
@@ -124,11 +103,13 @@ namespace hydro {
 #ifdef MOVING_MESH
         voronoi::compute_mesh_velocities(mesh, primvar, grads);
         // refresh MPI ghost v_mesh — the upcoming flux reads it at neighbor indices
-        proteus_mpi::halo_exchange_vmesh(mesh);
+        proteus_mpi::halo_exchange_v_mesh(mesh);
 #endif
 
         // first half update (no time extrapolation)
         apply_flux_update(0.5 * dt, 0.0, mesh, primvar, grads, prim_new);
+        logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (1/2)"
+                        << std::endl;
 
 #ifdef MOVING_MESH
         // store old volume
@@ -162,6 +143,8 @@ namespace hydro {
 
         // second half update (with time extrapolation)
         apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, prim_new);
+        logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (2/2)"
+                        << std::endl;
 
         // swap primvar pointers
 #ifndef CPU_DEBUG
@@ -180,9 +163,11 @@ namespace hydro {
             primvar->E    = prim_new->E;
             prim_new->E   = tmp_E;
         }
+
+        check_unphysical_state(mesh, primvar);
     }
 
-    // dispatch the per-cell flux update; dt_extrap > 0 enables MUSCL-Hancock time extrapolation
+    // per cell flux update (used in both RK2 steps)
     void apply_flux_update(double                          dt_update,
                            double                          dt_extrap,
                            const VMesh*                    mesh,
@@ -247,10 +232,65 @@ namespace hydro {
     }
 
     // ============================================================
+    // Diagnostics
+    // ============================================================
+
+    // scan primvar for unphysical values
+    static void check_unphysical_state(VMesh* mesh, const primvars* primvar) {
+        int counts[UNPHYS_N] = {0, 0, 0};
+#ifndef CPU_DEBUG
+        static int* d_counts = nullptr;
+        if (!d_counts) d_counts = gpu_alloc<int>(UNPHYS_N);
+        for (int k = 0; k < UNPHYS_N; k++)
+            d_counts[k] = 0;
+        const int tpb    = _HYDRO_BLOCK_SIZE_;
+        const int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
+        Profiler::StartGPU("kernel_check_unphysical");
+        kernel_check_unphysical<<<blocks, tpb>>>(mesh->n_hydro, primvar, d_counts);
+        Profiler::EndGPU("kernel_check_unphysical");
+        GPU_SYNC();
+        for (int k = 0; k < UNPHYS_N; k++)
+            counts[k] = d_counts[k];
+#else
+        int n_rho_bad = 0, n_E_bad = 0, n_nan = 0;
+#ifdef USE_OPENMP
+#pragma omp parallel for reduction(+ : n_rho_bad, n_E_bad, n_nan)
+#endif
+        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
+            const double rho = primvar->rho[i];
+            const double E   = primvar->E[i];
+            if (rho <= 0.0) n_rho_bad++; // NaN <= 0 is false, so NaN doesn't double-count here
+            if (E <= 0.0) n_E_bad++;
+            const bool has_nan = std::isnan(rho) || std::isnan(E) || std::isnan(primvar->v[i].x) ||
+                                 std::isnan(primvar->v[i].y)
+#ifdef dim_3D
+                                 || std::isnan(primvar->v[i].z)
+#endif
+                ;
+            if (has_nan) n_nan++;
+        }
+        counts[UNPHYS_RHO] = n_rho_bad;
+        counts[UNPHYS_E]   = n_E_bad;
+        counts[UNPHYS_NAN] = n_nan;
+#endif
+        // global reduce; abort the run if anything fired
+        const int rho_bad = logging::sum_global(counts[UNPHYS_RHO]);
+        const int E_bad   = logging::sum_global(counts[UNPHYS_E]);
+        const int nan_bad = logging::sum_global(counts[UNPHYS_NAN]);
+        if (rho_bad == 0 && E_bad == 0 && nan_bad == 0) return;
+
+        if (rho_bad > 0) logging::root() << "HYDRO: WARNING: " << rho_bad << " cells with rho<=0" << std::endl;
+        if (E_bad > 0) logging::root() << "HYDRO: WARNING: " << E_bad << " cells with E<=0" << std::endl;
+        if (nan_bad > 0) logging::root() << "HYDRO: WARNING: " << nan_bad << " cells with NaN" << std::endl;
+        proteus_mpi::exit_failure("HYDRO: ABORT: unphysical state detected — terminating run.\n");
+    }
+
+    // ============================================================
     // CUDA kernel wrappers
     // ============================================================
 #ifndef CPU_DEBUG
 
+    // calls flux update for cell
     GLOBAL void __launch_bounds__(_HYDRO_BLOCK_SIZE_, 2) kernel_flux_update(double          dt_update,
                                                                             int             do_time_extrap_int,
                                                                             double          dt_extrap,
@@ -263,6 +303,7 @@ namespace hydro {
         flux_update_for_cell(i, dt_update, (do_time_extrap_int != 0), dt_extrap, mesh, prim_old, grads, prim_new);
     }
 
+    // copy primvars from one to another
     GLOBAL void kernel_copy_primvars(hsize_t           n_hydro,
                                      const double*     rho_src,
                                      const POINT_TYPE* v_src,
@@ -278,6 +319,7 @@ namespace hydro {
     }
 
     GLOBAL void
+    // for each cell calc CFL and then do warp-level reduction and lane 0 atomicMin
     kernel_dt_CFL(double CFL, hsize_t n_hydro, const VMesh* mesh, const primvars* primvar, double* d_min_dt) {
         hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -297,6 +339,28 @@ namespace hydro {
         }
     }
 
+    // per-cell sanity check
+    // counters: [n_rho<=0, n_E<=0, n_NaN]
+    GLOBAL void kernel_check_unphysical(hsize_t n_hydro, const primvars* p, int* counters) {
+        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i >= n_hydro) return;
+
+        const double rho = p->rho[i];
+        const double E   = p->E[i];
+
+        // sanity checks
+        if (rho <= 0.0) portable_atomicAdd(&counters[UNPHYS_RHO], 1); // NaN<=0 is false → no double-count
+        if (E <= 0.0) portable_atomicAdd(&counters[UNPHYS_E], 1);
+        if (isnan(rho) || isnan(E) || isnan(p->v[i].x) || isnan(p->v[i].y)
+#ifdef dim_3D
+            || isnan(p->v[i].z)
+#endif
+        ) {
+            portable_atomicAdd(&counters[UNPHYS_NAN], 1);
+        }
+    }
+
+    // cell size changes mid step -> need to correct rho, E for this
     GLOBAL void kernel_volume_correct(
         hsize_t n_hydro, const double* old_volumes, const double* new_volumes, double* rho, double* E) {
         hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -361,7 +425,7 @@ namespace hydro {
 
             // reconstruct left/right face states by spatial (and optionally temporal) extrapolation
             prim       state_l, state_r;
-            POINT_TYPE dx = point_diff(mesh->seeds[index_j], mesh->seeds[i]);
+            POINT_TYPE dx = point_diff_periodic(mesh->seeds[index_j], mesh->seeds[i]);
 
             apply_spatial_extrapolation(state_i, grad_i, point_mul(0.5, dx), &state_l);
             apply_spatial_extrapolation(state_j, grad_j, point_mul(-0.5, dx), &state_r);
@@ -372,19 +436,20 @@ namespace hydro {
             }
 
 #ifdef MOVING_MESH
-            // boost into the face-comoving frame so the Riemann solver sees a stationary face
+            // boost into the face-comoving frame
             convert_state_to_local_frame(&state_l, vel_face);
             convert_state_to_local_frame(&state_r, vel_face);
 #endif
 
-            // floor density and pressure to keep the Riemann solver well-defined
+            // floor density and pressure
             keep_state_physical(&state_l);
             keep_state_physical(&state_r);
 
-            // rotate so the face normal aligns with x; solve 1D Riemann; rotate flux back
+            // rotate into face frame
             rotate_to_face(&state_l, &g);
             rotate_to_face(&state_r, &g);
 
+            // solve flux
             flux_t flux_ij = riemann_hllc(state_l, state_r);
 
 #ifdef MOVING_MESH
@@ -420,8 +485,10 @@ namespace hydro {
         prim_new->E[i] -= frac * total_flux.E;
     }
 
-    // CFL timestep for cell i: CFL * R_cell / (sound_speed + signal_velocity)
+    // CFL timestep for cell i
     HD double dt_CFL_for_cell(hsize_t i, double CFL, const VMesh* mesh, const primvars* primvar) {
+
+        // get state
         prim state_i;
         state_i.rho = primvar->rho[i];
         state_i.E   = primvar->E[i];
@@ -431,15 +498,17 @@ namespace hydro {
         state_i.v.z = primvar->v[i].z;
 #endif
 
+        // sound speed
         double P   = get_P_ideal_gas(&state_i);
         double c_i = sqrt(gamma_eos * P / state_i.rho);
 
+        // radius
 #ifdef dim_2D
         double R_i = sqrt(mesh->volumes[i] / M_PI);
 #else
         double R_i = cbrt(3.0 * mesh->volumes[i] / (4.0 * M_PI));
 #endif
-
+        // fluid speed
 #ifdef MOVING_MESH
         double dvx = state_i.v.x - mesh->v_mesh[i].x;
         double dvy = state_i.v.y - mesh->v_mesh[i].y;
@@ -456,7 +525,7 @@ namespace hydro {
         double v_sig = sqrt(state_i.v.x * state_i.v.x + state_i.v.y * state_i.v.y + state_i.v.z * state_i.v.z);
 #endif
 #endif
-
+        // calc CFL dt
         return CFL * (R_i / (c_i + v_sig));
     }
 
@@ -464,7 +533,7 @@ namespace hydro {
     // helper functions
     // ============================================================
 
-    // floor density and pressure to small positive values (numerical safety net)
+    // floor density and pressure to small positive values
     HD void keep_state_physical(prim* state) {
         const double rho_floor = 1e-12;
         const double p_floor   = 1e-12;
@@ -480,7 +549,7 @@ namespace hydro {
         if (state->E < emin) { state->E = emin; }
     }
 
-    // rotate velocity from lab axes into the face frame {n, m, p}
+    // rotate velocity from lab into the face frame
     HD void rotate_to_face(prim* state, geom* g) {
         double velx = state->v.x;
         double vely = state->v.y;
@@ -495,7 +564,7 @@ namespace hydro {
 #endif
     }
 
-    // rotate velocity from the face frame back to lab axes
+    // rotate velocity from the face frame back to lab frame
     HD void rotate_from_face(prim* state, geom* g) {
         double velx = state->v.x;
         double vely = state->v.y;
@@ -510,7 +579,7 @@ namespace hydro {
 #endif
     }
 
-    // st_extrap = state + dx . gradient (linear reconstruction from cell to face)
+    // st_extrap = state + dx * gradient
     HD void apply_spatial_extrapolation(const prim                    state,
                                         const gradients::PrimGradient gradient,
                                         POINT_TYPE                    dx,
@@ -524,7 +593,7 @@ namespace hydro {
         st_extrap->E = state.E + point_dot(gradient.E, dx);
     }
 
-    // st_extrap += dt * dW/dt (MUSCL-Hancock half-step time advance)
+    // st_extrap += dt * dW/dt
     HD void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap) {
         prim dWdt;
         gradients::time_gradient(state_i, grad_i, &dWdt);
@@ -539,8 +608,7 @@ namespace hydro {
     }
 
 #ifdef MOVING_MESH
-    // face velocity for moving-mesh boost: midpoint of generator velocities + offset correction.
-    // vel_face is in lab axes, vel_face_turned in the face frame {n, m, p}.
+    // face velocity
     HD void get_vel_face(hsize_t       i,
                          hsize_t       index_j,
                          POINT_TYPE    v_mesh_i,

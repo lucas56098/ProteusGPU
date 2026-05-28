@@ -1,6 +1,9 @@
 #ifndef GLOBALS_H
 #define GLOBALS_H
 #pragma once
+#include "log.h"
+#include <chrono>
+#include <cstddef>
 
 // Defaults for Config.sh compile-time constants. Any value set in
 // Config.sh overrides these.
@@ -71,7 +74,7 @@
 
 // hydro / mesh
 #ifndef _GAMMA_EOS_
-#define _GAMMA_EOS_ 5./3.
+#define _GAMMA_EOS_ 5. / 3.
 #endif
 #ifndef _CELL_SHAPING_SPEED_
 #define _CELL_SHAPING_SPEED_ 0.7
@@ -80,15 +83,49 @@
 #define _CELL_SHAPING_FACTOR_ 0.2
 #endif
 
-// forward declarations for IO types
+// forward declarations
 class InputHandler;
 struct ICData;
 class OutputHandler;
+struct VMesh;
+namespace hydro {
+    struct primvars;
+}
+namespace gradients {
+    struct PrimGradients;
+}
 
-// global simulation state
+// everything that lives across the main loop
+struct SimState {
+    // hydro + mesh
+    size_t                    n_hydro;
+    hydro::primvars*          primvar;  // current state (rho, v, E)
+    hydro::primvars*          prim_new; // swap target each step
+    gradients::PrimGradients* grads;    // per-step gradient scratch
+    VMesh*                    mesh;
+
+    // running state
+    double t_sim;
+    int    snap_num;
+    int    step;
+    double t_nextoutput;
+
+    // run config
+    double t_start;
+    double t_end;
+    double CFL;
+    double output_dt;
+
+    // wall-clock + per-step profile log
+    std::chrono::steady_clock::time_point wall_start;
+    logging::FileLogger                   profile_log;
+};
+
+// globals
 extern InputHandler  input;
 extern ICData        icData;
 extern OutputHandler output;
+extern SimState      sim;
 extern double        buff; // buffer for the periodic bc (box will be 1 + 2*buff long)
 
 // compile-time physics constants

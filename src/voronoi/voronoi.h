@@ -73,6 +73,10 @@ struct VMesh {
     // periodic-buffer width: bounding box covers [-buff, 1+buff]^d; reals stay in [0, 1]^d
     double buff;
 
+    // set during the cell build if any of cell k's K-nearest is an outermost-layer MPI ghost
+    unsigned char* cell_hit_outer;
+    int            pts_mpi_base;
+
     // KNN cache
     knn_problem* knn;
 };

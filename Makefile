@@ -98,7 +98,7 @@ VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/periodic_mesh.o
 HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o
 GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
 PROFILER_OBJ = $(BUILD_DIR)/profiler.o
-MPI_OBJ = $(BUILD_DIR)/mpi_init.o $(BUILD_DIR)/decomp.o $(BUILD_DIR)/halo.o $(BUILD_DIR)/migrate.o
+MPI_OBJ = $(BUILD_DIR)/mpi_compat.o $(BUILD_DIR)/decomp.o $(BUILD_DIR)/halo.o $(BUILD_DIR)/migrate.o
 OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(GRADIENTS_OBJ) $(PROFILER_OBJ) $(MPI_OBJ)
 
 # name of executable
@@ -230,7 +230,11 @@ all: $(TARGET)
 	@echo "OpenMP: $(OPENMP_MESSAGE)"
 	@echo "MPI: $(MPI_MESSAGE)"
 	@echo "=========================================="
+ifeq ($(MPI_ENABLED),USE_MPI)
+	@echo "Run with: mpirun -np [nranks] ./$(TARGET) [param.txt] [restart flag]"
+else
 	@echo "Run with: ./$(TARGET) [param.txt] [restart flag]"
+endif
 
 # ============================================================
 # Linking
@@ -296,13 +300,16 @@ $(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cu $(PROFILER_DIR)/profiler.h 
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # MPI: init, domain decomposition, halo exchange, particle migration
-$(BUILD_DIR)/mpi_init.o: $(MPI_DIR)/mpi_init.cu $(MPI_DIR)/mpi_init.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
+$(BUILD_DIR)/mpi_compat.o: $(MPI_DIR)/mpi_compat.cu $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/decomp.o: $(MPI_DIR)/decomp.cu $(MPI_DIR)/decomp.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/halo.o: $(MPI_DIR)/halo.cu $(MPI_DIR)/halo.h $(MPI_DIR)/decomp.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
+$(BUILD_DIR)/halo.o: $(MPI_DIR)/halo.cu $(MPI_DIR)/halo.h \
+    $(MPI_DIR)/halo_internal.cu $(MPI_DIR)/halo_init.cu \
+    $(MPI_DIR)/halo_build.cu $(MPI_DIR)/halo_exchange.cu \
+    $(MPI_DIR)/decomp.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/migrate.o: $(MPI_DIR)/migrate.cu $(MPI_DIR)/migrate.h $(MPI_DIR)/decomp.h $(MPI_DIR)/halo.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)

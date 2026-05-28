@@ -24,7 +24,7 @@ class Profiler {
     static void StartTimer(const std::string& name);
     static void EndTimer(const std::string& name);
     static void PrintResults();
-    static void PrintTimestep(int step, std::ostream& out);
+    static void LogTimestep(int step, std::ostream& out);
 
     static void StartGPU(const std::string& name);
     static void EndGPU(const std::string& name);
@@ -33,11 +33,12 @@ class Profiler {
     // CPU wall-clock timing
     static std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> m_StartTimes;
     static std::unordered_map<std::string, long long>                                      m_Timings;
-    static std::unordered_map<std::string, long long>                                      m_TimingsDiff;
+    static std::unordered_map<std::string, long long>                                      m_PrevStepCum; // cumulative at the end of the previous LogTimestep
 
     // GPU event timing (accumulated ms per region)
-    static std::unordered_map<std::string, double> m_GpuTimings; // cumulative ms
-    static std::unordered_map<std::string, int>    m_GpuCounts;  // call counts
+    static std::unordered_map<std::string, double> m_GpuTimings;     // cumulative ms
+    static std::unordered_map<std::string, int>    m_GpuCounts;      // call counts
+    static std::unordered_map<std::string, double> m_GpuPrevStepCum; // cumulative ms at the end of the previous LogTimestep
 
     // NVTX events for GPU timing
     struct GpuEventPair {

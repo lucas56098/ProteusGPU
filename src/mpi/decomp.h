@@ -33,14 +33,14 @@ struct MpiDecomp {
 #endif
 };
 
-extern MpiDecomp g_decomp;
+extern MpiDecomp decomp;
 
 // initialize decomposition; computes this rank's brick and prints the partition.
 // single-node mode is a no-op (full domain owned by rank 0)
 void decomp_init(int n_total, double buff);
 
 inline bool decomp_owns_bucket(int bx, int by, int bz) {
-    const MpiDecomp& d = g_decomp;
+    const MpiDecomp& d = decomp;
     return bx >= d.b0[0] && bx < d.b1[0]
         && by >= d.b0[1] && by < d.b1[1]
         && bz >= d.b0[2] && bz < d.b1[2];
