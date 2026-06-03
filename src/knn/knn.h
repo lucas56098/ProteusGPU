@@ -30,7 +30,6 @@ namespace knn {
     // resets counters and sorts points into grid
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
 
-    void   sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
     HD int cellFromPoint(int N_grid, double buff, double inv_boxsize, POINT_TYPE point);
 
     void knn_free(knn_problem** knn);

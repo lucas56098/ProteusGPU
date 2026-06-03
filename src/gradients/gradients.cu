@@ -5,15 +5,18 @@
 namespace gradients {
 
     // forward declarations
-    HD void compute_gradient_for_cell(hsize_t, const VMesh*, const hydro::primvars*, PrimGradients*);
-
+    HD void                 compute_gradient_for_cell(hsize_t, const VMesh*, const hydro::primvars*, PrimGradients*);
+    HD static inline double limit_single_gradient(const double      value,
+                                                  const double      min_value,
+                                                  const double      max_value,
+                                                  const POINT_TYPE& d,
+                                                  const POINT_TYPE& grad);
 #ifndef CPU_DEBUG
-    // kernel
     GLOBAL void kernel_compute_gradients(hsize_t, const VMesh*, const hydro::primvars*, PrimGradients*);
 #endif
 
     // ============================================================
-    // Main routine
+    // Main routines
     // ============================================================
 
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
@@ -35,6 +38,53 @@ namespace gradients {
 #endif
 
         Profiler::EndTimer("GRADIENTS (par)");
+    }
+
+    // calc dW/dt ("time gradients") based on states and gradients
+    HD void time_gradient(hydro::prim state_i, PrimGradient grad_i, hydro::prim* dWdt) {
+
+        // precomputed helpers
+        double v2   = point_dot(state_i.v, state_i.v);
+        double divv = grad_i.vx.x + grad_i.vy.y;
+        double kinx = state_i.v.x * grad_i.vx.x + state_i.v.y * grad_i.vy.x;
+        double kiny = state_i.v.x * grad_i.vx.y + state_i.v.y * grad_i.vy.y;
+#ifdef dim_3D
+        divv += grad_i.vz.z;
+        kinx += state_i.v.z * grad_i.vz.x;
+        kiny += state_i.v.z * grad_i.vz.y;
+        const double kinz = state_i.v.x * grad_i.vx.z + state_i.v.y * grad_i.vy.z + state_i.v.z * grad_i.vz.z;
+#endif
+
+        // pressure and its spatial derivatives
+        const double P     = (gamma_eos - 1.0) * (state_i.E - 0.5 * state_i.rho * v2);
+        const double dP_dx = (gamma_eos - 1.0) * (grad_i.E.x - 0.5 * (v2 * grad_i.rho.x + 2.0 * state_i.rho * kinx));
+        const double dP_dy = (gamma_eos - 1.0) * (grad_i.E.y - 0.5 * (v2 * grad_i.rho.y + 2.0 * state_i.rho * kiny));
+#ifdef dim_3D
+        const double dP_dz = (gamma_eos - 1.0) * (grad_i.E.z - 0.5 * (v2 * grad_i.rho.z + 2.0 * state_i.rho * kinz));
+#endif
+
+        // compute drho/dt
+        dWdt->rho = -(state_i.v.x * grad_i.rho.x + state_i.v.y * grad_i.rho.y + state_i.rho * divv);
+#ifdef dim_3D
+        dWdt->rho -= state_i.v.z * grad_i.rho.z;
+#endif
+
+        // compute dv/dt
+        double inv_rho = 1.0 / state_i.rho;
+        dWdt->v.x      = -(state_i.v.x * grad_i.vx.x + state_i.v.y * grad_i.vx.y) - dP_dx * inv_rho;
+        dWdt->v.y      = -(state_i.v.x * grad_i.vy.x + state_i.v.y * grad_i.vy.y) - dP_dy * inv_rho;
+#ifdef dim_3D
+        dWdt->v.x -= state_i.v.z * grad_i.vx.z;
+        dWdt->v.y -= state_i.v.z * grad_i.vy.z;
+        dWdt->v.z =
+            -(state_i.v.x * grad_i.vz.x + state_i.v.y * grad_i.vz.y + state_i.v.z * grad_i.vz.z) - dP_dz * inv_rho;
+#endif
+
+        // compute dE/dt
+        dWdt->E = -(state_i.v.x * (grad_i.E.x + dP_dx) + state_i.v.y * (grad_i.E.y + dP_dy) + (state_i.E + P) * divv);
+#ifdef dim_3D
+        dWdt->E -= state_i.v.z * (grad_i.E.z + dP_dz);
+#endif
     }
 
     // ============================================================
@@ -62,7 +112,7 @@ namespace gradients {
 
         hydro::prim state_i = get_state(i, primvar);
 
-        // weighted least-squares accumulators (M and b for each primitive variable)
+        // weighted least-squares (M and b for each primitive variable)
 #ifdef dim_2D
         double m00 = 0.0, m01 = 0.0, m11 = 0.0;
         double b_rho_0 = 0.0, b_rho_1 = 0.0;
@@ -78,7 +128,7 @@ namespace gradients {
         double b_E_0 = 0.0, b_E_1 = 0.0, b_E_2 = 0.0;
 #endif
 
-        // running min/max over neighbours (used by the slope limiter below)
+        // min/max over neighbours (used by the slope limiter below)
         double min_rho = state_i.rho, max_rho = state_i.rho;
         double min_vx = state_i.v.x, max_vx = state_i.v.x;
         double min_vy = state_i.v.y, max_vy = state_i.v.y;
@@ -199,11 +249,11 @@ namespace gradients {
     }
 
     // largest fac in [0,1] such that value + fac*dp stays in [min,max]
-    HD inline double limit_single_gradient(const double      value,
-                                           const double      min_value,
-                                           const double      max_value,
-                                           const POINT_TYPE& d,
-                                           const POINT_TYPE& grad) {
+    HD static inline double limit_single_gradient(const double      value,
+                                                  const double      min_value,
+                                                  const double      max_value,
+                                                  const POINT_TYPE& d,
+                                                  const POINT_TYPE& grad) {
         double dp  = point_dot(grad, d);
         double fac = 1.0;
 

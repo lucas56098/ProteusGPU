@@ -1,21 +1,22 @@
-#include "input.h"
 #include "../global/allvars.h"
+#include "input.h"
 #include <dirent.h>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 
+static void read_attr_int(hid_t group, const char* name, int& out);
+static void read_attr_double(hid_t group, const char* name, double& out);
+static bool read_dataset_1d(hid_t parent, const char* name, std::vector<double>& out);
+static bool read_dataset_2d(hid_t parent, const char* name, std::vector<double>& out, hsize_t* out_dims = nullptr);
+
 InputHandler::InputHandler(const std::string& filename) : paramFilePath(filename) {}
 
-// helper function to trim whitespace from a string
-std::string InputHandler::trim(const std::string& str) {
-    size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    size_t last = str.find_last_not_of(" \t\r\n");
-    return str.substr(first, (last - first + 1));
-}
+// ============================================================
+// read from parameter file
+// ============================================================
 
-// load parameters from parameter file
+// load parameters from file
 bool InputHandler::loadParameters() {
 
     std::ifstream file(paramFilePath);
@@ -53,33 +54,90 @@ bool InputHandler::loadParameters() {
     return true;
 }
 
-// access parameters
+// access parameter
 std::string InputHandler::getParameter(const std::string& key) const {
     auto it = parameters.find(key);
     if (it != parameters.end()) { return it->second; }
     throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
 }
 
-// get parameter as double
+// access parameter converted to double
 double InputHandler::getParameterDouble(const std::string& key) const {
-    auto it = parameters.find(key);
-    if (it == parameters.end()) {
-        throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
-    }
+    std::string value = getParameter(key);
     try {
-        return std::stod(it->second);
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + it->second +
+        return std::stod(value);
+    } catch (const std::exception&) {
+        throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + value +
                                  "' to double");
     }
 }
 
-// find the latest snapshot N in `dir`. Single-rank matches "snapshot_<N>.hdf5"; multi-rank matches
-// "snapshot_<N>.<rank>.hdf5" (each rank only looks for its own files). Returns N or -1 if none found.
+// ============================================================
+// load ic
+// ============================================================
+
+// read IC file into icData
+bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
+
+    // check file exists
+    std::ifstream f(filename);
+    if (!f.good()) {
+        std::cerr << "INPUT: Error! IC file [" << filename << "] does not exist!" << std::endl;
+        return false;
+    }
+
+    // open file
+    hid_t file_id = H5Fopen(filename.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (file_id < 0) {
+        std::cerr << "INPUT: Error! Could not open IC file: " << filename << std::endl;
+        return false;
+    }
+
+    // read header attributes
+    hid_t header_group = H5Gopen(file_id, "header", H5P_DEFAULT);
+    read_attr_int(header_group, "dimension", icData.header.dimension);
+    H5Gclose(header_group);
+
+    // check that IC dimension matches code dimension
+#ifdef dim_2D
+    if (icData.header.dimension != 2)
+#else
+    if (icData.header.dimension != 3)
+#endif
+    {
+        std::cerr << "INPUT: Error! IC file dimension mismatch!" << std::endl;
+        std::cerr << "  IC file dimension: " << icData.header.dimension << "D" << std::endl;
+        std::cerr << "  Compiled code dimension: " << DIMENSION << "D" << std::endl;
+        std::cerr << "  Please recompile with correct dimension in Config.sh or use a different IC file." << std::endl;
+        H5Fclose(file_id);
+        return false;
+    }
+
+    // read pos/rho/vel/energy
+    icData.pos_dims.resize(2);
+    if (!read_dataset_2d(file_id, "pos", icData.pos, icData.pos_dims.data()) ||
+        !read_dataset_1d(file_id, "rho", icData.rho) || !read_dataset_2d(file_id, "vel", icData.vel) ||
+        !read_dataset_1d(file_id, "energy", icData.energy)) {
+        H5Fclose(file_id);
+        return false;
+    }
+
+    // close file
+    H5Fclose(file_id);
+    logging::root() << "INPUT: IC file " << filename << " loaded successfully!" << std::endl;
+    return true;
+}
+
+// ============================================================
+// load snapshot
+// ============================================================
+
+// find latest snapshot N in directory
 int InputHandler::findLatestSnapshot(const std::string& dir, int nranks, int rank) {
     DIR* d = opendir(dir.c_str());
     if (!d) return -1;
 
+    // format: snapshot_*.hdf5 or snapshot_*.rank.hdf5
     const std::string prefix = "snapshot_";
     const std::string suffix = (nranks > 1) ? ("." + std::to_string(rank) + ".hdf5") : std::string(".hdf5");
 
@@ -102,195 +160,8 @@ int InputHandler::findLatestSnapshot(const std::string& dir, int nranks, int ran
     return max_num;
 }
 
-// opens IC.hdf5 file and reads initial conditions into ICData struct
-bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
-
-    // check that file exists
-    std::ifstream f(filename);
-    if (!f.good()) {
-        std::cerr << "INPUT: Error! IC file [" << filename << "] does not exist!" << std::endl;
-        return false;
-    }
-
-    // open the file
-    hid_t file_id = H5Fopen(filename.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (file_id < 0) {
-        std::cerr << "INPUT: Error! Could not open IC file: " << filename << std::endl;
-        return false;
-    }
-
-    // read header attributes
-    hid_t header_group = H5Gopen(file_id, "header", H5P_DEFAULT);
-    if (header_group < 0) {
-        std::cerr << "INPUT: Error! Could not open header group" << std::endl;
-        H5Fclose(file_id);
-        return false;
-    }
-
-    // read dimension attribute
-    hid_t attr_dim = H5Aopen(header_group, "dimension", H5P_DEFAULT);
-    if (attr_dim >= 0) {
-        H5Aread(attr_dim, H5T_NATIVE_INT, &icData.header.dimension);
-        H5Aclose(attr_dim);
-    } else {
-        std::cerr << "INPUT: Error! Could not read dimension attribute from IC file" << std::endl;
-        H5Gclose(header_group);
-        H5Fclose(file_id);
-        return false;
-    }
-
-// check that IC file dimension matches compiled code dimension
-#ifdef dim_2D
-    if (icData.header.dimension != 2)
-#else
-    if (icData.header.dimension != 3)
-#endif
-    {
-        std::cerr << "INPUT: Error! IC file dimension mismatch!" << std::endl;
-        std::cerr << "  IC file dimension: " << icData.header.dimension << "D" << std::endl;
-        std::cerr << "  Compiled code dimension: " << DIMENSION << "D" << std::endl;
-        std::cerr << "  Please recompile with correct dimension in Config.sh or use a different IC file." << std::endl;
-        H5Gclose(header_group);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    H5Gclose(header_group);
-
-    // read pos (coordinates) dataset
-    hid_t dataset_id = H5Dopen(file_id, "pos", H5P_DEFAULT);
-    if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open pos dataset" << std::endl;
-        H5Fclose(file_id);
-        return false;
-    }
-
-    // get dataspace and dimensions
-    hid_t dataspace_id = H5Dget_space(dataset_id);
-    int   rank         = H5Sget_simple_extent_ndims(dataspace_id);
-
-    if (rank != 2) {
-        std::cerr << "INPUT: Error! pos dataset must be of shape N x DIM" << std::endl;
-        H5Sclose(dataspace_id);
-        H5Dclose(dataset_id);
-        H5Fclose(file_id);
-        return false;
-    }
-    icData.pos_dims.resize(2);
-    H5Sget_simple_extent_dims(dataspace_id, icData.pos_dims.data(), NULL);
-
-    // read the data
-    hsize_t totalElements = icData.pos_dims[0] * icData.pos_dims[1];
-    icData.pos.resize(totalElements);
-    herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.pos.data());
-
-    if (status < 0) {
-        std::cerr << "INPUT: Error! Could not read pos data" << std::endl;
-        H5Sclose(dataspace_id);
-        H5Dclose(dataset_id);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    H5Sclose(dataspace_id);
-    H5Dclose(dataset_id);
-
-    // read rho dataset
-    dataset_id = H5Dopen(file_id, "rho", H5P_DEFAULT);
-    if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open rho dataset" << std::endl;
-        H5Fclose(file_id);
-        return false;
-    }
-
-    dataspace_id = H5Dget_space(dataset_id);
-    hsize_t rho_dims[1];
-    H5Sget_simple_extent_dims(dataspace_id, rho_dims, NULL);
-    icData.rho.resize(rho_dims[0]);
-
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.rho.data());
-
-    if (status < 0) {
-        std::cerr << "INPUT: Error! Could not read rho data" << std::endl;
-        H5Sclose(dataspace_id);
-        H5Dclose(dataset_id);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    H5Sclose(dataspace_id);
-    H5Dclose(dataset_id);
-
-    // read vel dataset
-    dataset_id = H5Dopen(file_id, "vel", H5P_DEFAULT);
-    if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open vel dataset" << std::endl;
-        H5Fclose(file_id);
-        return false;
-    }
-
-    dataspace_id = H5Dget_space(dataset_id);
-    rank         = H5Sget_simple_extent_ndims(dataspace_id);
-
-    if (rank != 2) {
-        std::cerr << "INPUT: Error! vel dataset must be of shape N x DIM" << std::endl;
-        H5Sclose(dataspace_id);
-        H5Dclose(dataset_id);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    hsize_t vel_dims[2];
-    H5Sget_simple_extent_dims(dataspace_id, vel_dims, NULL);
-    totalElements = vel_dims[0] * vel_dims[1];
-    icData.vel.resize(totalElements);
-
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.vel.data());
-
-    if (status < 0) {
-        std::cerr << "INPUT: Error! Could not read vel data" << std::endl;
-        H5Sclose(dataspace_id);
-        H5Dclose(dataset_id);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    H5Sclose(dataspace_id);
-    H5Dclose(dataset_id);
-
-    // read energy dataset
-    dataset_id = H5Dopen(file_id, "energy", H5P_DEFAULT);
-    if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open energy dataset" << std::endl;
-        H5Fclose(file_id);
-        return false;
-    }
-
-    dataspace_id = H5Dget_space(dataset_id);
-    hsize_t energy_dims[1];
-    H5Sget_simple_extent_dims(dataspace_id, energy_dims, NULL);
-    icData.energy.resize(energy_dims[0]);
-
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.energy.data());
-
-    if (status < 0) {
-        std::cerr << "INPUT: Error! Could not read energy data" << std::endl;
-        H5Sclose(dataspace_id);
-        H5Dclose(dataset_id);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    H5Sclose(dataspace_id);
-    H5Dclose(dataset_id);
-    H5Fclose(file_id);
-
-    logging::root() << "INPUT: IC file " << filename << " loaded successfully!" << std::endl;
-    return true;
-}
-
-// read a snapshot file into ICData for restart (seeds from cells/seeds, hydro from hydro/)
-bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData, SnapshotMeta& meta) {
+// read snapshot into icData for restart
+bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData, SnapshotHeader& snap) {
 
     std::ifstream f(filename);
     if (!f.good()) {
@@ -304,19 +175,15 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
         return false;
     }
 
-    // read header/time
+    // read header
     hid_t header_group = H5Gopen(file_id, "header", H5P_DEFAULT);
-    if (header_group < 0) {
-        std::cerr << "INPUT: Error! Could not open header group in snapshot" << std::endl;
-        H5Fclose(file_id);
-        return false;
-    }
-
-    hid_t attr_dim = H5Aopen(header_group, "dimension", H5P_DEFAULT);
-    if (attr_dim >= 0) {
-        H5Aread(attr_dim, H5T_NATIVE_INT, &icData.header.dimension);
-        H5Aclose(attr_dim);
-    }
+    read_attr_int(header_group, "dimension", icData.header.dimension);
+    read_attr_double(header_group, "time", snap.t_sim);
+    read_attr_int(header_group, "step", snap.step);
+    read_attr_int(header_group, "n_global", snap.n_global);
+    read_attr_int(header_group, "nranks", snap.nranks);
+    read_attr_int(header_group, "rank", snap.rank);
+    H5Gclose(header_group);
 
 #ifdef dim_2D
     if (icData.header.dimension != 2)
@@ -326,118 +193,88 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     {
         std::cerr << "INPUT: Error! Snapshot dimension mismatch! Snapshot: " << icData.header.dimension
                   << "D, compiled: " << DIMENSION << "D" << std::endl;
-        H5Gclose(header_group);
         H5Fclose(file_id);
         return false;
     }
 
-    hid_t attr_time = H5Aopen(header_group, "time", H5P_DEFAULT);
-    if (attr_time >= 0) {
-        H5Aread(attr_time, H5T_NATIVE_DOUBLE, &meta.t_sim);
-        H5Aclose(attr_time);
-    } else {
-        std::cerr << "INPUT: Error! Could not read time attribute from snapshot" << std::endl;
-        H5Gclose(header_group);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    // required restart metadata: refuse snapshots that pre-date these attributes
-    auto require_int_attr = [&](const char* name, int& out) -> bool {
-        if (H5Aexists(header_group, name) <= 0) {
-            std::cerr << "INPUT: Error! Snapshot missing required '" << name
-                      << "' attribute. Restart requires snapshots written by the current version." << std::endl;
-            return false;
-        }
-        hid_t a = H5Aopen(header_group, name, H5P_DEFAULT);
-        H5Aread(a, H5T_NATIVE_INT, &out);
-        H5Aclose(a);
-        return true;
-    };
-    if (!require_int_attr("step", meta.step) || !require_int_attr("n_global", meta.n_global)
-        || !require_int_attr("nranks", meta.nranks) || !require_int_attr("rank", meta.rank)) {
-        H5Gclose(header_group);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    H5Gclose(header_group);
-
-    // read cells/seeds -> icData.pos
-    hid_t mesh_group = H5Gopen(file_id, "mesh", H5P_DEFAULT);
-    if (mesh_group < 0) {
-        std::cerr << "INPUT: Error! Could not open mesh group in snapshot" << std::endl;
-        H5Fclose(file_id);
-        return false;
-    }
-
-    hid_t dataset_id = H5Dopen(mesh_group, "pos", H5P_DEFAULT);
-    if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open pos dataset in snapshot" << std::endl;
-        H5Gclose(mesh_group);
-        H5Fclose(file_id);
-        return false;
-    }
-
-    hid_t dataspace_id = H5Dget_space(dataset_id);
-    icData.pos_dims.resize(2);
-    H5Sget_simple_extent_dims(dataspace_id, icData.pos_dims.data(), NULL);
-    hsize_t totalElements = icData.pos_dims[0] * icData.pos_dims[1];
-    icData.pos.resize(totalElements);
-    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.pos.data());
-    H5Sclose(dataspace_id);
-    H5Dclose(dataset_id);
-    H5Gclose(mesh_group);
-
-    // read hydro/rho
+    // read mesh/pos and hydro/{rho,vel,energy}
+    hid_t mesh_group  = H5Gopen(file_id, "mesh", H5P_DEFAULT);
     hid_t hydro_group = H5Gopen(file_id, "hydro", H5P_DEFAULT);
-    if (hydro_group < 0) {
-        std::cerr << "INPUT: Error! Could not open hydro group in snapshot" << std::endl;
-        H5Fclose(file_id);
-        return false;
-    }
-
-    hsize_t n = icData.pos_dims[0];
-
-    dataset_id = H5Dopen(hydro_group, "rho", H5P_DEFAULT);
-    if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open rho dataset in snapshot" << std::endl;
+    icData.pos_dims.resize(2);
+    if (!read_dataset_2d(mesh_group, "pos", icData.pos, icData.pos_dims.data()) ||
+        !read_dataset_1d(hydro_group, "rho", icData.rho) || !read_dataset_2d(hydro_group, "vel", icData.vel) ||
+        !read_dataset_1d(hydro_group, "energy", icData.energy)) {
+        H5Gclose(mesh_group);
         H5Gclose(hydro_group);
         H5Fclose(file_id);
         return false;
     }
-    icData.rho.resize(n);
-    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.rho.data());
-    H5Dclose(dataset_id);
-
-    // read hydro/vel
-    dataset_id = H5Dopen(hydro_group, "vel", H5P_DEFAULT);
-    if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open vel dataset in snapshot" << std::endl;
-        H5Gclose(hydro_group);
-        H5Fclose(file_id);
-        return false;
-    }
-    icData.vel.resize(n * DIMENSION);
-    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.vel.data());
-    H5Dclose(dataset_id);
-
-    // read hydro/energy
-    dataset_id = H5Dopen(hydro_group, "energy", H5P_DEFAULT);
-    if (dataset_id < 0) {
-        std::cerr << "INPUT: Error! Could not open energy dataset in snapshot" << std::endl;
-        H5Gclose(hydro_group);
-        H5Fclose(file_id);
-        return false;
-    }
-    icData.energy.resize(n);
-    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, icData.energy.data());
-    H5Dclose(dataset_id);
-
+    H5Gclose(mesh_group);
     H5Gclose(hydro_group);
     H5Fclose(file_id);
 
-    logging::root() << "INPUT: Snapshot loaded successfully! (" << n << " cells, t = " << meta.t_sim << ")"
-                    << std::endl;
+    logging::root() << "INPUT: Snapshot loaded successfully! (" << icData.pos_dims[0] << " cells, t = " << snap.t_sim
+                    << ")" << std::endl;
+    return true;
+}
+
+// ============================================================
+// helpers
+// ============================================================
+
+// trim whitespace from string
+std::string InputHandler::trim(const std::string& str) {
+    size_t first = str.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    size_t last = str.find_last_not_of(" \t\r\n");
+    return str.substr(first, (last - first + 1));
+}
+
+// HDF5 read operations
+static void read_attr_int(hid_t group, const char* name, int& out) {
+    hid_t a = H5Aopen(group, name, H5P_DEFAULT);
+    H5Aread(a, H5T_NATIVE_INT, &out);
+    H5Aclose(a);
+}
+
+static void read_attr_double(hid_t group, const char* name, double& out) {
+    hid_t a = H5Aopen(group, name, H5P_DEFAULT);
+    H5Aread(a, H5T_NATIVE_DOUBLE, &out);
+    H5Aclose(a);
+}
+
+static bool read_dataset_1d(hid_t parent, const char* name, std::vector<double>& out) {
+    hid_t dset = H5Dopen(parent, name, H5P_DEFAULT);
+    if (dset < 0) {
+        std::cerr << "INPUT: Error! Could not open dataset '" << name << "'" << std::endl;
+        return false;
+    }
+    hid_t   space = H5Dget_space(dset);
+    hsize_t dim;
+    H5Sget_simple_extent_dims(space, &dim, NULL);
+    out.resize(dim);
+    H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data());
+    H5Sclose(space);
+    H5Dclose(dset);
+    return true;
+}
+
+static bool read_dataset_2d(hid_t parent, const char* name, std::vector<double>& out, hsize_t* out_dims) {
+    hid_t dset = H5Dopen(parent, name, H5P_DEFAULT);
+    if (dset < 0) {
+        std::cerr << "INPUT: Error! Could not open dataset '" << name << "'" << std::endl;
+        return false;
+    }
+    hid_t   space = H5Dget_space(dset);
+    hsize_t dims[2];
+    H5Sget_simple_extent_dims(space, dims, NULL);
+    out.resize(dims[0] * dims[1]);
+    H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data());
+    H5Sclose(space);
+    H5Dclose(dset);
+    if (out_dims) {
+        out_dims[0] = dims[0];
+        out_dims[1] = dims[1];
+    }
     return true;
 }

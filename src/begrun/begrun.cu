@@ -16,6 +16,17 @@
 
 namespace begrun {
 
+    // forward declarations
+    static void         print_banner();
+    static void         log_run_mode();
+    static void         init_gpu();
+    static InputHandler load_params(int argc, char* argv[]);
+    static void         load_initial_conditions(int argc, char* argv[]);
+    static void         init_decomposition();
+    static void         init_hydro_and_mesh();
+    static void         init_run_config();
+    static void         free_initial_conditions();
+
     // restart state populated by load_initial_conditions and consumed by init_decomposition
     static bool s_is_restart       = false;
     static int  s_restart_n_global = 0;
@@ -79,7 +90,7 @@ namespace begrun {
     // ============================================================
 
     // print Proteus banner with version + build info
-    void print_banner() {
+    static void print_banner() {
         std::ostream& out = logging::root();
         out << "==========================================================================" << std::endl;
         out << R"(
@@ -109,43 +120,44 @@ namespace begrun {
     }
 
     // log dimension/CPU-or-GPU + parallelization summary
-    void log_run_mode() {
+    static void log_run_mode() {
+        std::ostream& out = logging::root();
 #ifdef dim_2D
 #ifdef CPU_DEBUG
-        logging::root() << "BEGRUN: Running 2D mode on CPU" << std::endl;
+        out << "BEGRUN: Running 2D mode on CPU" << std::endl;
 #else
-        logging::root() << "BEGRUN: Running 2D mode on GPU" << std::endl;
+        out << "BEGRUN: Running 2D mode on GPU" << std::endl;
 #endif
 #elif dim_3D
 #ifdef CPU_DEBUG
-        logging::root() << "BEGRUN: Running 3D mode on CPU" << std::endl;
+        out << "BEGRUN: Running 3D mode on CPU" << std::endl;
 #else
-        logging::root() << "BEGRUN: Running 3D mode on GPU" << std::endl;
+        out << "BEGRUN: Running 3D mode on GPU" << std::endl;
 #endif
 #endif
 
 #ifdef USE_MPI
-        logging::root() << "BEGRUN: MPI ranks      = " << proteus_mpi::nranks() << " ("
-                        << proteus_mpi::node_local_size() << " per node)" << std::endl;
+        out << "BEGRUN: MPI ranks      = " << proteus_mpi::nranks() << " (" << proteus_mpi::node_local_size()
+            << " per node)" << std::endl;
 #endif
 #ifdef USE_OPENMP
-        logging::root() << "BEGRUN: OpenMP threads = " << logging::omp_threads() << " (per rank)" << std::endl;
+        out << "BEGRUN: OpenMP threads = " << logging::omp_threads() << " (per rank)" << std::endl;
 #endif
 #ifndef CPU_DEBUG
         const int n_gpus  = proteus_mpi::gpus_per_node();
         const int n_local = proteus_mpi::node_local_size();
-        logging::root() << "BEGRUN: GPUs per node  = " << n_gpus << " (" << n_local << " ranks/node, "
-                        << (double)n_local / (n_gpus > 0 ? n_gpus : 1) << " ranks/GPU)" << std::endl;
+        out << "BEGRUN: GPUs per node  = " << n_gpus << " (" << n_local << " ranks/node, "
+            << (double)n_local / (n_gpus > 0 ? n_gpus : 1) << " ranks/GPU)" << std::endl;
 #endif
 
 #ifdef DRY_RUN // early exit only used for github CI
-        logging::root() << "Dry run for CI test successful, exiting." << std::endl;
+        out << "Dry run for CI test successful, exiting." << std::endl;
         exit(EXIT_SUCCESS);
 #endif
     }
 
     // set CUDA device limits + identify device
-    void init_gpu() {
+    static void init_gpu() {
 #ifndef CPU_DEBUG
         cudaDeviceSetLimit(cudaLimitStackSize, 8192); // (3D slow voronoi kernel needs ~5.7KB stack/thread -> use 8KB)
         int dev;
@@ -158,7 +170,7 @@ namespace begrun {
     }
 
     // load param.txt
-    InputHandler load_params(int argc, char* argv[]) {
+    static InputHandler load_params(int argc, char* argv[]) {
         std::string paramFile = "./ics/param.txt";
         if (argc > 1) { paramFile = argv[1]; } // use default or otherwise argv[1]
 
@@ -171,14 +183,14 @@ namespace begrun {
     }
 
     // load initial conditions from IC file or (if restart) latest snapshot
-    void load_initial_conditions(int argc, char* argv[]) {
+    static void load_initial_conditions(int argc, char* argv[]) {
 
         // is restarting from snapshots specified?
         const int restart_flag = (argc > 2) ? std::atoi(argv[2]) : 0;
 
         sim.t_sim    = 0.0;
         sim.snap_num = 0;
-        sim.step     = 0; // overwritten from snapshot header on restart
+        sim.step     = 0;
 
         const int         my_nranks = proteus_mpi::nranks();
         const int         my_rank   = proteus_mpi::rank();
@@ -201,27 +213,27 @@ namespace begrun {
                             << ((my_nranks > 1) ? ".<rank>.hdf5" : ".hdf5") << " from " << out_dir << std::endl;
 
             // read snapshot
-            SnapshotMeta meta;
-            if (!input.readSnapshotFile(snap_path, icData, meta)) { exit(EXIT_FAILURE); }
+            SnapshotHeader snap;
+            if (!input.readSnapshotFile(snap_path, icData, snap)) { exit(EXIT_FAILURE); }
 
             // validate topology matches this run
-            if (meta.nranks != my_nranks) {
-                std::cerr << "RESTART: Error! Snapshot was written with " << meta.nranks << " ranks, but this run has "
+            if (snap.nranks != my_nranks) {
+                std::cerr << "RESTART: Error! Snapshot was written with " << snap.nranks << " ranks, but this run has "
                           << my_nranks << ". Restart requires the same nranks." << std::endl;
                 exit(EXIT_FAILURE);
             }
-            if (meta.rank != my_rank) {
-                std::cerr << "RESTART: Error! Snapshot file claims rank " << meta.rank << " but this rank is "
+            if (snap.rank != my_rank) {
+                std::cerr << "RESTART: Error! Snapshot file claims rank " << snap.rank << " but this rank is "
                           << my_rank << " (filename / rank mismatch)." << std::endl;
                 exit(EXIT_FAILURE);
             }
 
             // hand off to init_decomposition / log line
-            sim.t_sim          = meta.t_sim;
-            sim.step           = meta.step;
+            sim.t_sim          = snap.t_sim;
+            sim.step           = snap.step;
             sim.snap_num       = latest_n + 1;
             s_is_restart       = true;
-            s_restart_n_global = meta.n_global;
+            s_restart_n_global = snap.n_global;
         } else {
             // no restart: read IC file
             if (!input.readICFile(input.getParameter("ic_file"), icData)) { exit(EXIT_FAILURE); }
@@ -236,7 +248,7 @@ namespace begrun {
     }
 
     // setup decomposition
-    void init_decomposition() {
+    static void init_decomposition() {
 
         // global cell count: fresh start has the full IC on every rank; restart has per-rank slices,
         // so we take n_global from the snapshot header instead of icData.pos_dims[0].
@@ -274,7 +286,7 @@ namespace begrun {
     }
 
     // init hydro from IC + built initial voronoi mesh
-    void init_hydro_and_mesh() {
+    static void init_hydro_and_mesh() {
 
         // create output directory if missing
         output = OutputHandler(input.getParameter("output_directory"));
@@ -301,7 +313,7 @@ namespace begrun {
     }
 
     // sim parameters from params
-    void init_run_config() {
+    static void init_run_config() {
 
         sim.t_start      = sim.t_sim;
         sim.t_end        = input.getParameterDouble("time_end");

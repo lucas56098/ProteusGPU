@@ -28,6 +28,8 @@ namespace voronoi {
                                         unsigned long long* face_offset,
                                         int*                overflow_flag);
 
+    static void compute_cells(VMesh* mesh);
+
 #ifndef CPU_DEBUG
     GLOBAL void kernel_init_cell_status(int n, Status* stat);
     GLOBAL void kernel_count_failures(int n, const Status* stat, int* fail_count);
@@ -460,7 +462,7 @@ namespace voronoi {
     static int      d_failed_indices_capacity = 0;
 #endif
 
-    void compute_cells(VMesh* mesh) {
+    static void compute_cells(VMesh* mesh) {
         const int n_hydro = (int)mesh->n_hydro;
 
 #ifndef CPU_DEBUG

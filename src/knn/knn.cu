@@ -6,6 +6,9 @@
 
 namespace knn {
 
+    // forward declarations
+    static void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
+
 #ifndef CPU_DEBUG
     // kernels
     GLOBAL void kernel_count_cells(const POINT_TYPE*, int, int, double, double, int*);
@@ -154,7 +157,7 @@ namespace knn {
     // Grid sort (GPU kernels or CPU loops)
     // ============================================================
 
-    void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
+    static void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
 
         int    N_grid      = knn->N_grid;
         int    Npow        = knn->Npow;

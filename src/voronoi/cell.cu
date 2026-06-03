@@ -6,6 +6,16 @@
 
 namespace voronoi {
 
+    // forward declarations
+    HD static void write_face(VMesh*         mesh,
+                              hsize_t        fi,
+                              int            neighbor_id,
+                              double         face_measure,
+                              const double4* face_verts,
+                              int            n_face_verts,
+                              double4        seed,
+                              double4        neighbor);
+
     static const uchar END_OF_LIST = 255;
 
     HD inline uchar& ith_plane(VERT_TYPE* triangles, uchar t, int i) {
@@ -625,7 +635,7 @@ namespace voronoi {
         return true;
     }
 
-    HD void write_face(VMesh*         mesh,
+    HD static void write_face(VMesh*         mesh,
                        hsize_t        fi,
                        int            neighbor_id,
                        double         face_measure,

@@ -62,15 +62,6 @@ namespace voronoi {
     template <int MAX_P, int MAX_T>
     HD void extract_cell_all(const BasicConvexCell<MAX_P, MAX_T>& cell, VMesh* mesh, hsize_t cell_index);
 
-    HD void write_face(VMesh*         mesh,
-                       hsize_t        fi,
-                       int            neighbor_id,
-                       double         face_measure,
-                       const double4* face_verts,
-                       int            n_face_verts,
-                       double4        seed,
-                       double4        neighbor);
-
 } // namespace voronoi
 
 #endif // CELL_H

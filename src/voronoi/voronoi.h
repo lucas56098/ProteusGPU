@@ -97,8 +97,6 @@ namespace voronoi {
                       hydro::primvars* primvar_aux,
                       int              iter = 0);
 
-    void compute_cells(VMesh* mesh);
-
     // returns the number of cells that were perturbed — caller uses this to decide
     // whether a cross-rank cascade round (halo re-export + Voronoi rebuild) is needed
     int cpu_fallback_failed_cells(VMesh* mesh);
