@@ -87,7 +87,7 @@ namespace voronoi {
     VMesh* allocate_mesh(hsize_t n_hydro);
     void   free_mesh(VMesh* mesh);
 
-    // ---- internal (used by compute_periodic_mesh in periodic_mesh.cu) ----
+    // ---- internal (used by compute_periodic_mesh in periodic.cu) ----
     // iter == 0: full pipeline (atomic-counter pass1 + save orig_to_k + permute primvar).
     // iter > 0: lookup-mode pass1 with saved orig_to_k; skips primvar permute.
     void compute_mesh(VMesh*           mesh,

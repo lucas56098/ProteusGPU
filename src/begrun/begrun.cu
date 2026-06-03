@@ -7,7 +7,7 @@
 #include "../mpi/migrate.h"
 #include "../mpi/mpi_compat.h"
 #include "../profiler/profiler.h"
-#include "../voronoi/periodic_mesh.h"
+#include "../voronoi/periodic.h"
 #include "../voronoi/voronoi.h"
 #include "begrun.h"
 #include <cmath>
@@ -206,9 +206,8 @@ namespace begrun {
 
             // validate topology matches this run
             if (meta.nranks != my_nranks) {
-                std::cerr << "RESTART: Error! Snapshot was written with " << meta.nranks
-                          << " ranks, but this run has " << my_nranks
-                          << ". Restart requires the same nranks." << std::endl;
+                std::cerr << "RESTART: Error! Snapshot was written with " << meta.nranks << " ranks, but this run has "
+                          << my_nranks << ". Restart requires the same nranks." << std::endl;
                 exit(EXIT_FAILURE);
             }
             if (meta.rank != my_rank) {

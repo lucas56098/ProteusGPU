@@ -132,5 +132,6 @@ extern double        buff; // buffer for the periodic bc (box will be 1 + 2*buff
 constexpr double gamma_eos         = (double)_GAMMA_EOS_;
 constexpr double CellShapingSpeed  = (double)_CELL_SHAPING_SPEED_;
 constexpr double CellShapingFactor = (double)_CELL_SHAPING_FACTOR_;
+constexpr double PI                = 3.14159265358979323846;
 
 #endif // GLOBALS_H

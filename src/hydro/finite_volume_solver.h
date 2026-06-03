@@ -4,7 +4,7 @@
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../mpi/halo.h"
-#include "../voronoi/periodic_mesh.h"
+#include "../voronoi/moving.h"
 #include "../voronoi/voronoi.h"
 #include <cmath>
 

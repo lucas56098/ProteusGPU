@@ -15,6 +15,7 @@ namespace hydro {
         hsize_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
     HD double   dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*);
     static void check_unphysical_state(VMesh*, const primvars*);
+    static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new);
 
 #ifndef CPU_DEBUG
     // kernels
@@ -34,9 +35,11 @@ namespace hydro {
     void init_hydro() {
         const int n_hydro = (int)sim.n_hydro;
 
-        // primvar container + arrays, copy IC into managed memory
+        // allocate primvar
         sim.primvar = gpu_alloc<primvars>(1);
         allocate_prim_buffer(sim.n_hydro, sim.primvar);
+
+        // fill primvar with icData
         for (int i = 0; i < n_hydro; i++) {
             sim.primvar->rho[i] = icData.rho[i];
             sim.primvar->E[i]   = icData.energy[i];
@@ -47,23 +50,30 @@ namespace hydro {
 #endif
         }
 
-        // per-step scratch
+        // allocate prim_new
         sim.prim_new = gpu_alloc<primvars>(1);
         allocate_prim_buffer(sim.n_hydro, sim.prim_new);
+
+        // allocate gradients
         sim.grads = gpu_alloc<gradients::PrimGradients>(1);
         gradients::allocate_grad(sim.n_hydro, sim.grads);
 
         const int n_hydro_global = logging::sum_global(n_hydro);
-        logging::root() << "HYDRO: Initialized primitive variables for " << n_hydro_global << " particles" << std::endl;
+        logging::root() << "HYDRO: Initialized hydro for " << n_hydro_global << " particles" << std::endl;
     }
 
     void free_hydro() {
+        // free arrays
         free_prim_buffer(sim.primvar);
         free_prim_buffer(sim.prim_new);
         gradients::free_grad(sim.grads);
+
+        // free structures
         gpu_free(sim.primvar);
         gpu_free(sim.prim_new);
         gpu_free(sim.grads);
+
+        // set to nullptr
         sim.primvar  = nullptr;
         sim.prim_new = nullptr;
         sim.grads    = nullptr;
@@ -78,31 +88,19 @@ namespace hydro {
         primvars*                 prim_new = sim.prim_new;
         gradients::PrimGradients* grads    = sim.grads;
 
-        // refresh MPI ghost primvars
+        // MPI exchange primvars
         proteus_mpi::halo_exchange_primvars(mesh, primvar);
 
-        // initialize new state from old primitive variables
-#ifndef CPU_DEBUG
-        {
-            int tpb    = _HYDRO_BLOCK_SIZE_;
-            int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-            kernel_copy_primvars<<<blocks, tpb>>>(
-                mesh->n_hydro, primvar->rho, primvar->v, primvar->E, prim_new->rho, prim_new->v, prim_new->E);
-            GPU_LAUNCH_CHECK();
-        }
-#else
-        gpu_memcpy(prim_new->rho, primvar->rho, mesh->n_hydro * sizeof(double));
-        gpu_memcpy(prim_new->v, primvar->v, mesh->n_hydro * sizeof(POINT_TYPE));
-        gpu_memcpy(prim_new->E, primvar->E, mesh->n_hydro * sizeof(double));
-#endif
+        // set prim_new equal to primvar
+        reset_prim_new(mesh, primvar, prim_new);
 
         // compute gradients from old state on old mesh
         gradients::compute_prim_gradients(mesh, primvar, grads);
         proteus_mpi::halo_exchange_gradients(mesh, grads);
 
 #ifdef MOVING_MESH
+        // compute v_mesh
         voronoi::compute_mesh_velocities(mesh, primvar, grads);
-        // refresh MPI ghost v_mesh — the upcoming flux reads it at neighbor indices
         proteus_mpi::halo_exchange_v_mesh(mesh);
 #endif
 
@@ -112,8 +110,6 @@ namespace hydro {
                         << std::endl;
 
 #ifdef MOVING_MESH
-        // store old volume
-        gpu_memcpy(mesh->old_volumes, mesh->volumes, mesh->n_hydro * sizeof(double));
 
         // move mesh
         voronoi::move_mesh(mesh, dt, primvar, prim_new);
@@ -232,8 +228,25 @@ namespace hydro {
     }
 
     // ============================================================
-    // Diagnostics
+    // Host functions
     // ============================================================
+
+    // set prim_new equal to prim
+    static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new) {
+#ifndef CPU_DEBUG
+        {
+            int tpb    = _HYDRO_BLOCK_SIZE_;
+            int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
+            kernel_copy_primvars<<<blocks, tpb>>>(
+                mesh->n_hydro, primvar->rho, primvar->v, primvar->E, prim_new->rho, prim_new->v, prim_new->E);
+            GPU_LAUNCH_CHECK();
+        }
+#else
+        gpu_memcpy(prim_new->rho, primvar->rho, mesh->n_hydro * sizeof(double));
+        gpu_memcpy(prim_new->v, primvar->v, mesh->n_hydro * sizeof(POINT_TYPE));
+        gpu_memcpy(prim_new->E, primvar->E, mesh->n_hydro * sizeof(double));
+#endif
+    }
 
     // scan primvar for unphysical values
     static void check_unphysical_state(VMesh* mesh, const primvars* primvar) {
@@ -318,8 +331,8 @@ namespace hydro {
         E_dst[i]   = E_src[i];
     }
 
-    GLOBAL void
     // for each cell calc CFL and then do warp-level reduction and lane 0 atomicMin
+    GLOBAL void
     kernel_dt_CFL(double CFL, hsize_t n_hydro, const VMesh* mesh, const primvars* primvar, double* d_min_dt) {
         hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
