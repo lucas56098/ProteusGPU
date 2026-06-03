@@ -94,7 +94,7 @@ GLOBAL_OBJ = $(BUILD_DIR)/globals.o $(BUILD_DIR)/log.o
 IO_OBJ = $(BUILD_DIR)/input.o $(BUILD_DIR)/output.o
 KNN_OBJ = $(BUILD_DIR)/knn.o
 BEGRUN_OBJ = $(BUILD_DIR)/begrun.o
-VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/periodic_mesh.o
+VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/periodic.o $(BUILD_DIR)/moving.o
 HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o
 GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
 PROFILER_OBJ = $(BUILD_DIR)/profiler.o
@@ -284,7 +284,10 @@ $(BUILD_DIR)/begrun.o: $(BEGRUN_DIR)/begrun.cu $(BEGRUN_DIR)/begrun.h | $(BUILD_
 $(BUILD_DIR)/voronoi.o: $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/voronoi.h $(VORONOI_DIR)/cell.cu $(VORONOI_DIR)/cell.h $(VORONOI_DIR)/geometry.cu $(VORONOI_DIR)/geometry.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD_DIR)/periodic_mesh.o: $(VORONOI_DIR)/periodic_mesh.cu $(VORONOI_DIR)/periodic_mesh.h | $(BUILD_DIR)
+$(BUILD_DIR)/periodic.o: $(VORONOI_DIR)/periodic.cu $(VORONOI_DIR)/periodic.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/moving.o: $(VORONOI_DIR)/moving.cu $(VORONOI_DIR)/moving.h $(VORONOI_DIR)/periodic.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # finite-volume hydro solver (incl. Riemann solver)
