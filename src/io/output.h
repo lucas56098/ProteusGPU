@@ -5,29 +5,10 @@
 #include "hdf5.h"
 #include <chrono>
 #include <string>
-#include <vector>
 
 struct VMesh;
 
-// structs to prepare mesh data for writing to HDF5 file
-struct MeshHeader {
-    int    dimension = DIMENSION;
-    double extent;
-    int    n;
-    int    k;
-    int    nmax;
-    int    seed;
-};
-
-struct MeshCellData {
-    MeshHeader           header;
-    std::vector<double>  seeds;      // numCells x dimension
-    std::vector<hsize_t> seeds_dims; // [numCells, dimension]
-    std::vector<double>  volumes;
-    std::vector<int>     face_counts; // number of faces per cell
-};
-
-// output handler class for writing mesh files
+// output handler class for writing snapshot files
 class OutputHandler {
   private:
     std::string outputDirectory;
@@ -38,23 +19,9 @@ class OutputHandler {
     bool        initialize(); // initalize output directory
     std::string getOutputDirectory() const { return outputDirectory; }
 
-    // wrapper to convert mesh into meshData and then store snapshot
-    void snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, int n_hydro, double t_sim, int step);
-
-    // convert VMesh (for hydro computation) to MeshCellData (for output)
-    void vmesh_to_meshdata(VMesh* mesh, MeshCellData& meshData);
-
-    // write snapshot (mesh and hydro data) to HDF5 file. n_global / nranks / rank are written
-    // into the header so a same-decomposition restart can validate and skip IC redistribution.
-    bool writeSnapshot(const std::string&     filename,
-                       const MeshCellData&    meshData,
-                       const hydro::primvars* primvar,
-                       int                    n_hydro,
-                       double                 t_sim,
-                       int                    step,
-                       int                    n_global,
-                       int                    nranks,
-                       int                    rank);
+    // write snapshot (mesh + hydro) to HDF5. n_global/nranks/rank are baked into the header
+    // so a same-decomposition restart can validate and skip IC redistribution.
+    void snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, double t_sim, int step);
 };
 
 void print_log(int                                   step,

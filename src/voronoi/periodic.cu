@@ -100,9 +100,9 @@ namespace voronoi {
         for (int iter = 0; iter < MAX_WIDEN_ITERS; iter++) {
             last_iter = iter;
 
-            Profiler::StartTimer("GHOST_GEN (cpu)");
+            Profiler::StartTimer("GHOST_GEN");
             n_ghosts = regenerate_periodic_ghosts(n_hydro, pts_data, pts, original_ids, buff);
-            Profiler::EndTimer("GHOST_GEN (cpu)");
+            Profiler::EndTimer("GHOST_GEN");
             if (n_ghosts > max_ghost_points) {
                 std::cerr << "VORONOI: Error! ghost count " << n_ghosts << " exceeds estimated max " << max_ghost_points
                           << ". Distribution is highly non-uniform." << std::endl;
@@ -134,7 +134,6 @@ namespace voronoi {
             //   (2) re-shuffle pts_data so KNN at iter > 0 indexes cells in new-k order;
             //   (3) set orig_to_k_save = identity so the lookup pass1 gives k = orig.
             if (iter == 0 && have_mpi_neighbors) {
-                Profiler::StartTimer("MPI_COMM");
                 Profiler::StartTimer("MPI_REMAP");
                 static std::vector<unsigned int> inv_gather;
                 inv_gather.resize((size_t)n_hydro);
@@ -162,10 +161,8 @@ namespace voronoi {
                 for (hsize_t k = 0; k < n_hydro; k++)
                     mesh->orig_to_k_save[k] = (unsigned int)k;
                 Profiler::EndTimer("MPI_REMAP");
-                Profiler::EndTimer("MPI_COMM");
             }
 
-            Profiler::StartTimer("MPI_COMM");
             int local_failed = 0;
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static) reduction(+ : local_failed)
@@ -179,17 +176,14 @@ namespace voronoi {
             Profiler::StartTimer("MPI_COMPLETE");
             const int local_outer = have_mpi_neighbors ? voronoi::halo_completeness_flag(mesh, (int)n_ghosts) : 0;
             Profiler::EndTimer("MPI_COMPLETE");
-            Profiler::EndTimer("MPI_COMM");
 
             int global_signal[2] = {local_failed, local_outer};
 #ifdef USE_MPI
             if (have_mpi_neighbors) {
                 const int local_signal[2] = {local_failed, local_outer};
-                Profiler::StartTimer("MPI_COMM");
                 Profiler::StartTimer("MPI_REDUCE");
                 MPI_Allreduce(local_signal, global_signal, 2, MPI_INT, MPI_SUM, proteus_mpi::decomp.cart_comm);
                 Profiler::EndTimer("MPI_REDUCE");
-                Profiler::EndTimer("MPI_COMM");
             }
 #endif
             const int global_failed = global_signal[0];
@@ -222,11 +216,9 @@ namespace voronoi {
             int global_perturbed = local_perturbed;
 #ifdef USE_MPI
             if (have_mpi_neighbors) {
-                Profiler::StartTimer("MPI_COMM");
                 Profiler::StartTimer("MPI_REDUCE");
                 MPI_Allreduce(&local_perturbed, &global_perturbed, 1, MPI_INT, MPI_SUM, proteus_mpi::decomp.cart_comm);
                 Profiler::EndTimer("MPI_REDUCE");
-                Profiler::EndTimer("MPI_COMM");
             }
 #endif
             if (global_perturbed == 0) {

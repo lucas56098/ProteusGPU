@@ -12,7 +12,6 @@ void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
 #else
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
 
-    Profiler::StartTimer("MPI_COMM");
     Profiler::StartTimer("MPI_PACK");
     const int n_hydro    = (int)mesh->n_hydro;
     const int total_send = halo.send_offset[halo.n_neighbors];
@@ -66,7 +65,6 @@ void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
         for (int j = n_out; j < n_tot; j++)    halo.is_outer_layer[base + j] = 0;
     }
     Profiler::EndTimer("MPI_UNPACK");
-    Profiler::EndTimer("MPI_COMM");
 #endif
 }
 
@@ -78,7 +76,6 @@ void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar) {
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
     if (!halo.used_subset_ready) return;  // nothing to do until mesh exists
 
-    Profiler::StartTimer("MPI_COMM");
     Profiler::StartTimer("MPI_PACK");
     const int total_send = halo.n_used_send;
 #ifdef USE_OPENMP
@@ -112,7 +109,6 @@ void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar) {
         primvar->E[ext_k]   = pkt.E;
     }
     Profiler::EndTimer("MPI_UNPACK");
-    Profiler::EndTimer("MPI_COMM");
 #endif
 }
 
@@ -123,7 +119,6 @@ void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
 #else
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
     if (!halo.used_subset_ready) return;
-    Profiler::StartTimer("MPI_COMM");
     Profiler::StartTimer("MPI_PACK");
     const int N_COMP     = 3 + DIMENSION;
     const int total_send = halo.n_used_send;
@@ -167,7 +162,6 @@ void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
         grads->E[ext_k] = halo.recvbuf_grad[s + c++];
     }
     Profiler::EndTimer("MPI_UNPACK");
-    Profiler::EndTimer("MPI_COMM");
 #endif
 }
 
@@ -179,7 +173,6 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 #ifdef MOVING_MESH
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
     if (!halo.used_subset_ready) return;
-    Profiler::StartTimer("MPI_COMM");
     Profiler::StartTimer("MPI_PACK");
     const int total_send = halo.n_used_send;
 #ifdef USE_OPENMP
@@ -206,7 +199,6 @@ void halo_exchange_v_mesh(VMesh* mesh) {
         mesh->v_mesh[ext_k] = halo.recvbuf_v_mesh[slot];
     }
     Profiler::EndTimer("MPI_UNPACK");
-    Profiler::EndTimer("MPI_COMM");
 #else
     (void)mesh;
 #endif
@@ -215,12 +207,10 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 
 void halo_dt_allreduce(double* dt) {
 #ifdef USE_MPI
-    Profiler::StartTimer("MPI_COMM");
     Profiler::StartTimer("MPI_REDUCE");
     double local = *dt;
     MPI_Allreduce(&local, dt, 1, MPI_DOUBLE, MPI_MIN, decomp.cart_comm);
     Profiler::EndTimer("MPI_REDUCE");
-    Profiler::EndTimer("MPI_COMM");
 #else
     (void)dt;
 #endif

@@ -3,6 +3,8 @@
 #include "../mpi/mpi_compat.h"
 #include "profiler.h"
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -65,23 +67,26 @@ void Profiler::EndGPU(const std::string& name) {
 void Profiler::PrintResults() {
     std::ostream& out = logging::root();
     out << "\n=== Profiling Results (Wall Clock Time, rank 0) ===\n";
-    long long totalRuntime     = 0;
-    long long parallelizedTime = 0;
+    long long totalRuntime = 0;
+    long long mpiCommTime  = 0;
 
+    std::vector<std::pair<std::string, long long>> rows;
+    rows.reserve(m_Timings.size() + 1);
     for (const auto& entry : m_Timings) {
-        double timeInSeconds = entry.second / 1e6;
-        out << "[PROFILE] " << entry.first << " took " << timeInSeconds << "s\n";
-
-        if (entry.first.find("(par)") != std::string::npos) { parallelizedTime += entry.second; }
-
+        if (entry.first.rfind("MPI_", 0) == 0 && entry.first != "MPI_TOTAL") { mpiCommTime += entry.second; }
         if (entry.first == "TOTAL_RUNTIME") { totalRuntime = entry.second; }
+        rows.emplace_back(entry.first, entry.second);
+    }
+    if (mpiCommTime > 0) { rows.emplace_back("MPI_TOTAL", mpiCommTime); }
+
+    // sort by cumulative time descending
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    for (const auto& row : rows) {
+        out << "[PROFILE] " << row.first << " took " << (row.second / 1e6) << "s\n";
     }
 
-    double parallelFraction = 0.0;
-    if (totalRuntime > 0) { parallelFraction = static_cast<double>(parallelizedTime) / totalRuntime; }
     out << "\nTOTAL_RUNTIME: " << (totalRuntime / 1e6) << "s\n";
-    out << "PARALLELIZED_TIME: " << (parallelizedTime / 1e6) << "s\n";
-    out << "PARALLEL_FRACTION: " << parallelFraction * 100.0 << " %\n";
 
     // GPU kernel timing breakdown
     if (!m_GpuTimings.empty()) {
@@ -116,28 +121,54 @@ void Profiler::LogTimestep(int step, std::ostream& out) {
 
     out << std::fixed << std::setprecision(6);
 
-    // get current total time
-    auto      endTime      = std::chrono::high_resolution_clock::now();
-    auto      startTime    = m_StartTimes["TOTAL_RUNTIME"];
-    long long totalRuntime = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+    // collect (name, cumUs) rows, injecting live values for long-lived timers and the synthesized MPI_TOTAL
+    const auto endTime = std::chrono::high_resolution_clock::now();
+    std::vector<std::pair<std::string, long long>> rows;
+    rows.reserve(m_Timings.size() + 3);
 
+    // TOTAL_RUNTIME — m_Timings is 0 until endrun, so compute live from m_StartTimes.
+    // ResumeFromLog rewinds m_StartTimes["TOTAL_RUNTIME"] so the live value includes any prior offset.
     {
-        const long long prevTotal      = m_PrevStepCum["TOTAL_RUNTIME"];
-        const double    totalDiffSec   = (totalRuntime - prevTotal) / 1e6;
-        m_PrevStepCum["TOTAL_RUNTIME"] = totalRuntime;
-        out << step << ", " << std::setw(16) << std::left << "TOTAL_RUNTIME" << ", " << (totalRuntime / 1e6) << ", "
-            << totalDiffSec << "\n";
+        auto it = m_StartTimes.find("TOTAL_RUNTIME");
+        if (it != m_StartTimes.end()) {
+            rows.emplace_back(
+                "TOTAL_RUNTIME",
+                std::chrono::duration_cast<std::chrono::microseconds>(endTime - it->second).count());
+        }
     }
 
-    // timings per CPU region — diff is per-step delta of cumulative time
+    // HYDRO_MAIN — long-lived (entire hydro loop). m_Timings holds the seeded-from-restart portion;
+    // add the currently-running portion live.
+    {
+        auto it = m_StartTimes.find("HYDRO_MAIN");
+        if (it != m_StartTimes.end()) {
+            const long long live = std::chrono::duration_cast<std::chrono::microseconds>(endTime - it->second).count();
+            auto            it_t   = m_Timings.find("HYDRO_MAIN");
+            const long long seeded = (it_t != m_Timings.end()) ? it_t->second : 0;
+            rows.emplace_back("HYDRO_MAIN", seeded + live);
+        }
+    }
+
+    // all other regular timers
+    long long mpiCum = 0;
     for (const auto& entry : m_Timings) {
-        const long long cumUs       = entry.second;
-        const long long prevCumUs   = m_PrevStepCum[entry.first];
-        const double    timeCumSec  = cumUs / 1e6;
-        const double    timeDiffSec = (cumUs - prevCumUs) / 1e6;
-        m_PrevStepCum[entry.first]  = cumUs;
-        out << step << ", " << std::setw(16) << std::left << entry.first << ", " << timeCumSec << ", " << timeDiffSec
-            << "\n";
+        if (entry.first == "HYDRO_MAIN") continue; // handled above
+        if (entry.first.rfind("MPI_", 0) == 0 && entry.first != "MPI_TOTAL") { mpiCum += entry.second; }
+        rows.emplace_back(entry.first, entry.second);
+    }
+    if (mpiCum > 0) { rows.emplace_back("MPI_TOTAL", mpiCum); }
+
+    // sort by cumulative time descending
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    // emit rows; update per-step cumulative state
+    for (const auto& row : rows) {
+        const long long cumUs    = row.second;
+        const long long prev     = m_PrevStepCum[row.first];
+        const double    cumSec   = cumUs / 1e6;
+        const double    diffSec  = (cumUs - prev) / 1e6;
+        m_PrevStepCum[row.first] = cumUs;
+        out << step << ", " << std::setw(16) << std::left << row.first << ", " << cumSec << ", " << diffSec << "\n";
     }
 
     // GPU kernel timing breakdown
@@ -164,6 +195,90 @@ void Profiler::LogTimestep(int step, std::ostream& out) {
     }
 
     out << "\n\n";
+}
+
+// restart: trim `path` to blocks with timestep <= step, seed in-memory counters from that block.
+// Rank 0 only (matches FileLogger). No-op if `path` doesn't exist or has no surviving block.
+void Profiler::ResumeFromLog(const std::string& path, int step) {
+    if (!proteus_mpi::is_root()) return;
+
+    std::ifstream in(path);
+    if (!in.is_open()) return;
+
+    auto trim = [](std::string& s) {
+        size_t a = s.find_first_not_of(" \t\r");
+        size_t b = s.find_last_not_of(" \t\r");
+        s        = (a == std::string::npos) ? std::string() : s.substr(a, b - a + 1);
+    };
+
+    std::ostringstream                         kept_buf;
+    std::ostringstream                         cur_buf;
+    int                                        cur_step = -1;
+    std::unordered_map<std::string, long long> cur_cum;
+    std::unordered_map<std::string, long long> final_cum;
+
+    auto flush_block = [&]() {
+        if (cur_step >= 0 && cur_step <= step) {
+            kept_buf << cur_buf.str();
+            for (const auto& kv : cur_cum) { final_cum[kv.first] = kv.second; }
+        }
+        cur_buf.str("");
+        cur_buf.clear();
+        cur_cum.clear();
+        cur_step = -1;
+    };
+
+    std::string                  line;
+    static const std::string     HDR = "# timestep = ";
+    while (std::getline(in, line)) {
+        if (line.compare(0, HDR.size(), HDR) == 0) {
+            // header: "# timestep = <N> ..." — flush previous block, start new
+            flush_block();
+            try {
+                cur_step = std::stoi(line.substr(HDR.size()));
+            } catch (...) { cur_step = -1; }
+            cur_buf << line << "\n";
+        } else if (cur_step >= 0 && !line.empty() && (std::isdigit((unsigned char)line[0]) || line[0] == '-')) {
+            // CSV data row: "<step>, <name>, <cum_seconds>, <diff_seconds>"
+            cur_buf << line << "\n";
+            std::stringstream ss(line);
+            std::string       tok;
+            std::getline(ss, tok, ','); // step
+            std::getline(ss, tok, ','); // name
+            trim(tok);
+            const std::string name = tok;
+            std::getline(ss, tok, ','); // cum
+            trim(tok);
+            try {
+                double cum_sec  = std::stod(tok);
+                cur_cum[name]   = (long long)(cum_sec * 1e6 + 0.5);
+            } catch (...) {}
+        } else {
+            // GPU rows / blank lines / unknown — keep verbatim inside the current block, drop otherwise
+            if (cur_step >= 0) cur_buf << line << "\n";
+        }
+    }
+    flush_block();
+    in.close();
+
+    // rewrite the file with only the kept blocks
+    std::ofstream out(path, std::ios::trunc);
+    out << kept_buf.str();
+    out.close();
+
+    // seed in-memory counters; skip TOTAL_RUNTIME (rewound via m_StartTimes below) and
+    // MPI_TOTAL (synthesized aggregate, not a real timer in m_Timings)
+    for (const auto& kv : final_cum) {
+        if (kv.first != "TOTAL_RUNTIME" && kv.first != "MPI_TOTAL") { m_Timings[kv.first] = kv.second; }
+        m_PrevStepCum[kv.first] = kv.second;
+    }
+    // TOTAL_RUNTIME: rewind its start point so (now - start) includes the resumed time.
+    // EndTimer in endrun() then accumulates into m_Timings normally.
+    auto it = final_cum.find("TOTAL_RUNTIME");
+    if (it != final_cum.end()) {
+        auto& s = m_StartTimes["TOTAL_RUNTIME"];
+        s       = s - std::chrono::microseconds(it->second);
+    }
 }
 
 // peak CPU RSS (high-water mark from the OS) and peak GPU memory we ever held

@@ -20,7 +20,7 @@ namespace gradients {
     // ============================================================
 
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
-        Profiler::StartTimer("GRADIENTS (par)");
+        Profiler::StartTimer("GRADIENTS");
 
 #ifndef CPU_DEBUG
         int tpb    = _GRAD_BLOCK_SIZE_;
@@ -37,7 +37,7 @@ namespace gradients {
         }
 #endif
 
-        Profiler::EndTimer("GRADIENTS (par)");
+        Profiler::EndTimer("GRADIENTS");
     }
 
     // calc dW/dt ("time gradients") based on states and gradients

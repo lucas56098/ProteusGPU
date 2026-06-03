@@ -88,11 +88,9 @@ namespace proteus_mpi {
 
         assign_destinations(mesh, n_hydro, my_rank);
 
-        Profiler::StartTimer("MPI_COMM");
         Profiler::StartTimer("MPI_WAIT");
         exchange_counts();
         Profiler::EndTimer("MPI_WAIT");
-        Profiler::EndTimer("MPI_COMM");
 
         int total_send = 0, total_recv = 0;
         build_displacements(nn, &total_send, &total_recv);
@@ -100,11 +98,9 @@ namespace proteus_mpi {
 
         pack_outgoing_migrants(mesh, primvar, prim_new, pts, n_hydro);
 
-        Profiler::StartTimer("MPI_COMM");
         Profiler::StartTimer("MPI_WAIT");
         exchange_payload();
         Profiler::EndTimer("MPI_WAIT");
-        Profiler::EndTimer("MPI_COMM");
 
         const int n_after_remove = remove_migrated_local(mesh, primvar, prim_new, pts, n_hydro);
 
@@ -336,11 +332,9 @@ namespace proteus_mpi {
     // global cell count must stay constant
     static void check_conservation(int n_new) {
         int n_global = 0;
-        Profiler::StartTimer("MPI_COMM");
         Profiler::StartTimer("MPI_REDUCE");
         MPI_Allreduce(&n_new, &n_global, 1, MPI_INT, MPI_SUM, decomp.cart_comm);
         Profiler::EndTimer("MPI_REDUCE");
-        Profiler::EndTimer("MPI_COMM");
         static int s_n_total_expected = 0;
         if (s_n_total_expected == 0) s_n_total_expected = n_global;
         if (n_global != s_n_total_expected) {

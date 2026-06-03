@@ -26,6 +26,10 @@ class Profiler {
     static void PrintResults();
     static void LogTimestep(int step, std::ostream& out);
 
+    // restart: trim `path` so only blocks with timestep <= step survive, and seed
+    // m_Timings / m_PrevStepCum / m_StartTimes from the cumulative values at step `step`.
+    static void ResumeFromLog(const std::string& path, int step);
+
     static void StartGPU(const std::string& name);
     static void EndGPU(const std::string& name);
 

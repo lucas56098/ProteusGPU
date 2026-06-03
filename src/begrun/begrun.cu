@@ -322,8 +322,10 @@ namespace begrun {
         sim.t_nextoutput = sim.t_sim + sim.output_dt;
         // sim.step is set in load_initial_conditions (0 for fresh runs, snapshot value on restart)
 
-        // per-timestep profile log
-        sim.profile_log = logging::FileLogger(input.getParameter("output_directory") + "/profile.txt");
+        // per-timestep profile log; on restart, trim past the snapshot's step and seed counters
+        const std::string profile_path = input.getParameter("output_directory") + "/profile.txt";
+        if (s_is_restart) { Profiler::ResumeFromLog(profile_path, sim.step); }
+        sim.profile_log = logging::FileLogger(profile_path);
     }
 
     // drop the IC arrays once primvar + mesh are built from them

@@ -224,11 +224,9 @@ static void resize_ic_to(ICData& ic, int n_kept) {
 static void check_global_cell_count(int n_kept, int n_total) {
 #ifdef USE_MPI
     int n_global_kept = 0;
-    Profiler::StartTimer("MPI_COMM");
     Profiler::StartTimer("MPI_REDUCE");
     MPI_Allreduce(&n_kept, &n_global_kept, 1, MPI_INT, MPI_SUM, decomp.cart_comm);
     Profiler::EndTimer("MPI_REDUCE");
-    Profiler::EndTimer("MPI_COMM");
     if (n_global_kept != n_total) {
         exit_failure("DECOMP: FATAL cell-count mismatch — sum(n_kept) = %d, expected %d.\n", n_global_kept, n_total);
     }

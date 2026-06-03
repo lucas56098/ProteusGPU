@@ -29,7 +29,6 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
     if (halo.n_neighbors == 0) return;
 
 #ifdef USE_MPI
-    Profiler::StartTimer("MPI_COMM");
     Profiler::StartTimer("MPI_BUILD");
 
     const int nn = halo.n_neighbors;
@@ -69,7 +68,6 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
         exit_failure("[rank %d] HALO: total recv (%d) > n_mpi_capacity (%d).\n",
             decomp.rank, sum, halo.n_mpi_capacity);
     }
-    Profiler::EndTimer("MPI_COMM");
 #else
     (void)local_seeds; (void)n_local; (void)buff; (void)W_in;
 #endif
@@ -112,7 +110,6 @@ void halo_build_used_subset(VMesh* mesh) {
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
 
 #ifdef USE_MPI
-    Profiler::StartTimer("MPI_COMM");
     Profiler::StartTimer("MPI_BUILD");
     const int n_hydro = (int)mesh->n_hydro;
     const int n_mpi   = halo.n_mpi_ghosts;
@@ -133,7 +130,6 @@ void halo_build_used_subset(VMesh* mesh) {
     Profiler::StartTimer("MPI_BUILD");
     halo.n_used_send = pack_used_export_indices();
     Profiler::EndTimer("MPI_BUILD");
-    Profiler::EndTimer("MPI_COMM");
 #else
     (void)mesh;
 #endif

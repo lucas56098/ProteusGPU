@@ -171,7 +171,7 @@ namespace hydro {
                            const gradients::PrimGradients* grads,
                            primvars*                       prim_new) {
 
-        Profiler::StartTimer("HYDRO_STEP (par)");
+        Profiler::StartTimer("HYDRO_STEP");
 
 #ifndef CPU_DEBUG
         int tpb                = _HYDRO_BLOCK_SIZE_;
@@ -190,12 +190,12 @@ namespace hydro {
         }
 #endif
 
-        Profiler::EndTimer("HYDRO_STEP (par)");
+        Profiler::EndTimer("HYDRO_STEP");
     }
 
     // global CFL timestep: min over all hydro cells
     double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar) {
-        Profiler::StartTimer("CFL (par)");
+        Profiler::StartTimer("CFL");
 
         double min_dt = 1e100;
 
@@ -223,7 +223,7 @@ namespace hydro {
         }
 #endif
 
-        Profiler::EndTimer("CFL (par)");
+        Profiler::EndTimer("CFL");
         return min_dt;
     }
 

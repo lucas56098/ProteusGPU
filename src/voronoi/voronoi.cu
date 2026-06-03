@@ -400,9 +400,9 @@ namespace voronoi {
                       hydro::primvars* primvar_aux,
                       int              iter) {
 
-        Profiler::StartTimer("KNN (par)");
+        Profiler::StartTimer("KNN");
         knn::prepare(mesh->knn, (const POINT_TYPE*)pts_data, n_total);
-        Profiler::EndTimer("KNN (par)");
+        Profiler::EndTimer("KNN");
 
         if ((hsize_t)n_total > mesh->total_capacity) {
             std::cerr << "VORONOI: Error! point count " << n_total << " exceeds pre-allocated capacity "
@@ -413,7 +413,7 @@ namespace voronoi {
         mesh->n_seeds   = (hsize_t)n_total;
         mesh->num_faces = 0;
 
-        Profiler::StartTimer("PERMUTE (par)");
+        Profiler::StartTimer("PERMUTE");
         build_index_maps(mesh, iter);
         if (iter == 0) {
             // snapshot pass1's orig_to_k so iter > 0 can reproduce the same k assignment
@@ -425,9 +425,9 @@ namespace voronoi {
         }
         // iter > 0: primvar already in iter-0-k order; build_index_maps used the saved
         // mapping, so sid_to_neighbor is consistent without a second permute
-        Profiler::EndTimer("PERMUTE (par)");
+        Profiler::EndTimer("PERMUTE");
 
-        Profiler::StartTimer("VORONOI (par)");
+        Profiler::StartTimer("VORONOI");
 
         const hsize_t n_hydro = mesh->n_hydro;
         gpu_memset(mesh->face_counts, 0, n_hydro * sizeof(hsize_t));
@@ -446,7 +446,7 @@ namespace voronoi {
 
         compute_cells(mesh);
 
-        Profiler::EndTimer("VORONOI (par)");
+        Profiler::EndTimer("VORONOI");
     }
 
     // ============================================================

@@ -31,7 +31,7 @@ int main(int argc, char* argv[]) {
 
     // snapshot at t=0
     if (sim.snap_num == 0) {
-        output.snapshot(sim.snap_num, sim.mesh, sim.primvar, sim.n_hydro, sim.t_sim, sim.step);
+        output.snapshot(sim.snap_num, sim.mesh, sim.primvar, sim.t_sim, sim.step);
         sim.snap_num += 1;
     }
 
@@ -56,7 +56,7 @@ int main(int argc, char* argv[]) {
 
         // write snapshot
         if (sim.t_sim >= sim.t_nextoutput || sim.t_sim >= sim.t_end) {
-            output.snapshot(sim.snap_num, sim.mesh, sim.primvar, sim.n_hydro, sim.t_sim, sim.step);
+            output.snapshot(sim.snap_num, sim.mesh, sim.primvar, sim.t_sim, sim.step);
             sim.t_nextoutput += sim.output_dt;
             sim.snap_num += 1;
         }
