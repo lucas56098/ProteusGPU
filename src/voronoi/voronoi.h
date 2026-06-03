@@ -83,34 +83,23 @@ struct VMesh {
 
 namespace voronoi {
 
-    // ---- lifecycle (called once) ----
     VMesh* allocate_mesh(hsize_t n_hydro);
     void   free_mesh(VMesh* mesh);
 
-    // ---- internal (used by compute_periodic_mesh in periodic.cu) ----
-    // iter == 0: full pipeline (atomic-counter pass1 + save orig_to_k + permute primvar).
-    // iter > 0: lookup-mode pass1 with saved orig_to_k; skips primvar permute.
-    void compute_mesh(VMesh*           mesh,
-                      POINT_TYPE*      pts_data,
-                      int              n_total,
-                      hydro::primvars* primvar,
-                      hydro::primvars* primvar_aux,
-                      int              iter = 0);
+    // periodic ghost generation + mesh rebuild over the extended [-buff, 1+buff]^d domain.
+    void compute_periodic_mesh(VMesh*           mesh,
+                               POINT_TYPE*      pts_data,
+                               hsize_t          num_points,
+                               hydro::primvars* primvar,
+                               hydro::primvars* primvar_aux);
 
-    // returns the number of cells that were perturbed — caller uses this to decide
-    // whether a cross-rank cascade round (halo re-export + Voronoi rebuild) is needed
-    int cpu_fallback_failed_cells(VMesh* mesh);
+    // mesh-point velocity (gas velocity + Lloyd regularization)
+    void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);
 
-    // returns 1 iff any local cell's _K_-th nearest is an MPI ghost in the outermost
-    // halo layer. This is the silent-failure detector for the widen loop: the standard
-    // security_radius check can falsely pass when closer cells live beyond the halo,
-    // but if our K-th sample reached the outer layer there might be unsent cells just
-    // beyond. Caller Allreduces with LOR before deciding to widen.
-    int halo_completeness_flag(VMesh* mesh, int n_pgh);
+    // advance seeds by v_mesh*dt with periodic wrap, then rebuild the mesh
+    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::primvars* primvar_aux);
 
 } // namespace voronoi
-
-// ---- shared inline helpers ----
 
 // neighbor_cell stores real-sorted indices in [0, n_hydro); read primvars at k directly.
 HD inline hydro::prim get_state(hsize_t k, const hydro::primvars* primvar) {

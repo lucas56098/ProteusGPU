@@ -7,7 +7,6 @@
 #include "../mpi/migrate.h"
 #include "../mpi/mpi_compat.h"
 #include "../profiler/profiler.h"
-#include "../voronoi/periodic.h"
 #include "../voronoi/voronoi.h"
 #include "begrun.h"
 #include <cmath>

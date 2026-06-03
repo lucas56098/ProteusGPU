@@ -16,6 +16,7 @@ namespace hydro {
     HD double   dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*);
     static void check_unphysical_state(VMesh*, const primvars*);
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new);
+    static void swap_primvars(primvars* primvar, primvars* prim_new);
 
 #ifndef CPU_DEBUG
     // kernels
@@ -24,7 +25,6 @@ namespace hydro {
     GLOBAL void
     kernel_copy_primvars(hsize_t, const double*, const POINT_TYPE*, const double*, double*, POINT_TYPE*, double*);
     GLOBAL void kernel_dt_CFL(double, hsize_t, const VMesh*, const primvars*, double*);
-    GLOBAL void kernel_volume_correct(hsize_t, const double*, const double*, double*, double*);
     GLOBAL void kernel_check_unphysical(hsize_t, const primvars*, int*);
 #endif
 
@@ -114,24 +114,6 @@ namespace hydro {
         // move mesh
         voronoi::move_mesh(mesh, dt, primvar, prim_new);
 
-        // correct new primitive variables for volume change
-#ifndef CPU_DEBUG
-        {
-            int tpb    = _HYDRO_BLOCK_SIZE_;
-            int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-            Profiler::StartGPU("kernel_volume_correct");
-            kernel_volume_correct<<<blocks, tpb>>>(
-                mesh->n_hydro, mesh->old_volumes, mesh->volumes, prim_new->rho, prim_new->E);
-            Profiler::EndGPU("kernel_volume_correct");
-        }
-#else
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            double volume_ratio = mesh->old_volumes[i] / mesh->volumes[i];
-            prim_new->rho[i] *= volume_ratio;
-            prim_new->E[i] *= volume_ratio;
-        }
-#endif
-
         // recompute gradients on moved mesh for second half
         gradients::compute_prim_gradients(mesh, primvar, grads);
         proteus_mpi::halo_exchange_gradients(mesh, grads);
@@ -142,23 +124,8 @@ namespace hydro {
         logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (2/2)"
                         << std::endl;
 
-        // swap primvar pointers
-#ifndef CPU_DEBUG
-        GPU_SYNC();
-#endif
-        {
-            double* tmp_rho = primvar->rho;
-            primvar->rho    = prim_new->rho;
-            prim_new->rho   = tmp_rho;
-
-            POINT_TYPE* tmp_v = primvar->v;
-            primvar->v        = prim_new->v;
-            prim_new->v       = tmp_v;
-
-            double* tmp_E = primvar->E;
-            primvar->E    = prim_new->E;
-            prim_new->E   = tmp_E;
-        }
+        // set prim_new as the new primvar
+        swap_primvars(primvar, prim_new);
 
         check_unphysical_state(mesh, primvar);
     }
@@ -246,6 +213,17 @@ namespace hydro {
         gpu_memcpy(prim_new->v, primvar->v, mesh->n_hydro * sizeof(POINT_TYPE));
         gpu_memcpy(prim_new->E, primvar->E, mesh->n_hydro * sizeof(double));
 #endif
+    }
+
+    // swap the rho / v / E SoA pointers between primvar and prim_new so primvar holds
+    // the newly-computed state for the next step
+    static void swap_primvars(primvars* primvar, primvars* prim_new) {
+#ifndef CPU_DEBUG
+        GPU_SYNC(); // ensure all kernel writes to prim_new have landed before the swap
+#endif
+        std::swap(primvar->rho, prim_new->rho);
+        std::swap(primvar->v, prim_new->v);
+        std::swap(primvar->E, prim_new->E);
     }
 
     // scan primvar for unphysical values
@@ -371,16 +349,6 @@ namespace hydro {
         ) {
             portable_atomicAdd(&counters[UNPHYS_NAN], 1);
         }
-    }
-
-    // cell size changes mid step -> need to correct rho, E for this
-    GLOBAL void kernel_volume_correct(
-        hsize_t n_hydro, const double* old_volumes, const double* new_volumes, double* rho, double* E) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        double ratio = old_volumes[i] / new_volumes[i];
-        rho[i] *= ratio;
-        E[i] *= ratio;
     }
 
 #endif // !CPU_DEBUG
