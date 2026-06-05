@@ -47,10 +47,6 @@ Kelvin Helmholtz Instability ($51^2$ and $1024^2$)<br>
 Some colliding clouds ($200^3$, see ics/create_cloud_crash.py)<br>
 <img src="/docs/figures/cloud_collision_3D.png" alt="Image" width="100%">
 
-Runtime comparsion of Proteus (single GPU and single-node CPU) compared to AREPO (single-node CPU) for a $100^3$ shock tube test.<br>
-<img src="/docs/figures/runtime_comparison_gh200.png" alt="Image" width="60%"> <br>
-Note: here we estimate the runtime of AREPO runtime from its single core time, to eliminate its MPI overhead.
-
 A first run with 4 MPI tasks (still in early development).
 <img src="/docs/figures/kh_mpi4.gif" alt="Image" width="80%"> <br>
 Seedpoints are colorcoded according to their rank. 
