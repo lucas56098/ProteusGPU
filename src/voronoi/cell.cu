@@ -12,8 +12,14 @@ namespace voronoi {
     HD static inline uchar& ith_plane(VERT_TYPE* triangles, uchar t, int i);
     HD static inline uchar  ith_plane(const VERT_TYPE* triangles, uchar t, int i);
     HD static inline bool   vert_references_plane(const VERT_TYPE* triangles, int t_idx, uchar p);
-    HD static void          write_face(VMesh* mesh, hsize_t fi, int neighbor_id, double face_measure,
-                                       const double4* face_verts, int n_face_verts, double4 seed, double4 neighbor);
+    HD static void          write_face(VMesh*         mesh,
+                                       hsize_t        fi,
+                                       int            neighbor_id,
+                                       double         face_measure,
+                                       const double4* face_verts,
+                                       int            n_face_verts,
+                                       double4        seed,
+                                       double4        neighbor);
 
     // ============================================================
     // Main routines
@@ -40,7 +46,7 @@ namespace voronoi {
 
         // v_terminate / early_break are only read by the MPI completeness piggyback below;
         // attributes silence unused-warnings when built without USE_MPI or on the device side
-        int  __attribute__((unused)) v_terminate = K - 1;
+        int __attribute__((unused))  v_terminate = K - 1;
         bool __attribute__((unused)) early_break = false;
         for (int v = 0; v < K; v++) {
             const unsigned int z = local_knn[v];
@@ -64,33 +70,72 @@ namespace voronoi {
             stat[k] = security_radius_not_reached;
         }
 
-#ifndef __CUDA_ARCH__
 #ifdef USE_MPI
-        // MPI halo-completeness piggyback (CPU only). Fires only when (a) the cell succeeded via an
+        // Data-extent soundness guard. is_security_radius_reached only proves the cell fits
+        // inside the local K-th's circumscribed sphere; under multi-rank decomposition that
+        // sphere can poke past the edge of the data we actually have (own brick + halo W),
+        // meaning a true global K-nearest could be sitting outside, unseen. The safe radius
+        // for this seed is its smallest distance to any face of [data_lo, data_hi]; if the
+        // Voronoi cell's bounding sphere (radius = sqrt(d2)/2 from the deciding K-th) reaches
+        // past that, flip to security_radius_not_reached so the widen-W loop iterates.
+        // A cell deep inside the brick keeps a large safe radius — no false widens.
+        // Fast-tier only (K <= 50): the slow tier in sparse regions routinely needs farther
+        // K-nearest by design, and re-flagging it just feeds the perturb / CPU-fallback twice.
+        if (stat[k] == success && K <= 50 && mesh->data_hi[0] > mesh->data_lo[0]) {
+            const double4 last = point_from_ptr(d_stored_points + DIMENSION * local_knn[v_terminate]);
+            const double  dx   = last.x - cell.voro_seed.x;
+            const double  dy   = last.y - cell.voro_seed.y;
+#ifdef dim_3D
+            const double dz = last.z - cell.voro_seed.z;
+            const double d2 = dx * dx + dy * dy + dz * dz;
+#else
+            const double d2 = dx * dx + dy * dy;
+#endif
+            const double sx   = cell.voro_seed.x;
+            const double sy   = cell.voro_seed.y;
+            double       safe = sx - mesh->data_lo[0];
+            safe              = fmin(safe, mesh->data_hi[0] - sx);
+            safe              = fmin(safe, sy - mesh->data_lo[1]);
+            safe              = fmin(safe, mesh->data_hi[1] - sy);
+#ifdef dim_3D
+            const double sz = cell.voro_seed.z;
+            safe            = fmin(safe, sz - mesh->data_lo[2]);
+            safe            = fmin(safe, mesh->data_hi[2] - sz);
+#endif
+            if (safe < 0.0 || d2 > 4.0 * safe * safe) { stat[k] = security_radius_not_reached; }
+        }
+#endif
+
+#ifdef USE_MPI
+        // MPI halo-completeness piggyback. Fires only when (a) the cell succeeded via an
         // early break before v=K-1, (b) the deciding clip plane was an outermost-layer MPI ghost,
         // and (c) this is a fast-tier build (K small). The slow tier with K=190 routinely touches
         // the outer halo on geometrically-correct cells, so flagging it triggers spurious widening.
+        // The single shared mesh->outer_halo_hit flag is what SENTINEL_OUTER reads — no separate
+        // KNN-walk kernel needed. portable_atomicExch is idempotent: many threads writing 1 is fine.
+        // Reads halo metadata from mesh->{n_mpi_ghosts,is_outer_layer,pts_mpi_base} (snapshotted
+        // host-side from proteus_mpi::halo before the kernel launch) — the proteus_mpi::halo
+        // global is host-only and isn't visible to device code.
         if (stat[k] == success && early_break && v_terminate < K - 1 && K <= 50) {
-            const int                  n_mpi_ghosts = proteus_mpi::halo.n_mpi_ghosts;
-            const unsigned char* const is_outer     = proteus_mpi::halo.is_outer_layer;
+            const int                  n_mpi_ghosts = mesh->n_mpi_ghosts;
+            const unsigned char* const is_outer     = mesh->is_outer_layer;
             const int                  pts_mpi_base = mesh->pts_mpi_base;
             if (n_mpi_ghosts > 0 && is_outer != nullptr) {
                 const unsigned int orig = knn->d_permutation[local_knn[v_terminate]];
                 if ((int)orig >= pts_mpi_base) {
                     const int slot = (int)orig - pts_mpi_base;
                     if (slot >= 0 && slot < n_mpi_ghosts && is_outer[slot]) {
-                        mesh->cell_hit_outer[k] = 1;
+                        portable_atomicExch(mesh->outer_halo_hit, 1);
                     }
                 }
             }
         }
 #endif
-#endif
 
         // on success, reserve face slots atomically and emit the cell geometry
         if (stat[k] == success) {
             const int     fc        = count_cell_faces(cell);
-            const hsize_t my_offset = portable_atomicAdd(face_offset, (hsize_t)fc);
+            const hsize_t my_offset = (hsize_t)portable_atomicAdd(face_offset, (unsigned long long)fc);
             if (my_offset + (hsize_t)fc > mesh->face_capacity) {
                 portable_atomicExch(overflow_flag, 1);
                 return;
@@ -144,9 +189,9 @@ namespace voronoi {
         int     n_fv;
         for (int p = 0; p < cell.nb_v; p++) {
             if (!collect_face_vertices(cell, p, vertices_2d, face_verts, &n_fv)) continue;
-            const double  face_measure = compute_face_measure(face_verts, n_fv, cell.voro_seed, nullptr);
-            const int     neighbor_id  = cell.plane_vid[p];
-            double4       neighbor     = make_double4(0.0, 0.0, 0.0, 0.0);
+            const double face_measure = compute_face_measure(face_verts, n_fv, cell.voro_seed, nullptr);
+            const int    neighbor_id  = cell.plane_vid[p];
+            double4      neighbor     = make_double4(0.0, 0.0, 0.0, 0.0);
             if (neighbor_id >= 0) { neighbor = point_from_ptr(cell.pts + DIMENSION * neighbor_id); }
             write_face(mesh, fi, neighbor_id, face_measure, face_verts, n_fv, cell.voro_seed, neighbor);
             fi++;
@@ -155,7 +200,7 @@ namespace voronoi {
         // 3D: fan-triangulate each face; volume via divergence theorem on (seed,v0,vi,vi+1) tets
         double  total_volume = 0.0;
         double  wx = 0.0, wy = 0.0, wz = 0.0;
-        hsize_t fi           = mesh->face_ptr[cell_index];
+        hsize_t fi = mesh->face_ptr[cell_index];
         double4 face_verts[MAX_T];
 
         for (int p = 0; p < cell.nb_v; p++) {
@@ -367,8 +412,7 @@ namespace voronoi {
 
     // rebuild plane equation for slot p — bounding-box constants for p < 2*DIMENSION,
     // otherwise the perpendicular bisector of (voro_seed, pts[plane_vid[p]])
-    template <int MAX_P, int MAX_T>
-    HD double4 BasicConvexCell<MAX_P, MAX_T>::plane_for(int p) const {
+    template <int MAX_P, int MAX_T> HD double4 BasicConvexCell<MAX_P, MAX_T>::plane_for(int p) const {
 
         // bounding box [-buff, 1+buff]^d (periodic ghost copies extend out to those limits,
         // so the bounding planes have to enclose them). plane form n.(x,y,z) + w >= 0:
@@ -379,13 +423,19 @@ namespace voronoi {
             const double     w_min = buff + eps;
             const double     w_max = 1.0 + buff + eps;
             switch (p) {
-                case 0: return make_double4(1.0, 0.0, 0.0, w_min);  // -xmin
-                case 1: return make_double4(-1.0, 0.0, 0.0, w_max); //  xmax
-                case 2: return make_double4(0.0, 1.0, 0.0, w_min);  // -ymin
-                case 3: return make_double4(0.0, -1.0, 0.0, w_max); //  ymax
+            case 0:
+                return make_double4(1.0, 0.0, 0.0, w_min); // -xmin
+            case 1:
+                return make_double4(-1.0, 0.0, 0.0, w_max); //  xmax
+            case 2:
+                return make_double4(0.0, 1.0, 0.0, w_min); // -ymin
+            case 3:
+                return make_double4(0.0, -1.0, 0.0, w_max); //  ymax
 #ifdef dim_3D
-                case 4: return make_double4(0.0, 0.0, 1.0, w_min);  // -zmin
-                case 5: return make_double4(0.0, 0.0, -1.0, w_max); //  zmax
+            case 4:
+                return make_double4(0.0, 0.0, 1.0, w_min); // -zmin
+            case 5:
+                return make_double4(0.0, 0.0, -1.0, w_max); //  zmax
 #endif
             }
         }
@@ -432,14 +482,28 @@ namespace voronoi {
         const double4 pi3 = plane_for(v.z);
 
         // 3D: 4x4 determinant decides on which side the dual point of (pi1, pi2, pi3) lies relative to eqn
-        const double det = det4x4(pi1.x, pi2.x, pi3.x, eqn.x, pi1.y, pi2.y, pi3.y, eqn.y, pi1.z, pi2.z, pi3.z, eqn.z,
-                                  pi1.w, pi2.w, pi3.w, eqn.w);
+        const double det = det4x4(pi1.x,
+                                  pi2.x,
+                                  pi3.x,
+                                  eqn.x,
+                                  pi1.y,
+                                  pi2.y,
+                                  pi3.y,
+                                  eqn.y,
+                                  pi1.z,
+                                  pi2.z,
+                                  pi3.z,
+                                  eqn.z,
+                                  pi1.w,
+                                  pi2.w,
+                                  pi3.w,
+                                  eqn.w);
 
         // interval bound on rounding error in det (Shewchuk-style)
         const double maxx = fmax(fmax(fabs(pi1.x), fabs(pi2.x)), fmax(fabs(pi3.x), fabs(eqn.x)));
         const double maxy = fmax(fmax(fabs(pi1.y), fabs(pi2.y)), fmax(fabs(pi3.y), fabs(eqn.y)));
         const double maxz = fmax(fmax(fabs(pi1.z), fabs(pi2.z)), fmax(fabs(pi3.z), fabs(eqn.z)));
-        double       eps  = 1e-14 * maxx * maxy * maxz;
+        double       eps  = 1e-12 * maxx * maxy * maxz;
         double       min_max, max_max;
         get_minmax3(min_max, max_max, maxx, maxy, maxz);
         eps *= (max_max * max_max);

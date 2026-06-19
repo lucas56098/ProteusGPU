@@ -6,94 +6,77 @@ Point explosion in a uniform ambient medium:
   - Negligible pressure p_0 ~ 0
   - Large energy E_blast deposited in a small central region
 
-Supports cartesian mesh IC only. (due to energy in)
+Cartesian mesh only (energy deposition assumes structured cell volumes).
 
+Runs in either mode:
+  python create_sedov.py --n 45 --dimension 2
+  mpirun -np 4 python create_sedov.py --n 200 --dimension 3
 """
 
-import h5py
 import numpy as np
-from common import seed_positions, build_arg_parser, resolve_filename
+
+from common import (
+    build_arg_parser,
+    resolve_filename,
+    seed_positions_slice,
+    write_ic,
+    mpi_runtime,
+    collective_sum_int,
+)
 
 
-def create_sedov(
-    filename,
-    num_seeds,
-    dimension,
-    extent=1.0,
-    gamma=5.0 / 3.0,
-    E_blast=1.0,
-    r_blast=None,
-    p_ambient=1.0e-5,
-):
+def fill_sedov(row_lo, n_local, args):
+    """Compute (pos, vel, rho, energy) for global rows [row_lo, row_lo+n_local).
 
-    if dimension not in (2, 3):
-        raise ValueError("dimension must be 2 or 3")
+    The blast cell count and per-cell deposition need a global view: each rank
+    counts its local blast cells, an Allreduce gives the global total, and the
+    same E_per_cell value is then applied locally.
+    """
+    n_global = args.n ** args.dimension
+    pos = seed_positions_slice(
+        row_lo, n_local, n_global,
+        dimension=args.dimension,
+        extent=args.extent,
+        rng_seed=args.rng_seed,
+        mesh_mode="cartesian",
+        perturbation=args.perturbation,
+    )
 
-    print(f"Creating Sedov {dimension}D IC file: {filename}")
-    print(f"  Total seeds: {num_seeds}")
-    print(f"  Dimension: {dimension}")
-    print(f"  Extent: {extent}")
-    print(f"  Gamma: {gamma}")
-    print(f"  Mesh mode: {"cartesian"}")
+    n_per_axis = int(round(n_global ** (1.0 / args.dimension)))
+    dx = args.extent / n_per_axis
+    r_blast = args.r_blast if args.r_blast is not None else 0.9 * dx
 
-    pos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode="cartesian", perturbation=0.01)
-    dx = extent / int(round(num_seeds ** (1.0 / dimension)))
-
-    # energy injection radius
-    if r_blast is None:
-        r_blast = 0.9 * dx
-    print(f"  r_blast: {r_blast:.6f}")
-
-    # approximate cell volume (uniform grid estimate)
-    cell_volume = (extent ** dimension) / num_seeds
-
-    # distance from center
-    center = 0.5 * extent
-    dr = pos - center
-    radius = np.sqrt(np.sum(dr**2, axis=1))
-
-    # ic
-    rho = np.full(num_seeds, 1.0, dtype=np.float64)
-    vel = np.zeros((num_seeds, dimension), dtype=np.float64)
-    E_ambient = p_ambient / (gamma - 1.0)
-    energy = np.full(num_seeds, E_ambient, dtype=np.float64)
-
-    # deposit blast energy uniformly over cells inside r_blast
+    center = 0.5 * args.extent
+    radius = np.linalg.norm(pos - center, axis=1)
     blast_mask = radius < r_blast
-    n_blast = np.sum(blast_mask)
-    if n_blast == 0:
-        raise RuntimeError("No cells inside r_blast — increase r_blast or num_seeds")
 
-    E_per_cell = E_blast / (n_blast * cell_volume)
-    energy[blast_mask] = E_per_cell
+    # global blast-cell count: each rank contributes its local count, all ranks
+    # see the same global total via Allreduce. In serial collective_sum_int is
+    # a no-op identity.
+    comm, _rank, _nranks = mpi_runtime()
+    n_blast_global = collective_sum_int(comm, int(np.sum(blast_mask)))
+    if n_blast_global == 0:
+        raise RuntimeError("No cells inside r_blast — increase r_blast or args.n.")
 
-    print(f"  Blast cells: {n_blast}")
-    print(f"  E_blast: {E_blast}")
-    print(f"  E_per_blast_cell (energy density): {E_per_cell:.6e}")
+    cell_volume = (args.extent ** args.dimension) / n_global
+    E_per_cell = args.E_blast / (n_blast_global * cell_volume)
+    E_ambient = args.p_ambient / (args.gamma - 1.0)
 
-    # write Proteus HDF5
-    with h5py.File(filename, "w") as f:
-        header = f.create_group("header")
-        header.attrs["dimension"] = dimension
-        header.attrs["extent"] = extent
-        header.attrs["gamma"] = gamma
+    rho = np.full(n_local, 1.0, dtype=np.float64)
+    vel = np.zeros((n_local, args.dimension), dtype=np.float64)
+    energy = np.where(blast_mask, E_per_cell, E_ambient).astype(np.float64)
 
-        f.create_dataset("pos", data=pos)
-        f.create_dataset("rho", data=rho)
-        f.create_dataset("vel", data=vel)
-        f.create_dataset("energy", data=energy)
-
-    print(f"  Created {filename} with {num_seeds} cells\n")
+    return pos, vel, rho, energy
 
 
 if __name__ == "__main__":
-    # Sedov supports cartesian mesh only.
     parser = build_arg_parser(
         "sedov",
         default_n=45,
         default_dim=2,
         default_mesh_mode="cartesian",
         allowed_mesh_modes=("cartesian",),
+        default_perturbation=0.01,
     )
     parser.add_argument("--E_blast", type=float, default=1.0)
     parser.add_argument(
@@ -103,13 +86,10 @@ if __name__ == "__main__":
     parser.add_argument("--p_ambient", type=float, default=1.0e-5)
     args = parser.parse_args()
 
-    create_sedov(
+    write_ic(
         filename=resolve_filename(args, "sedov"),
-        num_seeds=args.n ** args.dimension,
+        n_global=args.n ** args.dimension,
         dimension=args.dimension,
-        extent=args.extent,
-        gamma=args.gamma,
-        E_blast=args.E_blast,
-        r_blast=args.r_blast,
-        p_ambient=args.p_ambient,
+        fill_fn=fill_sedov,
+        args=args,
     )

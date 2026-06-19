@@ -35,7 +35,7 @@ static void build_neighbor_table() {
                     if (coords[a] >= decomp.dims[a]) shift[a] = -1.0;
                 }
 
-                const int n = halo.n_neighbors;
+                const int n               = halo.n_neighbors;
                 halo.neighbor_ranks[n]    = neighbor_rank;
                 halo.neighbor_dirs[n][0]  = dx;
                 halo.neighbor_dirs[n][1]  = dy;
@@ -97,19 +97,22 @@ struct BoundaryFlags {
     int x_out_lo, x_out_hi, y_out_lo, y_out_hi, z_out_lo, z_out_hi;
 };
 
-static inline BoundaryFlags classify_brick_boundary(int bx, int by, int bz,
-                                                    int b0x, int b1x, int b0y, int b1y, int b0z, int b1z, int W) {
+static inline BoundaryFlags
+classify_brick_boundary(int bx, int by, int bz, int b0x, int b1x, int b0y, int b1y, int b0z, int b1z, int W) {
     BoundaryFlags f;
-    f.x_lo = (bx <  b0x + W);
+    f.x_lo = (bx < b0x + W);
     f.x_hi = (bx >= b1x - W);
-    f.y_lo = (by <  b0y + W);
+    f.y_lo = (by < b0y + W);
     f.y_hi = (by >= b1y - W);
 #ifdef dim_3D
-    f.z_lo = (bz <  b0z + W);
+    f.z_lo = (bz < b0z + W);
     f.z_hi = (bz >= b1z - W);
 #else
-    (void)bz; (void)b0z; (void)b1z;
-    f.z_lo = 0; f.z_hi = 0;
+    (void)bz;
+    (void)b0z;
+    (void)b1z;
+    f.z_lo = 0;
+    f.z_hi = 0;
 #endif
     f.x_out_lo = (bx == b0x + W - 1);
     f.x_out_hi = (bx == b1x - W);
@@ -119,7 +122,8 @@ static inline BoundaryFlags classify_brick_boundary(int bx, int by, int bz,
     f.z_out_lo = (bz == b0z + W - 1);
     f.z_out_hi = (bz == b1z - W);
 #else
-    f.z_out_lo = 0; f.z_out_hi = 0;
+    f.z_out_lo = 0;
+    f.z_out_hi = 0;
 #endif
     return f;
 }
@@ -148,12 +152,12 @@ static inline bool ships_to_outer_layer(const BoundaryFlags& f, int dx, int dy, 
 
 #ifdef USE_MPI
 enum HaloMsgKind {
-    MSG_COUNTS       = 0,
-    MSG_SEED         = 1,
-    MSG_PRIM         = 2,
-    MSG_GRAD         = 3,
-    MSG_V_MESH       = 4,
-    MSG_USED_BITMAP  = 5,
+    MSG_COUNTS      = 0,
+    MSG_SEED        = 1,
+    MSG_PRIM        = 2,
+    MSG_GRAD        = 3,
+    MSG_V_MESH      = 4,
+    MSG_USED_BITMAP = 5,
 };
 
 // (dx,dy,dz) -> [1, 27]
@@ -175,9 +179,8 @@ static void neighbor_exchange(const void*  sendbuf,
                               const int*   recvcounts,
                               const int*   rdispls) {
     if (halo.use_neighbor_coll) {
-        MPI_Neighbor_alltoallv(sendbuf, sendcounts, sdispls, dtype,
-                               recvbuf, recvcounts, rdispls, dtype,
-                               halo.graph_comm);
+        MPI_Neighbor_alltoallv(
+            sendbuf, sendcounts, sdispls, dtype, recvbuf, recvcounts, rdispls, dtype, halo.graph_comm);
         return;
     }
     int elem_bytes = 0;
@@ -194,26 +197,40 @@ static void neighbor_exchange(const void*  sendbuf,
         const int sc   = sendcounts[n];
         const int rc   = recvcounts[n];
         if (sc > 0) {
-            MPI_Isend(sbuf + (size_t)sdispls[n] * elem_bytes, sc, dtype, peer,
-                      msg_tag(dx, dy, dz, kind), decomp.cart_comm, &reqs[n_reqs++]);
+            MPI_Isend(sbuf + (size_t)sdispls[n] * elem_bytes,
+                      sc,
+                      dtype,
+                      peer,
+                      msg_tag(dx, dy, dz, kind),
+                      decomp.cart_comm,
+                      &reqs[n_reqs++]);
         }
         if (rc > 0) {
-            MPI_Irecv(rbuf + (size_t)rdispls[n] * elem_bytes, rc, dtype, peer,
-                      msg_tag(-dx, -dy, -dz, kind), decomp.cart_comm, &reqs[n_reqs++]);
+            MPI_Irecv(rbuf + (size_t)rdispls[n] * elem_bytes,
+                      rc,
+                      dtype,
+                      peer,
+                      msg_tag(-dx, -dy, -dz, kind),
+                      decomp.cart_comm,
+                      &reqs[n_reqs++]);
         }
     }
     if (n_reqs > 0) MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
 }
 
 static inline void exchange_full_halo(const void* sendbuf, void* recvbuf, MPI_Datatype dtype, HaloMsgKind kind) {
-    neighbor_exchange(sendbuf, recvbuf, dtype, kind,
-                      halo.send_count, halo.send_offset,
-                      halo.recv_count, halo.ghost_offset);
+    neighbor_exchange(
+        sendbuf, recvbuf, dtype, kind, halo.send_count, halo.send_offset, halo.recv_count, halo.ghost_offset);
 }
 
 static inline void exchange_used_subset(const void* sendbuf, void* recvbuf, MPI_Datatype dtype, HaloMsgKind kind) {
-    neighbor_exchange(sendbuf, recvbuf, dtype, kind,
-                      halo.used_send_count, halo.used_send_offset,
-                      halo.used_recv_count, halo.used_recv_offset);
+    neighbor_exchange(sendbuf,
+                      recvbuf,
+                      dtype,
+                      kind,
+                      halo.used_send_count,
+                      halo.used_send_offset,
+                      halo.used_recv_count,
+                      halo.used_recv_offset);
 }
 #endif

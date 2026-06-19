@@ -8,3 +8,8 @@ output_dt = 0.01
 
 # hydrodynamics
 CFL_frac = 0.3
+
+# load balancing
+rebalance_interval = 10
+imbalance_log_interval = 1
+imbalance_threshold = 1.10

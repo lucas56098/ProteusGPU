@@ -1,9 +1,21 @@
+#include "global/gpu_compat.h"
 #include "mpi_compat.h"
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #ifndef CPU_DEBUG
 #include <cuda_runtime.h>
+#endif
+
+// OpenMPI exposes MPIX_Query_cuda_support via <mpi-ext.h>. Cray MPICH does not
+// ship that header — fall back to the MPICH_GPU_SUPPORT_ENABLED env var only.
+#if defined(USE_MPI) && defined(__has_include)
+#if __has_include(<mpi-ext.h>)
+#include <mpi-ext.h>
+#define PROTEUS_HAS_MPIX_QUERY_CUDA 1
+#endif
 #endif
 
 namespace proteus_mpi {
@@ -115,6 +127,90 @@ namespace proteus_mpi {
         return s_gpus_per_node;
 #else
         return s_gpus_per_node_no_mpi < 0 ? 0 : s_gpus_per_node_no_mpi;
+#endif
+    }
+
+    // ============================================================
+    // GPU-aware MPI banner + sync helpers
+    // ============================================================
+
+    void report_gpu_aware_mpi() {
+        if (rank() != 0) return;
+#ifdef USE_MPI
+#ifdef GPU_AWARE_MPI
+        std::printf("BEGRUN: MPI GPU_AWARE_MPI is COMPILED IN — buffers passed to MPI are device pointers.\n");
+#else
+        std::printf("BEGRUN: MPI GPU_AWARE_MPI is OFF — managed-memory buffers staged through host before MPI.\n");
+#endif
+
+        // OpenMPI runtime probe — only available when <mpi-ext.h> is present.
+#ifdef PROTEUS_HAS_MPIX_QUERY_CUDA
+#ifdef MPIX_CUDA_AWARE_SUPPORT
+        std::printf("BEGRUN: MPI MPIX_Query_cuda_support() = %d\n", MPIX_Query_cuda_support());
+#endif
+#endif
+        // Cray MPICH env var — set by sites that have GPU-aware MPI enabled.
+        if (const char* v = std::getenv("MPICH_GPU_SUPPORT_ENABLED")) {
+            std::printf("BEGRUN: MPI MPICH_GPU_SUPPORT_ENABLED = %s\n", v);
+        }
+
+        char version[MPI_MAX_LIBRARY_VERSION_STRING] = {0};
+        int  vlen                                    = 0;
+        if (MPI_Get_library_version(version, &vlen) == MPI_SUCCESS) {
+            // Strip trailing newlines so the banner stays one line per fact.
+            for (int i = vlen - 1; i >= 0 && (version[i] == '\n' || version[i] == '\r'); i--)
+                version[i] = '\0';
+            std::printf("BEGRUN: MPI library = %s\n", version);
+        }
+        std::fflush(stdout);
+#else
+        // no MPI compiled — nothing useful to report.
+#endif
+    }
+
+#if defined(USE_MPI) && !defined(CPU_DEBUG)
+    static void sync_device() {
+        cudaDeviceSynchronize();
+    }
+#else
+    static inline void sync_device() {}
+#endif
+
+    void mpi_sync_before_send(const void* buf, size_t bytes) {
+#if defined(CPU_DEBUG) || !defined(USE_MPI)
+        (void)buf;
+        (void)bytes;
+        return;
+#else
+        // Always sync: even with GPU_AWARE_MPI on, pack kernel writes must be
+        // visible to the NIC DMA before the MPI call.
+        sync_device();
+#ifndef GPU_AWARE_MPI
+        // Library expects host-resident pointer — pull the managed pages over.
+        if (bytes > 0 && buf != nullptr) {
+            gpu_prefetch_to_cpu(const_cast<void*>(buf), bytes);
+            sync_device(); // make sure prefetch is done before MPI reads
+        }
+#else
+        (void)bytes;
+#endif
+#endif
+    }
+
+    void mpi_sync_after_recv(void* buf, size_t bytes) {
+#if defined(CPU_DEBUG) || !defined(USE_MPI)
+        (void)buf;
+        (void)bytes;
+        return;
+#else
+#ifndef GPU_AWARE_MPI
+        // Library wrote into host pages — push them back to the device so the
+        // next compute kernel doesn't page-fault each cache line.
+        if (bytes > 0 && buf != nullptr) { gpu_prefetch_to_gpu(buf, bytes); }
+#else
+        (void)buf;
+        (void)bytes;
+#endif
 #endif
     }
 

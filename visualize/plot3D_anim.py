@@ -45,20 +45,19 @@ def _rank_path(template, rank):
 
 def load_snapshot(path, n_ranks=None):
     """Read one snapshot. With n_ranks set, `path` is treated as a template and
-    sibling `<stem>.<r>.hdf5` files are concatenated (dimension/extent/time
-    are taken from rank 0)."""
+    sibling `<stem>.<r>.hdf5` files are concatenated (dimension/time are taken
+    from rank 0). extent is the hardcoded [0,1]^D code domain."""
     files = [path] if n_ranks is None else [_rank_path(path, r) for r in range(n_ranks)]
 
     seeds_parts, rho_parts, vel_parts, E_parts = [], [], [], []
     dim = None
-    extent = None
+    extent = 1.0  # domain is hardcoded to [0,1]^D in the code
     sim_time = None
 
     for fp in files:
         with h5py.File(fp, 'r') as f:
             if dim is None:
                 dim = int(f['header'].attrs['dimension'])
-                extent = float(f['header'].attrs['extent'])
                 sim_time = float(f['header'].attrs['time'])
             seeds_parts.append(f['mesh/pos'][:])
             rho_parts.append(f['hydro/rho'][:])
@@ -986,8 +985,8 @@ class SnapshotProvider:
             values_c = values_op if self._fields_share else \
                        np.load(c_p).astype(np.float32, copy=False)
             with h5py.File(path, 'r') as fh:
-                extent = float(fh['header'].attrs['extent'])
                 sim_t = float(fh['header'].attrs.get('time', 0.0))
+            extent = 1.0  # domain is hardcoded to [0,1]^D in the code
             print(f"[cache] loaded snap {snap_idx} from {os.path.dirname(seeds_p)}")
         else:
             n_ranks = getattr(self.args, 'n_ranks', None)

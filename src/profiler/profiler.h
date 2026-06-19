@@ -9,48 +9,107 @@
 #include <unordered_map>
 #include <vector>
 
-// NVTX range annotations for Nsight Systems timeline
 #ifdef CUDA_PROFILING
 #include "nvtx3/nvToolsExt.h"
-#define NVTX_PUSH(name) nvtxRangePushA(name)
-#define NVTX_POP() nvtxRangePop()
-#else
-#define NVTX_PUSH(name)
-#define NVTX_POP()
 #endif
 
+// Profiler — hierarchical CPU + GPU + MPI timing.
+//
+// Three RAII scope kinds; each one pushes a node onto a path stack so the
+// runtime parent of every timer is its enclosing scope. The full path
+// (DOMAIN.SUB.LEAF) is what gets stored / printed / written to HDF5.
+//
+//   PROFILE("MESH.CELLS")          // CPU work, kind=c
+//   PROFILE_MPI("WAIT")            // MPI call site, kind=m
+//   PROFILE_KERNEL("FLUX_KERNEL")  // CUDA kernel, kind=g — GPU events
+//                                  //   queried lazily at LogTimestep
+//
+// The macros are RAII over a Scope/MpiScope/KernelScope; the destructor pops
+// the stack and accumulates elapsed time. Don't mix with manual Start/End.
 class Profiler {
   public:
-    static void StartTimer(const std::string& name);
-    static void EndTimer(const std::string& name);
+    // CPU host wall-clock scope.
+    class Scope {
+      public:
+        explicit Scope(const char* short_name);
+        ~Scope();
+        Scope(const Scope&)            = delete;
+        Scope& operator=(const Scope&) = delete;
+
+      private:
+        std::string m_path;
+    };
+
+    // CPU wall-clock scope, marked as MPI work in the tree.
+    class MpiScope {
+      public:
+        explicit MpiScope(const char* short_name);
+        ~MpiScope();
+        MpiScope(const MpiScope&)            = delete;
+        MpiScope& operator=(const MpiScope&) = delete;
+
+      private:
+        std::string m_path;
+    };
+
+    // CUDA-kernel scope: records start/stop events on the default stream.
+    // CPU launch time is folded into the parent (host scope still ticks, but
+    // the leaf's stored value is GPU device time). Events drain lazily.
+    class KernelScope {
+      public:
+        explicit KernelScope(const char* short_name);
+        ~KernelScope();
+        KernelScope(const KernelScope&)            = delete;
+        KernelScope& operator=(const KernelScope&) = delete;
+
+      private:
+        std::string m_path;
+#ifdef CUDA_PROFILING
+        void* m_start_event; // cudaEvent_t — owned during this scope's lifetime
+#endif
+    };
+
+    // End-of-run summary on rank 0 (with cross-rank min/avg/max).
     static void PrintResults();
-    static void LogTimestep(int step, std::ostream& out);
 
-    // restart: trim `path` so only blocks with timestep <= step survive, and seed
-    // m_Timings / m_PrevStepCum / m_StartTimes from the cumulative values at step `step`.
-    static void ResumeFromLog(const std::string& path, int step);
+    // Shared profile.hdf5 with one /rank_<R>/per_step/<TIMER> + /rank_<R>/cumulative/<TIMER>
+    // dataset per timer (full hierarchical path). Each dataset gets a @kind attribute
+    // ("cpu" | "mpi" | "gpu"). restart_step >= 0 opens for append and truncates rows
+    // past restart_step+1.
+    static void OpenProfileLog(const std::string& path, int restart_step);
+    static void CloseProfileLog();
+    static void LogTimestep(int step);
 
-    static void StartGPU(const std::string& name);
-    static void EndGPU(const std::string& name);
+    // Seed in-memory cumulative timings from a snapshot's /header/profiler group.
+    // Must run before any new Start so subsequent diffs are computed from the
+    // restored baseline. TOTAL is rewound by adjusting its live start time so
+    // CollectCurrent's live offset includes the resumed runtime.
+    static void SeedFromCumulative(const std::unordered_map<std::string, double>& cum_sec);
+
+    // Current cumulative seconds per full-path timer (live values for any
+    // currently-open scopes are folded in). Used by output.cu to snapshot
+    // profiler state for restart-on-snapshot.
+    static std::unordered_map<std::string, double> CurrentCumulative();
 
   private:
-    // CPU wall-clock timing
-    static std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> m_StartTimes;
-    static std::unordered_map<std::string, long long>                                      m_Timings;
-    static std::unordered_map<std::string, long long>                                      m_PrevStepCum; // cumulative at the end of the previous LogTimestep
+    // Non-blocking drain of completed GPU events into the cumulative GPU map.
+    // Called from LogTimestep (every step) and PrintResults (force-sync).
+    static void DrainGpuEvents(bool force_sync);
 
-    // GPU event timing (accumulated ms per region)
-    static std::unordered_map<std::string, double> m_GpuTimings;     // cumulative ms
-    static std::unordered_map<std::string, int>    m_GpuCounts;      // call counts
-    static std::unordered_map<std::string, double> m_GpuPrevStepCum; // cumulative ms at the end of the previous LogTimestep
-
-    // NVTX events for GPU timing
-    struct GpuEventPair {
-        void* start; // cudaEvent_t
-        void* stop;  // cudaEvent_t
-    };
-    static std::unordered_map<std::string, GpuEventPair> m_GpuEvents;
+    // Build the (name, cum_us) view this rank currently has, with live timers
+    // (TOTAL, HYDRO) extended to "now". One row per full-path timer, regardless
+    // of kind — for cpu/mpi rows the unit is CPU µs, for gpu rows it's GPU µs.
+    static std::vector<std::pair<std::string, long long>> CollectCurrent();
 };
+
+// Macros — each one declares a uniquely-named RAII object so multiple PROFILE
+// lines can live in the same scope. __COUNTER__ would also work; __LINE__ is
+// enough and the diagnostics are kinder.
+#define PROFILE_CAT_(a, b) a##b
+#define PROFILE_CAT(a, b) PROFILE_CAT_(a, b)
+#define PROFILE(name) Profiler::Scope PROFILE_CAT(_prof_scope_, __LINE__)(name)
+#define PROFILE_MPI(name) Profiler::MpiScope PROFILE_CAT(_prof_mscope_, __LINE__)(name)
+#define PROFILE_KERNEL(name) Profiler::KernelScope PROFILE_CAT(_prof_kscope_, __LINE__)(name)
 
 inline std::string format_hms(double seconds) {
     if (seconds < 0.0) { seconds = 0.0; }

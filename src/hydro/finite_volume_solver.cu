@@ -37,7 +37,7 @@ namespace hydro {
 
         // allocate primvar
         sim.primvar = gpu_alloc<primvars>(1);
-        allocate_prim_buffer(sim.n_hydro, sim.primvar);
+        allocate_prim_buffer(sim.n_hydro, sim.primvar, /*with_ghosts=*/true);
 
         // fill primvar with icData
         for (int i = 0; i < n_hydro; i++) {
@@ -52,7 +52,7 @@ namespace hydro {
 
         // allocate prim_new
         sim.prim_new = gpu_alloc<primvars>(1);
-        allocate_prim_buffer(sim.n_hydro, sim.prim_new);
+        allocate_prim_buffer(sim.n_hydro, sim.prim_new, /*with_ghosts=*/false);
 
         // allocate gradients
         sim.grads = gpu_alloc<gradients::PrimGradients>(1);
@@ -138,15 +138,18 @@ namespace hydro {
                            const gradients::PrimGradients* grads,
                            primvars*                       prim_new) {
 
-        Profiler::StartTimer("HYDRO_STEP");
+        PROFILE("FLUX");
 
 #ifndef CPU_DEBUG
         int tpb                = _HYDRO_BLOCK_SIZE_;
         int blocks             = ((int)mesh->n_hydro + tpb - 1) / tpb;
         int do_time_extrap_int = (dt_extrap != 0.0) ? 1 : 0;
-        Profiler::StartGPU("kernel_flux_update");
-        kernel_flux_update<<<blocks, tpb>>>(dt_update, do_time_extrap_int, dt_extrap, mesh, prim_old, grads, prim_new);
-        Profiler::EndGPU("kernel_flux_update");
+        {
+            PROFILE_KERNEL("FLUX_KERNEL");
+            kernel_flux_update<<<blocks, tpb>>>(
+                dt_update, do_time_extrap_int, dt_extrap, mesh, prim_old, grads, prim_new);
+            GPU_SYNC();
+        }
 #else
         const bool do_time_extrap = (dt_extrap != 0.0);
 #ifdef USE_OPENMP
@@ -156,13 +159,11 @@ namespace hydro {
             flux_update_for_cell(i, dt_update, do_time_extrap, dt_extrap, mesh, prim_old, grads, prim_new);
         }
 #endif
-
-        Profiler::EndTimer("HYDRO_STEP");
     }
 
     // global CFL timestep: min over all hydro cells
     double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar) {
-        Profiler::StartTimer("CFL");
+        PROFILE("CFL");
 
         double min_dt = 1e100;
 
@@ -174,9 +175,10 @@ namespace hydro {
 
         int tpb    = _HYDRO_BLOCK_SIZE_;
         int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        Profiler::StartGPU("kernel_dt_CFL");
-        kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, d_min_dt);
-        Profiler::EndGPU("kernel_dt_CFL");
+        {
+            PROFILE_KERNEL("DT_CFL");
+            kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, d_min_dt);
+        }
 
         GPU_SYNC();
         min_dt = *d_min_dt;
@@ -190,7 +192,6 @@ namespace hydro {
         }
 #endif
 
-        Profiler::EndTimer("CFL");
         return min_dt;
     }
 
@@ -202,11 +203,12 @@ namespace hydro {
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new) {
 #ifndef CPU_DEBUG
         {
+            PROFILE_KERNEL("COPY_PRIMVAR");
             int tpb    = _HYDRO_BLOCK_SIZE_;
             int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
             kernel_copy_primvars<<<blocks, tpb>>>(
                 mesh->n_hydro, primvar->rho, primvar->v, primvar->E, prim_new->rho, prim_new->v, prim_new->E);
-            GPU_LAUNCH_CHECK();
+            GPU_SYNC();
         }
 #else
         gpu_memcpy(prim_new->rho, primvar->rho, mesh->n_hydro * sizeof(double));
@@ -228,6 +230,7 @@ namespace hydro {
 
     // scan primvar for unphysical values
     static void check_unphysical_state(VMesh* mesh, const primvars* primvar) {
+        PROFILE("UNPHYS_CHECK");
         int counts[UNPHYS_N] = {0, 0, 0};
 #ifndef CPU_DEBUG
         static int* d_counts = nullptr;
@@ -236,9 +239,10 @@ namespace hydro {
             d_counts[k] = 0;
         const int tpb    = _HYDRO_BLOCK_SIZE_;
         const int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        Profiler::StartGPU("kernel_check_unphysical");
-        kernel_check_unphysical<<<blocks, tpb>>>(mesh->n_hydro, primvar, d_counts);
-        Profiler::EndGPU("kernel_check_unphysical");
+        {
+            PROFILE_KERNEL("UNPHYS_KERNEL");
+            kernel_check_unphysical<<<blocks, tpb>>>(mesh->n_hydro, primvar, d_counts);
+        }
         GPU_SYNC();
         for (int k = 0; k < UNPHYS_N; k++)
             counts[k] = d_counts[k];
@@ -373,28 +377,32 @@ namespace hydro {
         prim                    state_i = get_state(i, prim_old);
         gradients::PrimGradient grad_i  = grads->load(i);
 
-        prim total_flux;
+        prim      total_flux;
+        const int n_hydro_int = (int)mesh->n_hydro;
 
-        // accumulate flux contribution from each face
+        // accumulate flux contribution from each face. face_idx must be hsize_t — at
+        // 2e8 cells/rank with _FACE_CAPACITY_MULT_=17, max_faces ~ 5e9 and an int
+        // would silently wrap, reading garbage from neighbor_cell / face_area.
         for (hsize_t j = 0; j < mesh->face_counts[i]; j++) {
-            int                     face_idx = face_base + j;
-            hsize_t                 index_j  = mesh->neighbor_cell[face_idx];
-            prim                    state_j  = get_state(index_j, prim_old);
-            gradients::PrimGradient grad_j   = grads->load(index_j);
+            hsize_t                 face_idx = face_base + j;
+            int                     index_j  = mesh->neighbor_cell[face_idx];
+            prim                    state_j  = get_state_at(index_j, n_hydro_int, prim_old);
+            gradients::PrimGradient grad_j   = grads->load_at(index_j, n_hydro_int);
+            double3                 seed_j   = get_seed_at(index_j, n_hydro_int, mesh);
 
             // local face frame (n, m, p) along the seed-to-seed direction
-            double3 delta = {wrap_periodic_delta(mesh->seeds[index_j].x - mesh->seeds[i].x),
-                             wrap_periodic_delta(mesh->seeds[index_j].y - mesh->seeds[i].y),
-                             wrap_periodic_delta(mesh->seeds[index_j].z - mesh->seeds[i].z)};
+            double3 delta = {wrap_periodic_delta(seed_j.x - mesh->seeds[i].x),
+                             wrap_periodic_delta(seed_j.y - mesh->seeds[i].y),
+                             wrap_periodic_delta(seed_j.z - mesh->seeds[i].z)};
             geom    g     = compute_geom(delta);
 
 #ifdef MOVING_MESH
             // face velocity (lab + face-frame) for the moving-mesh transformation
             POINT_TYPE vel_face, vel_face_turned;
             POINT_TYPE vm_i = mesh->v_mesh[i];
-            POINT_TYPE vm_j = mesh->v_mesh[index_j];
+            POINT_TYPE vm_j = get_vmesh_at(index_j, n_hydro_int, mesh);
             get_vel_face(i,
-                         index_j,
+                         (hsize_t)index_j,
                          vm_i,
                          vm_j,
                          &mesh->f_mid_local[face_idx * (DIMENSION - 1)],
@@ -406,7 +414,7 @@ namespace hydro {
 
             // reconstruct left/right face states by spatial (and optionally temporal) extrapolation
             prim       state_l, state_r;
-            POINT_TYPE dx = point_diff_periodic(mesh->seeds[index_j], mesh->seeds[i]);
+            POINT_TYPE dx = point_diff_periodic(seed_j, mesh->seeds[i]);
 
             apply_spatial_extrapolation(state_i, grad_i, point_mul(0.5, dx), &state_l);
             apply_spatial_extrapolation(state_j, grad_j, point_mul(-0.5, dx), &state_r);
@@ -602,11 +610,13 @@ namespace hydro {
 
         double facv;
 
-        // compute distance between generators (nn = |r_ij|)
-        double nnx = wrap_periodic_delta(mesh->seeds[index_j].x - mesh->seeds[i].x);
-        double nny = wrap_periodic_delta(mesh->seeds[index_j].y - mesh->seeds[i].y);
+        // compute distance between generators (nn = |r_ij|) — index_j may be an MPI ghost,
+        // so route the seed read through the ghost-aware accessor.
+        const double3 seed_j = get_seed_at((int)index_j, (int)mesh->n_hydro, mesh);
+        double        nnx    = wrap_periodic_delta(seed_j.x - mesh->seeds[i].x);
+        double        nny    = wrap_periodic_delta(seed_j.y - mesh->seeds[i].y);
 #ifdef dim_3D
-        double nnz = wrap_periodic_delta(mesh->seeds[index_j].z - mesh->seeds[i].z);
+        double nnz = wrap_periodic_delta(seed_j.z - mesh->seeds[i].z);
         double nn  = sqrt(nnx * nnx + nny * nny + nnz * nnz);
 #else
         double nn = sqrt(nnx * nnx + nny * nny);

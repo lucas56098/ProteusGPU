@@ -1,20 +1,43 @@
 namespace voronoi {
 
     // ---- forward declarations ----
-    static hsize_t cpu_generate_periodic_ghosts(hsize_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts,
-                                                hsize_t* original_ids, double buff_val, int wx, int wy, int wz);
-    HD static inline bool ghost_box_contains(POINT_TYPE pt, double xa, double xb, double ya, double yb,
-                                             double za = 0.0, double zb = 1.0);
-    static inline void    append_ghost_copy(POINT_TYPE* pts, hsize_t index, hsize_t* n_ghosts,
-                                            const hsize_t* n_hydro, hsize_t* original_ids, double shift_x,
-                                            double shift_y, double shift_z = 0.0);
+    static hsize_t cpu_generate_periodic_ghosts(hsize_t           n_hydro,
+                                                const POINT_TYPE* pts_data,
+                                                POINT_TYPE*       pts,
+                                                hsize_t*          original_ids,
+                                                double            buff_val,
+                                                int               wx,
+                                                int               wy,
+                                                int               wz);
+    HD static inline bool
+    ghost_box_contains(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za = 0.0, double zb = 1.0);
+    static inline void append_ghost_copy(POINT_TYPE*    pts,
+                                         hsize_t        index,
+                                         hsize_t*       n_ghosts,
+                                         const hsize_t* n_hydro,
+                                         hsize_t*       original_ids,
+                                         double         shift_x,
+                                         double         shift_y,
+                                         double         shift_z = 0.0);
 
 #ifndef CPU_DEBUG
-    static hsize_t launch_periodic_ghost_kernel(hsize_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts,
-                                                hsize_t* original_ids, double buff_val, int wx, int wy, int wz);
-    GLOBAL void kernel_generate_ghosts(hsize_t n_hydro, const POINT_TYPE* __restrict__ pts_data,
-                                       POINT_TYPE* __restrict__ pts, hsize_t* __restrict__ original_ids,
-                                       int* __restrict__ d_ghost_count, double buff_val, int wx, int wy, int wz);
+    static hsize_t launch_periodic_ghost_kernel(hsize_t           n_hydro,
+                                                const POINT_TYPE* pts_data,
+                                                POINT_TYPE*       pts,
+                                                hsize_t*          original_ids,
+                                                double            buff_val,
+                                                int               wx,
+                                                int               wy,
+                                                int               wz);
+    GLOBAL void    kernel_generate_ghosts(hsize_t n_hydro,
+                                          const POINT_TYPE* __restrict__ pts_data,
+                                          POINT_TYPE* __restrict__ pts,
+                                          hsize_t* __restrict__ original_ids,
+                                          int* __restrict__ d_ghost_count,
+                                          double buff_val,
+                                          int    wx,
+                                          int    wy,
+                                          int    wz);
 #endif
 
     // ============================================================
@@ -27,11 +50,8 @@ namespace voronoi {
     // exactly 1 rank in that direction. For decomposed axes the halo exchange already
     // carries the periodic wrap (see halo_internal.cu neighbor_shift), so a local periodic
     // ghost would land outside this rank's brick and never be used.
-    hsize_t regenerate_periodic_ghosts(hsize_t           n_hydro,
-                                       const POINT_TYPE* pts_data,
-                                       POINT_TYPE*       pts,
-                                       hsize_t*          original_ids,
-                                       double            buff_val) {
+    hsize_t regenerate_periodic_ghosts(
+        hsize_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts, hsize_t* original_ids, double buff_val) {
         // wrap flags per axis: 1 if undecomposed (single rank), else 0
         const int wx = (proteus_mpi::decomp.dims[0] == 1) ? 1 : 0;
         const int wy = (proteus_mpi::decomp.dims[1] == 1) ? 1 : 0;
@@ -82,8 +102,8 @@ namespace voronoi {
                         double za = (sz == 1) ? 0.0 : (sz == -1) ? 1.0 - buff_val : 0.0;
                         double zb = (sz == 1) ? buff_val : 1.0;
                         if (ghost_box_contains(pts[i], xa, xb, ya, yb, za, zb)) {
-                            append_ghost_copy(pts, i, &n_ghosts, &n_hydro, original_ids, (double)sx, (double)sy,
-                                              (double)sz);
+                            append_ghost_copy(
+                                pts, i, &n_ghosts, &n_hydro, original_ids, (double)sx, (double)sy, (double)sz);
                         }
                     }
                 }
@@ -109,8 +129,8 @@ namespace voronoi {
         // launch one thread per real cell
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = ((int)n_hydro + tpb - 1) / tpb;
-        kernel_generate_ghosts<<<blocks, tpb>>>(n_hydro, pts_data, pts, original_ids, d_ghost_count, buff_val, wx, wy,
-                                                wz);
+        kernel_generate_ghosts<<<blocks, tpb>>>(
+            n_hydro, pts_data, pts, original_ids, d_ghost_count, buff_val, wx, wy, wz);
         GPU_SYNC();
 
         // read the total ghost count back and free the counter
@@ -121,8 +141,8 @@ namespace voronoi {
 #endif
 
     // is pt inside the half-open box (xa, xb) x (ya, yb) (x (za, zb))?
-    HD static inline bool ghost_box_contains(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za,
-                                             double zb) {
+    HD static inline bool
+    ghost_box_contains(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za, double zb) {
 #ifdef dim_2D
         (void)za;
         (void)zb;

@@ -153,6 +153,20 @@ namespace knn {
         *knn = NULL;
     }
 
+    // resize the per-call buffers (d_stored_points + d_permutation) to fit a new max_n_total.
+    // N_grid is left alone — its value is computed at startup and reused; a runtime change
+    // would invalidate the bucket-sort assumptions on existing data. d_stored_points contents
+    // are scratch (rebuilt by prepare() each step), so no copy needed.
+    void knn_grow(knn_problem* knn, int new_pts_capacity) {
+        if (new_pts_capacity <= knn->pts_capacity) return;
+        gpu_free(knn->d_stored_points);
+        gpu_free(knn->d_permutation);
+        knn->d_stored_points = gpu_calloc<POINT_TYPE>(new_pts_capacity);
+        knn->d_permutation   = gpu_calloc<unsigned int>(new_pts_capacity);
+        knn->pts_capacity    = new_pts_capacity;
+        gpu_advise_gpu_preferred(knn->d_stored_points, new_pts_capacity * sizeof(POINT_TYPE));
+    }
+
     // ============================================================
     // Grid sort (GPU kernels or CPU loops)
     // ============================================================
@@ -168,31 +182,37 @@ namespace knn {
 #ifndef CPU_DEBUG
         int tpb = _KNN_BLOCK_SIZE_;
 
-        Profiler::StartGPU("knn_grid_sort");
-
         // 1) count points per grid cell
         int blocks1 = (len_pts + tpb - 1) / tpb;
-        kernel_count_cells<<<blocks1, tpb>>>(pts, len_pts, N_grid, buff_local, inv_boxsize, d_counters);
-        GPU_LAUNCH_CHECK();
+        {
+            PROFILE_KERNEL("COUNT");
+            kernel_count_cells<<<blocks1, tpb>>>(pts, len_pts, N_grid, buff_local, inv_boxsize, d_counters);
+            GPU_SYNC();
+        }
 
         // 2) compute prefix pointers via atomicAdd
         int blocks2 = (Npow + tpb - 1) / tpb;
-        kernel_compute_ptrs<<<blocks2, tpb>>>(d_counters, knn->d_ptrs, knn->d_globcounter, Npow);
-        GPU_LAUNCH_CHECK();
+        {
+            PROFILE_KERNEL("PTRS");
+            kernel_compute_ptrs<<<blocks2, tpb>>>(d_counters, knn->d_ptrs, knn->d_globcounter, Npow);
+            GPU_SYNC();
+        }
 
         // 3) scatter points into sorted positions
         gpu_memset(d_counters, 0, Npow * sizeof(int));
-        kernel_scatter_points<<<blocks1, tpb>>>(pts,
-                                                len_pts,
-                                                N_grid,
-                                                buff_local,
-                                                inv_boxsize,
-                                                d_counters,
-                                                knn->d_ptrs,
-                                                knn->d_stored_points,
-                                                knn->d_permutation);
-
-        Profiler::EndGPU("knn_grid_sort");
+        {
+            PROFILE_KERNEL("SCATTER");
+            kernel_scatter_points<<<blocks1, tpb>>>(pts,
+                                                    len_pts,
+                                                    N_grid,
+                                                    buff_local,
+                                                    inv_boxsize,
+                                                    d_counters,
+                                                    knn->d_ptrs,
+                                                    knn->d_stored_points,
+                                                    knn->d_permutation);
+            GPU_SYNC();
+        }
 
 #else
         // count points per grid cell

@@ -33,20 +33,23 @@ namespace hydro {
     HD void rotate_to_face(prim* state, geom* g);
     HD void rotate_from_face(prim* state, geom* g);
 #ifdef MOVING_MESH
-    HD void get_vel_face(hsize_t          i,
-                         hsize_t          index_j,
-                         POINT_TYPE       v_mesh_i,
-                         POINT_TYPE       v_mesh_j,
+    HD void get_vel_face(hsize_t       i,
+                         hsize_t       index_j,
+                         POINT_TYPE    v_mesh_i,
+                         POINT_TYPE    v_mesh_j,
                          const double* f_mid_local,
-                         const VMesh*     mesh,
-                         geom             g,
-                         POINT_TYPE*      vel_face,
-                         POINT_TYPE*      vel_face_turned);
+                         const VMesh*  mesh,
+                         geom          g,
+                         POINT_TYPE*   vel_face,
+                         POINT_TYPE*   vel_face_turned);
     HD void convert_state_to_local_frame(prim* st, POINT_TYPE vel_face);
     HD void convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned);
 #endif
 
-    inline void allocate_prim_buffer(hsize_t n_hydro, primvars* primvar) {
+    // allocate per-cell SoA + (optionally) MPI ghost SoA. with_ghosts=true sizes the
+    // _g arrays from proteus_mpi::n_mpi_capacity; flip to false for buffers like prim_new
+    // that are never read at neighbor indices and so never need ghost slots.
+    inline void allocate_prim_buffer(hsize_t n_hydro, primvars* primvar, bool with_ghosts) {
         const hsize_t ext = (hsize_t)proteus_mpi::alloc_per_cell_size((int)n_hydro);
         primvar->rho      = gpu_alloc<double>(ext);
         primvar->v        = gpu_alloc<POINT_TYPE>(ext);
@@ -55,12 +58,49 @@ namespace hydro {
         gpu_advise_gpu_preferred(primvar->rho, ext * sizeof(double));
         gpu_advise_gpu_preferred(primvar->v, ext * sizeof(POINT_TYPE));
         gpu_advise_gpu_preferred(primvar->E, ext * sizeof(double));
+
+        const int gc = with_ghosts ? proteus_mpi::n_mpi_capacity : 0;
+        if (gc > 0) {
+            primvar->rho_g = gpu_alloc<double>(gc);
+            primvar->v_g   = gpu_alloc<POINT_TYPE>(gc);
+            primvar->E_g   = gpu_alloc<double>(gc);
+            gpu_advise_gpu_preferred(primvar->rho_g, gc * sizeof(double));
+            gpu_advise_gpu_preferred(primvar->v_g, gc * sizeof(POINT_TYPE));
+            gpu_advise_gpu_preferred(primvar->E_g, gc * sizeof(double));
+        } else {
+            primvar->rho_g = nullptr;
+            primvar->v_g   = nullptr;
+            primvar->E_g   = nullptr;
+        }
     }
 
     inline void free_prim_buffer(primvars* primvar) {
         gpu_free(primvar->rho);
         gpu_free(primvar->v);
         gpu_free(primvar->E);
+        if (primvar->rho_g) gpu_free(primvar->rho_g);
+        if (primvar->v_g) gpu_free(primvar->v_g);
+        if (primvar->E_g) gpu_free(primvar->E_g);
+        primvar->rho_g = nullptr;
+        primvar->v_g   = nullptr;
+        primvar->E_g   = nullptr;
+    }
+
+    // resize the ghost arrays to new_cap (>= current). Ghost contents are not preserved —
+    // halo_exchange_primvars repopulates them before any reader. Called by halo_grow_capacity
+    // when the post-rebalance halo exceeds the current ghost-buffer size.
+    inline void primvar_grow_ghosts(primvars* primvar, int new_cap) {
+        if (primvar->rho_g) gpu_free(primvar->rho_g);
+        if (primvar->v_g) gpu_free(primvar->v_g);
+        if (primvar->E_g) gpu_free(primvar->E_g);
+        primvar->rho_g = (new_cap > 0) ? gpu_alloc<double>(new_cap) : nullptr;
+        primvar->v_g   = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
+        primvar->E_g   = (new_cap > 0) ? gpu_alloc<double>(new_cap) : nullptr;
+        if (new_cap > 0) {
+            gpu_advise_gpu_preferred(primvar->rho_g, new_cap * sizeof(double));
+            gpu_advise_gpu_preferred(primvar->v_g, new_cap * sizeof(POINT_TYPE));
+            gpu_advise_gpu_preferred(primvar->E_g, new_cap * sizeof(double));
+        }
     }
 
 } // namespace hydro

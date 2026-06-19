@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // hold IC data
@@ -29,11 +30,14 @@ struct ICData {
 
 // snapshot header data for restarting
 struct SnapshotHeader {
-    double t_sim    = 0.0; // simulation time at write
-    int    step     = 0;   // step counter at write
-    int    n_global = 0;   // total cell count
-    int    nranks   = 0;   // ranks the snapshot was written with
-    int    rank     = 0;   // which rank wrote this file
+    double  t_sim    = 0.0; // simulation time at write
+    int     step     = 0;   // step counter at write
+    int64_t n_global = 0;   // total cell count (int64: 2000^3 already overflows int32)
+    int     nranks   = 0;   // ranks the snapshot was written with
+    int     rank     = 0;   // which rank wrote this file
+    // /header/profiler attrs — per-rank cumulative seconds at snapshot time, used
+    // by Profiler::SeedFromCumulative to restore in-memory state on restart.
+    std::unordered_map<std::string, double> profiler_cum;
 };
 
 // loads parameter file, ICs, snapshots
@@ -49,6 +53,17 @@ class InputHandler {
 
     // load ic
     bool readICFile(const std::string& filename, ICData& icData);
+
+#ifdef USE_MPI
+    // peek IC header + total particle count (every rank reads independently — cheap, sub-kB).
+    // Used so begrun can size the decomposition before the per-rank chunk read.
+    bool readICHeader(const std::string& filename, ICHeader& header, hsize_t& n_total);
+
+    // collective parallel-HDF5 read of rows [row_lo, row_lo + n_local) for pos/vel/rho/energy.
+    // Every rank in MPI_COMM_WORLD must call with identical filename. Fills icData with this
+    // rank's chunk only; global IDs assigned as row_lo + i (input-order).
+    bool readICChunkParallel(const std::string& filename, ICData& icData, hsize_t row_lo, hsize_t n_local);
+#endif
 
     // load snapshot
     bool       readSnapshotFile(const std::string& filename, ICData& icData, SnapshotHeader& snap);

@@ -34,6 +34,10 @@ namespace knn {
 
     void knn_free(knn_problem** knn);
 
+    // resize per-call point buffers to fit a new max point count. Used by
+    // proteus_mpi::halo_grow_capacity when n_mpi_capacity grows past its startup estimate.
+    void knn_grow(knn_problem* knn, int new_pts_capacity);
+
     HD static inline double dist2_point(const POINT_TYPE& a, const POINT_TYPE& b) {
 #ifdef dim_2D
         double dx = a.x - b.x;
@@ -78,8 +82,7 @@ namespace knn {
     }
 
     // K nearest neighbours of point_in, sorted by distance (max-heap on stack)
-    template <int K>
-    HD void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest) {
+    template <int K> HD void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest) {
         // thread-private max-heap of K best candidates seen so far
         unsigned int local_knearest[K];
         double       local_dists[K];

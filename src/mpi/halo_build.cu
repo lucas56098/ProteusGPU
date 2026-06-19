@@ -29,31 +29,28 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
     if (halo.n_neighbors == 0) return;
 
 #ifdef USE_MPI
-    Profiler::StartTimer("MPI_BUILD");
+    PROFILE("HALO_BUILD");
 
     const int nn = halo.n_neighbors;
     const int W  = (W_in > 0) ? W_in : brick_halo_width(buff, decomp.N_grid_global);
 
     count_send_per_neighbor(local_seeds, n_local, buff, W);
 
-    // send_offset prefix scan + capacity check
+    // send_offset prefix scan + capacity check (grow on overflow rather than abort)
     int total_send = 0;
     for (int n = 0; n < nn; n++) {
         halo.send_offset[n] = total_send;
         total_send += halo.send_count[n];
     }
     halo.send_offset[nn] = total_send;
-    if (total_send > halo.n_mpi_capacity) {
-        exit_failure("[rank %d] HALO: total send=%d > n_mpi_capacity=%d (n_local=%d).\n",
-            decomp.rank, total_send, halo.n_mpi_capacity, n_local);
-    }
+    if (total_send > halo.n_mpi_capacity) { halo_grow_capacity(total_send); }
 
     fill_export_slots(local_seeds, n_local, buff, W);
-    Profiler::EndTimer("MPI_BUILD");
 
-    Profiler::StartTimer("MPI_WAIT");
-    exchange_send_recv_counts();
-    Profiler::EndTimer("MPI_WAIT");
+    {
+        PROFILE_MPI("COUNT_WAIT");
+        exchange_send_recv_counts();
+    }
 
     // ghost_offset prefix scan + capacity check
     int sum = 0;
@@ -64,18 +61,25 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
     halo.ghost_offset[nn] = sum;
     halo.n_mpi_ghosts     = sum;
 
+    // recv might exceed (rare: dense rank ships to sparse rank that itself didn't overflow on send).
+    // Re-run fill_export_slots after the grow because halo_grow_capacity reallocates
+    // export_indices and dir_of_slot to fresh empty buffers.
     if (sum > halo.n_mpi_capacity) {
-        exit_failure("[rank %d] HALO: total recv (%d) > n_mpi_capacity (%d).\n",
-            decomp.rank, sum, halo.n_mpi_capacity);
+        halo_grow_capacity(sum);
+        fill_export_slots(local_seeds, n_local, buff, W);
     }
 #else
-    (void)local_seeds; (void)n_local; (void)buff; (void)W_in;
+    (void)local_seeds;
+    (void)n_local;
+    (void)buff;
+    (void)W_in;
 #endif
 }
 
 void halo_remap_export_indices(const unsigned int* inv_gather, int n_local) {
 #ifndef USE_MPI
-    (void)inv_gather; (void)n_local;
+    (void)inv_gather;
+    (void)n_local;
     return;
 #else
     if (halo.n_neighbors == 0) return;
@@ -103,33 +107,36 @@ void halo_build_used_subset(VMesh* mesh) {
     }
     halo.used_send_offset[HALO_MAX_NEIGHBORS] = 0;
     halo.used_recv_offset[HALO_MAX_NEIGHBORS] = 0;
-    halo.n_used_send       = 0;
-    halo.n_used_recv       = 0;
-    halo.used_subset_ready = 1;
+    halo.n_used_send                          = 0;
+    halo.n_used_recv                          = 0;
+    halo.used_subset_ready                    = 1;
 
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
 
 #ifdef USE_MPI
-    Profiler::StartTimer("MPI_BUILD");
+    PROFILE("HALO_USED_BUILD");
     const int n_hydro = (int)mesh->n_hydro;
     const int n_mpi   = halo.n_mpi_ghosts;
 
     mark_used_recv_bitmap(mesh, n_hydro, n_mpi);
     halo.n_used_recv = build_used_recv_layout();
-    Profiler::EndTimer("MPI_BUILD");
 
     // exchange bitmap so each sender learns which of its cells are used.
     // the bitmap lives in receive-side layout on us; remotely it lands in
     // send-side layout — i.e. roles are flipped vs the data path.
-    Profiler::StartTimer("MPI_WAIT");
-    neighbor_exchange(halo.recv_used_bitmap, halo.send_used_bitmap, MPI_BYTE, MSG_USED_BITMAP,
-                      halo.recv_count, halo.ghost_offset,
-                      halo.send_count, halo.send_offset);
-    Profiler::EndTimer("MPI_WAIT");
+    {
+        PROFILE_MPI("BITMAP_WAIT");
+        neighbor_exchange(halo.recv_used_bitmap,
+                          halo.send_used_bitmap,
+                          MPI_BYTE,
+                          MSG_USED_BITMAP,
+                          halo.recv_count,
+                          halo.ghost_offset,
+                          halo.send_count,
+                          halo.send_offset);
+    }
 
-    Profiler::StartTimer("MPI_BUILD");
     halo.n_used_send = pack_used_export_indices();
-    Profiler::EndTimer("MPI_BUILD");
 #else
     (void)mesh;
 #endif
@@ -160,7 +167,8 @@ static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, 
     int send_n_outer[HALO_MAX_NEIGHBORS] = {0};
 
 #ifdef USE_OPENMP
-#pragma omp parallel for schedule(static) reduction(+:send_count[:HALO_MAX_NEIGHBORS]) reduction(+:send_n_outer[:HALO_MAX_NEIGHBORS])
+#pragma omp parallel for schedule(static) reduction(+ : send_count[ : HALO_MAX_NEIGHBORS])                             \
+    reduction(+ : send_n_outer[ : HALO_MAX_NEIGHBORS])
 #endif
     for (int k = 0; k < n_local; k++) {
         const double px = local_seeds[k].x;
@@ -207,7 +215,8 @@ static void fill_export_slots(const POINT_TYPE* local_seeds, int n_local, double
 
     int outer_cur[HALO_MAX_NEIGHBORS] = {0};
     int inner_cur[HALO_MAX_NEIGHBORS];
-    for (int n = 0; n < nn; n++) inner_cur[n] = halo.send_n_outer[n];
+    for (int n = 0; n < nn; n++)
+        inner_cur[n] = halo.send_n_outer[n];
 
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
@@ -252,8 +261,8 @@ static void fill_export_slots(const POINT_TYPE* local_seeds, int n_local, double
 // ship (send_count, send_n_outer) as a paired-int handshake per neighbor
 static void exchange_send_recv_counts() {
     const int nn = halo.n_neighbors;
-    int sendpair[2 * HALO_MAX_NEIGHBORS];
-    int recvpair[2 * HALO_MAX_NEIGHBORS] = {0};
+    int       sendpair[2 * HALO_MAX_NEIGHBORS];
+    int       recvpair[2 * HALO_MAX_NEIGHBORS] = {0};
     for (int n = 0; n < nn; n++) {
         sendpair[2 * n + 0] = halo.send_count[n];
         sendpair[2 * n + 1] = halo.send_n_outer[n];
@@ -268,10 +277,15 @@ static void exchange_send_recv_counts() {
             const int dy   = halo.neighbor_dirs[n][1];
             const int dz   = halo.neighbor_dirs[n][2];
             const int peer = halo.neighbor_ranks[n];
-            MPI_Isend(&sendpair[2 * n], 2, MPI_INT, peer,
-                      msg_tag(dx, dy, dz, MSG_COUNTS), decomp.cart_comm, &reqs[n_reqs++]);
-            MPI_Irecv(&recvpair[2 * n], 2, MPI_INT, peer,
-                      msg_tag(-dx, -dy, -dz, MSG_COUNTS), decomp.cart_comm, &reqs[n_reqs++]);
+            MPI_Isend(
+                &sendpair[2 * n], 2, MPI_INT, peer, msg_tag(dx, dy, dz, MSG_COUNTS), decomp.cart_comm, &reqs[n_reqs++]);
+            MPI_Irecv(&recvpair[2 * n],
+                      2,
+                      MPI_INT,
+                      peer,
+                      msg_tag(-dx, -dy, -dz, MSG_COUNTS),
+                      decomp.cart_comm,
+                      &reqs[n_reqs++]);
         }
         MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
     }
@@ -281,25 +295,43 @@ static void exchange_send_recv_counts() {
     }
 }
 
+#ifndef CPU_DEBUG
+GLOBAL static void
+kernel_mark_used_bitmap(int num_faces, const int* nc, int mpi_base, int mpi_top, unsigned char* recv_used_bitmap) {
+    int f = blockIdx.x * blockDim.x + threadIdx.x;
+    if (f >= num_faces) return;
+    pack::mark_used_bitmap_body(f, nc, mpi_base, mpi_top, recv_used_bitmap);
+}
+#endif
+
 // mark recv_used_bitmap[i]=1 for every MPI ghost referenced by a local face.
 // periodic ghosts get remapped to their source-real local k (< n_hydro) by
 // sid_to_neighbor, so they never appear here as ghosts.
 static void mark_used_recv_bitmap(VMesh* mesh, int n_hydro, int n_mpi) {
-    const hsize_t num_faces = mesh->num_faces;
-    const int*    nc        = mesh->neighbor_cell;
-    const int     mpi_base  = n_hydro;
-    const int     mpi_top   = n_hydro + n_mpi;
+    const int  num_faces = (int)mesh->num_faces;
+    const int* nc        = mesh->neighbor_cell;
+    const int  mpi_base  = n_hydro;
+    const int  mpi_top   = n_hydro + n_mpi;
 
-    std::memset(halo.recv_used_bitmap, 0, (size_t)n_mpi);
+    gpu_memset(halo.recv_used_bitmap, 0, (size_t)n_mpi);
 
+#ifndef CPU_DEBUG
+    const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+    const int blocks = (num_faces + tpb - 1) / tpb;
+    {
+        PROFILE_KERNEL("BITMAP_MARK");
+        kernel_mark_used_bitmap<<<blocks, tpb>>>(num_faces, nc, mpi_base, mpi_top, halo.recv_used_bitmap);
+    }
+    GPU_SYNC();
+#else
+    PROFILE("BITMAP_MARK");
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (hsize_t f = 0; f < num_faces; f++) {
-        const int kn = nc[f];
-        if (kn < mpi_base || kn >= mpi_top) continue;
-        halo.recv_used_bitmap[kn - mpi_base] = 1;
+    for (int f = 0; f < num_faces; f++) {
+        pack::mark_used_bitmap_body(f, nc, mpi_base, mpi_top, halo.recv_used_bitmap);
     }
+#endif
 }
 
 // from the bitmap: per-direction counts/offsets + used_to_full_slot
@@ -308,7 +340,7 @@ static int build_used_recv_layout() {
 
     int total_used_recv = 0;
     for (int n = 0; n < nn; n++) {
-        int count = 0;
+        int       count     = 0;
         const int ghost_off = halo.ghost_offset[n];
         for (int j = 0; j < halo.recv_count[n]; j++) {
             if (halo.recv_used_bitmap[ghost_off + j]) count++;
@@ -323,9 +355,7 @@ static int build_used_recv_layout() {
     for (int n = 0; n < nn; n++) {
         const int ghost_off = halo.ghost_offset[n];
         for (int j = 0; j < halo.recv_count[n]; j++) {
-            if (halo.recv_used_bitmap[ghost_off + j]) {
-                halo.used_to_full_slot[cursor++] = ghost_off + j;
-            }
+            if (halo.recv_used_bitmap[ghost_off + j]) { halo.used_to_full_slot[cursor++] = ghost_off + j; }
         }
     }
     return total_used_recv;
@@ -333,13 +363,13 @@ static int build_used_recv_layout() {
 
 // compact used_export_indices using send_used_bitmap (received from peers)
 static int pack_used_export_indices() {
-    const int nn = halo.n_neighbors;
-    int total_used_send = 0;
+    const int nn              = halo.n_neighbors;
+    int       total_used_send = 0;
     for (int n = 0; n < nn; n++) {
         halo.used_send_offset[n] = total_used_send;
-        const int s_off = halo.send_offset[n];
-        const int sc    = halo.send_count[n];
-        int       count = 0;
+        const int s_off          = halo.send_offset[n];
+        const int sc             = halo.send_count[n];
+        int       count          = 0;
         for (int j = 0; j < sc; j++) {
             if (halo.send_used_bitmap[s_off + j]) {
                 halo.used_export_indices[total_used_send + count] = halo.export_indices[s_off + j];

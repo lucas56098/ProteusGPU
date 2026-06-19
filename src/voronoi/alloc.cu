@@ -24,18 +24,43 @@ namespace voronoi {
 
         // per-cell — every n_hydro-indexed array is sized ext so it survives migration
         // growth and the MPI ghost band [n_hydro, n_hydro + n_mpi_ghosts)
-        mesh->seeds       = gpu_calloc<double3>(ext);
-        mesh->com         = gpu_calloc<double3>(ext);
-        mesh->volumes     = gpu_calloc<double>(ext);
-        mesh->face_counts = gpu_calloc<hsize_t>(ext);
-        mesh->face_ptr    = gpu_calloc<hsize_t>(ext);
+        mesh->seeds          = gpu_calloc<double3>(ext);
+        mesh->com            = gpu_calloc<double3>(ext);
+        mesh->volumes        = gpu_calloc<double>(ext);
+        mesh->face_counts    = gpu_calloc<hsize_t>(ext);
+        mesh->face_ptr       = gpu_calloc<hsize_t>(ext);
         mesh->cell_status    = gpu_alloc<Status>(ext);
-        mesh->cell_hit_outer = gpu_calloc<unsigned char>(ext);
+        mesh->outer_halo_hit = gpu_calloc<int>(1);
         mesh->pts_mpi_base   = 0;
+        mesh->n_mpi_ghosts   = 0;
+        mesh->is_outer_layer = nullptr;
+        for (int a = 0; a < 3; a++) {
+            mesh->data_lo[a] = 0.0;
+            mesh->data_hi[a] = 0.0;
+        }
 #ifdef MOVING_MESH
         mesh->v_mesh      = gpu_calloc<POINT_TYPE>(ext);
         mesh->old_volumes = gpu_calloc<double>(ext);
 #endif
+
+        // MPI ghost SoA storage (separate from real arrays so it can be grown by
+        // halo_grow_capacity without touching the per-cell-array sizing).
+        const int gc = proteus_mpi::n_mpi_capacity;
+        if (gc > 0) {
+            mesh->seeds_g = gpu_alloc<double3>(gc);
+#ifdef MOVING_MESH
+            mesh->v_mesh_g = gpu_alloc<POINT_TYPE>(gc);
+#endif
+            gpu_advise_gpu_preferred(mesh->seeds_g, gc * sizeof(double3));
+#ifdef MOVING_MESH
+            gpu_advise_gpu_preferred(mesh->v_mesh_g, gc * sizeof(POINT_TYPE));
+#endif
+        } else {
+            mesh->seeds_g = nullptr;
+#ifdef MOVING_MESH
+            mesh->v_mesh_g = nullptr;
+#endif
+        }
 
         // per-face
         mesh->neighbor_cell = gpu_alloc<int>(max_faces);
@@ -115,8 +140,54 @@ namespace voronoi {
         gpu_free(mesh->scratch_pts);
         gpu_free(mesh->scratch_move);
         gpu_free(mesh->d_real_counter);
+        if (mesh->seeds_g) gpu_free(mesh->seeds_g);
+#ifdef MOVING_MESH
+        if (mesh->v_mesh_g) gpu_free(mesh->v_mesh_g);
+#endif
         if (mesh->knn) { knn::knn_free(&mesh->knn); }
         gpu_free(mesh);
+    }
+
+    // resize ghost arrays to new_cap; called by proteus_mpi::halo_grow_capacity.
+    void mesh_grow_ghosts(VMesh* mesh, int new_cap) {
+        if (mesh->seeds_g) gpu_free(mesh->seeds_g);
+        mesh->seeds_g = (new_cap > 0) ? gpu_alloc<double3>(new_cap) : nullptr;
+#ifdef MOVING_MESH
+        if (mesh->v_mesh_g) gpu_free(mesh->v_mesh_g);
+        mesh->v_mesh_g = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
+#endif
+    }
+
+    // resize mesh-build buffers (scratch_pts, ghost_ids, sid_to_neighbor) to fit a new
+    // MPI ghost capacity. Called from halo_grow_capacity when n_mpi_capacity grows past
+    // the startup estimate. Existing data is copied so the in-progress mesh build (which
+    // wrote periodic ghosts into scratch_pts before triggering the grow) survives the swap.
+    void mesh_grow_build_buffers(VMesh* mesh, int new_mpi_capacity) {
+        const double  ghost_frac     = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
+        const hsize_t n_grow         = (hsize_t)proteus_mpi::max_n_local((int)mesh->n_hydro);
+        const hsize_t max_pgh        = (hsize_t)(2.0 * ghost_frac * n_grow) + 1;
+        const hsize_t new_max_ghosts = max_pgh + (hsize_t)new_mpi_capacity;
+        const hsize_t new_total      = n_grow + new_max_ghosts;
+        const hsize_t old_total      = mesh->total_capacity;
+        if (new_total <= old_total) return;
+
+        POINT_TYPE* new_pts = gpu_alloc<POINT_TYPE>(new_total);
+        gpu_memcpy(new_pts, mesh->scratch_pts, (size_t)old_total * sizeof(POINT_TYPE));
+        gpu_free(mesh->scratch_pts);
+        mesh->scratch_pts = new_pts;
+
+        hsize_t* new_gids = gpu_alloc<hsize_t>(new_max_ghosts);
+        gpu_memcpy(new_gids, mesh->ghost_ids, (size_t)mesh->ghost_capacity * sizeof(hsize_t));
+        gpu_free(mesh->ghost_ids);
+        mesh->ghost_ids = new_gids;
+
+        unsigned int* new_s2n = gpu_alloc<unsigned int>(new_total);
+        gpu_memcpy(new_s2n, mesh->sid_to_neighbor, (size_t)old_total * sizeof(unsigned int));
+        gpu_free(mesh->sid_to_neighbor);
+        mesh->sid_to_neighbor = new_s2n;
+
+        mesh->ghost_capacity = new_max_ghosts;
+        mesh->total_capacity = new_total;
     }
 
 } // namespace voronoi

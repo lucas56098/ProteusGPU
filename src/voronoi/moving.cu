@@ -2,6 +2,7 @@
 #include "../gradients/gradients.h"
 #include "../hydro/riemann.h"
 #include "../mpi/migrate.h"
+#include "../mpi/rebalance.h"
 #include "../profiler/profiler.h"
 #include "../voronoi/voronoi.h"
 #include <cmath>
@@ -55,9 +56,11 @@ namespace voronoi {
 #ifndef CPU_DEBUG
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        Profiler::StartGPU("kernel_mesh_velocities");
-        kernel_mesh_velocities<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
-        Profiler::EndGPU("kernel_mesh_velocities");
+        {
+            PROFILE_KERNEL("V_MESH");
+            kernel_mesh_velocities<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
+            GPU_SYNC();
+        }
 #else
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
@@ -71,8 +74,12 @@ namespace voronoi {
     // advance seeds by v_mesh * dt, migrate across ranks, rebuild mesh,
     // and correct primvar_aux for the cell-volume change.
     // mesh->scratch_move is the seed-position buffer through all three voronoi-side calls:
-    // advance_seeds_by_dt writes into it, migrate_seeds compacts/extends it in place,
+    // advance_seeds_by_dt writes into it, the migrate path compacts/extends it in place,
     // compute_periodic_mesh reads from it.
+    //
+    // On rebalance steps the per-step Cart-neighbor migrate is replaced by the full
+    // Alltoallv migrate_for_rebalance. Either way there is exactly one mesh build per
+    // step — the rebalance does not trigger a separate compute_periodic_mesh.
     void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
 
         // store old volumes for volume correction afterwards
@@ -83,10 +90,16 @@ namespace voronoi {
 
         // migrate cells whose new bucket is owned by another rank;
         // updates mesh->n_hydro and rewrites mesh->scratch_move in place
-        proteus_mpi::migrate_seeds(mesh, primvar, primvar_aux);
+        if (proteus_mpi::rebalance_decide(sim.step, mesh, mesh->scratch_move)) {
+            proteus_mpi::migrate_for_rebalance(mesh, primvar, primvar_aux);
+            proteus_mpi::rebalance_log_after_migration(mesh);
+        } else {
+            proteus_mpi::migrate_seeds(mesh, primvar, primvar_aux);
+        }
 
-        // rebuild the Voronoi mesh from the new seed positions
-        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, primvar_aux);
+        // rebuild the Voronoi mesh from the new seed positions; dt lets the CPU fallback
+        // fold each cell's perturbation delta into v_mesh as delta/dt
+        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, primvar_aux, dt);
 
         // correct primvar_aux for the cell-volume change (conservation: rho, E scale with old/new ratio)
         correct_for_volume_change(mesh, primvar_aux);
@@ -103,7 +116,7 @@ namespace voronoi {
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = ((int)n_hydro + tpb - 1) / tpb;
         kernel_move_mesh<<<blocks, tpb>>>(n_hydro, mesh, dt, pts);
-        GPU_LAUNCH_CHECK();
+        GPU_SYNC();
         GPU_SYNC(); // migrate_seeds reads pts on the host below
 #else
 #ifdef USE_OPENMP
@@ -121,9 +134,11 @@ namespace voronoi {
 #ifndef CPU_DEBUG
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = ((int)n_hydro + tpb - 1) / tpb;
-        Profiler::StartGPU("kernel_volume_correct");
-        kernel_volume_correct<<<blocks, tpb>>>(n_hydro, mesh->old_volumes, mesh->volumes, primvar->rho, primvar->E);
-        Profiler::EndGPU("kernel_volume_correct");
+        {
+            PROFILE_KERNEL("VOL_CORRECT");
+            kernel_volume_correct<<<blocks, tpb>>>(n_hydro, mesh->old_volumes, mesh->volumes, primvar->rho, primvar->E);
+            GPU_SYNC();
+        }
 #else
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)

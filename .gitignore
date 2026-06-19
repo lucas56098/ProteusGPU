@@ -7,6 +7,8 @@ run*/
 .vscode/
 .claude
 __pycache__/
+venv/
+.venv/
 src_*
 interactive/
 

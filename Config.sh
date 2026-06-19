@@ -29,6 +29,7 @@ MOVING_MESH                         # enable moving mesh hydrodynamics
 
 USE_OPENMP                          # enable multithreading on CPU (uses all available cores)
 #USE_MPI                             # enable MPI / multi-node parallelization (1 GPU per rank when CUDA is enabled)
+#GPU_AWARE_MPI                       # pass device pointers directly to MPI (requires CUDA + USE_MPI + CUDA-aware MPI lib)
 
 # GPU kernel block sizes
 #_VORO_BLOCK_SIZE_=64                # voronoi cell computation (register-heavy, default 64)
@@ -36,6 +37,7 @@ USE_OPENMP                          # enable multithreading on CPU (uses all ava
 #_GRAD_BLOCK_SIZE_=256               # gradient computation kernel (default 256)
 #_HYDRO_BLOCK_SIZE_=256              # hydro flux / CFL / copy / volume kernels (default 256)
 #_MESH_BLOCK_SIZE_=256               # periodic mesh / ghost / scaling kernels (default 256)
+#_MPI_PACK_BLOCK_SIZE_=256           # kernels preparing the MPI comm
 
 ################################################################
 # compile time memory constraints

@@ -63,10 +63,9 @@ namespace logging {
 
         // allreduce wrapper
         template <typename T> T reduce_global(T local, MPI_Datatype dtype, MPI_Op op) {
-            Profiler::StartTimer("MPI_REDUCE");
+            PROFILE_MPI("ALLREDUCE");
             T g = local;
             MPI_Allreduce(&local, &g, 1, dtype, op, proteus_mpi::decomp.cart_comm);
-            Profiler::EndTimer("MPI_REDUCE");
             return g;
         }
 

@@ -41,13 +41,12 @@ def load_snapshot(hdf5_file, n_ranks=None):
     seeds_parts, rho_parts, vel_parts, energy_parts = [], [], [], []
     counts = []
     dimension = None
-    extent = None
+    extent = 1.0  # domain is hardcoded to [0,1]^D in the code
 
     for fp in files:
         with h5py.File(fp, 'r') as f:
             if dimension is None:
                 dimension = int(f['header'].attrs['dimension'])
-                extent = float(f['header'].attrs['extent'])
             s = f['mesh/pos'][:]
             seeds_parts.append(s)
             counts.append(len(s))
@@ -185,7 +184,7 @@ def plot_2d_fast(hdf5_file, quantity='rho', output_file=None, vmin=None, vmax=No
                        cmap=seed_cmap, vmin=0, vmax=max(n_ranks - 1, 1),
                        edgecolors='none', alpha=1.0, zorder=5)
         else:
-            ax.scatter(seeds[:, 0], seeds[:, 1], s=0.1, c='white',
+            ax.scatter(seeds[:, 0], seeds[:, 1], s=1, c='white',
                        edgecolors='none', alpha=0.3, zorder=5)
 
     ax.set_xlabel('x')

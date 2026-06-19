@@ -11,6 +11,10 @@ namespace gradients {
                                                   const double      max_value,
                                                   const POINT_TYPE& d,
                                                   const POINT_TYPE& grad);
+    HD static inline double
+    recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s);
+    HD static inline double
+    pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor);
 #ifndef CPU_DEBUG
     GLOBAL void kernel_compute_gradients(hsize_t, const VMesh*, const hydro::primvars*, PrimGradients*);
 #endif
@@ -20,14 +24,16 @@ namespace gradients {
     // ============================================================
 
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
-        Profiler::StartTimer("GRADIENTS");
+        PROFILE("GRAD");
 
 #ifndef CPU_DEBUG
         int tpb    = _GRAD_BLOCK_SIZE_;
         int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        Profiler::StartGPU("kernel_compute_gradients");
-        kernel_compute_gradients<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
-        Profiler::EndGPU("kernel_compute_gradients");
+        {
+            PROFILE_KERNEL("GRAD_KERNEL");
+            kernel_compute_gradients<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
+            GPU_SYNC();
+        }
 #else
 #ifdef USE_OPENMP
 #pragma omp parallel for
@@ -36,8 +42,6 @@ namespace gradients {
             compute_gradient_for_cell(i, mesh, primvar, grads);
         }
 #endif
-
-        Profiler::EndTimer("GRADIENTS");
     }
 
     // calc dW/dt ("time gradients") based on states and gradients
@@ -138,15 +142,16 @@ namespace gradients {
         double min_E = state_i.E, max_E = state_i.E;
 
         // accumulate over each face/neighbour
-        hsize_t face_count = mesh->face_counts[i];
-        hsize_t face_start = mesh->face_ptr[i];
+        hsize_t   face_count  = mesh->face_counts[i];
+        hsize_t   face_start  = mesh->face_ptr[i];
+        const int n_hydro_int = (int)mesh->n_hydro;
 
         for (hsize_t fj = 0; fj < face_count; fj++) {
             hsize_t face_idx = face_start + fj;
-            hsize_t neighbor = (hsize_t)mesh->neighbor_cell[face_idx];
+            int     neighbor = mesh->neighbor_cell[face_idx];
 
             // separation vector and inverse-distance weighting
-            POINT_TYPE dx    = point_diff_periodic(mesh->seeds[neighbor], mesh->seeds[i]);
+            POINT_TYPE dx    = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
             double     dist2 = point_dot(dx, dx);
             if (dist2 < 1e-24) continue;
 
@@ -162,7 +167,7 @@ namespace gradients {
             m22 += weight * dx.z * dx.z;
 #endif
 
-            hydro::prim state_j = get_state(neighbor, primvar);
+            hydro::prim state_j = get_state_at(neighbor, n_hydro_int, primvar);
             hydro::prim d_state;
             d_state.rho = state_j.rho - state_i.rho;
             d_state.v.x = state_j.v.x - state_i.v.x;
@@ -226,8 +231,8 @@ namespace gradients {
 #endif
         for (hsize_t fj = 0; fj < face_count; fj++) {
             hsize_t    face_idx = face_start + fj;
-            hsize_t    neighbor = (hsize_t)mesh->neighbor_cell[face_idx];
-            POINT_TYPE dx       = point_diff_periodic(mesh->seeds[neighbor], mesh->seeds[i]);
+            int        neighbor = mesh->neighbor_cell[face_idx];
+            POINT_TYPE dx       = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
             POINT_TYPE d        = point_mul(0.5, dx);
 
             alpha_rho = fmin(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));
@@ -246,6 +251,31 @@ namespace gradients {
         grads->vz[i] = point_mul(alpha_vz, grads->vz[i]);
 #endif
         grads->E[i] = point_mul(alpha_E, grads->E[i]);
+
+        // pressure-floor safety: the per-variable limiter above keeps each primitive
+        // between neighbour min/max, but P = (gamma-1)*(E - 0.5*rho*v^2) is nonlinear,
+        // so the reconstructed face pressure can still go below zero. Shrink all
+        // gradients uniformly by the largest factor in [0,1] that keeps every face
+        // pressure at or above p_floor.
+        const double p_floor       = 1e-12;
+        PrimGradient grad_i_scaled = grads->load(i);
+        double       alpha_p       = 1.0;
+        for (hsize_t fj = 0; fj < face_count; fj++) {
+            hsize_t    face_idx = face_start + fj;
+            int        neighbor = mesh->neighbor_cell[face_idx];
+            POINT_TYPE dx       = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
+            POINT_TYPE d        = point_mul(0.5, dx);
+            alpha_p             = fmin(alpha_p, pressure_safe_scale(state_i, grad_i_scaled, d, p_floor));
+        }
+        if (alpha_p < 1.0) {
+            grads->rho[i] = point_mul(alpha_p, grads->rho[i]);
+            grads->vx[i]  = point_mul(alpha_p, grads->vx[i]);
+            grads->vy[i]  = point_mul(alpha_p, grads->vy[i]);
+#ifdef dim_3D
+            grads->vz[i] = point_mul(alpha_p, grads->vz[i]);
+#endif
+            grads->E[i] = point_mul(alpha_p, grads->E[i]);
+        }
     }
 
     // largest fac in [0,1] such that value + fac*dp stays in [min,max]
@@ -279,6 +309,41 @@ namespace gradients {
         if (fac > 1.0) { fac = 1.0; }
 
         return fac;
+    }
+
+    // reconstructed pressure at face offset d using gradients scaled by s in [0,1]
+    HD static inline double
+    recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s) {
+        double rho = state_i.rho + s * point_dot(grad_i.rho, d);
+        double vx  = state_i.v.x + s * point_dot(grad_i.vx, d);
+        double vy  = state_i.v.y + s * point_dot(grad_i.vy, d);
+#ifdef dim_3D
+        double vz = state_i.v.z + s * point_dot(grad_i.vz, d);
+        double v2 = vx * vx + vy * vy + vz * vz;
+#else
+        double v2 = vx * vx + vy * vy;
+#endif
+        double E = state_i.E + s * point_dot(grad_i.E, d);
+        return (gamma_eos - 1.0) * (E - 0.5 * rho * v2);
+    }
+
+    // largest scale s in [0,1] such that reconstructed pressure at d stays >= p_floor.
+    // P(s) is cubic in s, so we bisect on s. Assumes the cell-centre pressure (s=0) is
+    // already positive — if not, returns 0 and gradients collapse to first-order in this cell.
+    HD static inline double
+    pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor) {
+        if (recon_pressure(state_i, grad_i, d, 1.0) >= p_floor) return 1.0;
+
+        double s_lo = 0.0;
+        double s_hi = 1.0;
+        for (int it = 0; it < 16; ++it) {
+            double s_mid = 0.5 * (s_lo + s_hi);
+            if (recon_pressure(state_i, grad_i, d, s_mid) >= p_floor)
+                s_lo = s_mid;
+            else
+                s_hi = s_mid;
+        }
+        return s_lo;
     }
 
 } // namespace gradients

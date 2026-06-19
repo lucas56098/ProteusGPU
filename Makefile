@@ -23,6 +23,17 @@ endif
 CUDA_ENABLED := $(findstring CUDA,$(CONFIG_DEFINES))
 PROFILING_ENABLED := $(findstring ENABLE_PROFILING,$(CONFIG_DEFINES))
 MPI_ENABLED := $(findstring USE_MPI,$(CONFIG_DEFINES))
+GPU_AWARE_MPI_ENABLED := $(findstring GPU_AWARE_MPI,$(CONFIG_DEFINES))
+
+# GPU_AWARE_MPI requires both CUDA and USE_MPI — fail fast at the head node, not at runtime.
+ifeq ($(GPU_AWARE_MPI_ENABLED),GPU_AWARE_MPI)
+ifneq ($(CUDA_ENABLED),CUDA)
+$(error GPU_AWARE_MPI requires CUDA in Config.sh)
+endif
+ifneq ($(MPI_ENABLED),USE_MPI)
+$(error GPU_AWARE_MPI requires USE_MPI in Config.sh)
+endif
+endif
 
 # ============================================================
 # CUDA mode: nvcc compiler flags
@@ -98,7 +109,7 @@ VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/moving.o
 HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o
 GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
 PROFILER_OBJ = $(BUILD_DIR)/profiler.o
-MPI_OBJ = $(BUILD_DIR)/mpi_compat.o $(BUILD_DIR)/decomp.o $(BUILD_DIR)/halo.o $(BUILD_DIR)/migrate.o
+MPI_OBJ = $(BUILD_DIR)/mpi_compat.o $(BUILD_DIR)/decomp.o $(BUILD_DIR)/halo.o $(BUILD_DIR)/migrate.o $(BUILD_DIR)/rebalance.o
 OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(GRADIENTS_OBJ) $(PROFILER_OBJ) $(MPI_OBJ)
 
 # name of executable
@@ -108,23 +119,41 @@ TARGET = $(EXEC)
 # Systypes
 # ============================================================
 ifeq ($(SYSTYPE),Ubuntu)
-# requires hdf5 installed
+# requires hdf5 installed. USE_MPI builds need parallel HDF5 — see notes below.
 	CXX_RELEASE = g++
+ifeq ($(MPI_ENABLED),USE_MPI)
+# parallel HDF5 from apt: sudo apt install libhdf5-openmpi-dev
+	HDF5_CFLAGS ?= -I/usr/include/hdf5/openmpi
+	HDF5_LIBS ?= -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi -lhdf5
+else
 	HDF5_CFLAGS ?= -I/usr/include/hdf5/serial
 	HDF5_LIBS ?= -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5
+endif
 	CUDA_ARCH ?= sm_89
 endif
 
 ifeq ($(SYSTYPE),macOS)
 # requires hdf5 installed via homebrew and g++-15 as compiler (apple clang does not support openmp...)
-# also only CPU_DEBUG works here of course
+# also only CPU_DEBUG works here of course.
+# Parallel-HDF5 (brew install hdf5-mpi) is required for USE_MPI builds — it provides
+# H5Pset_fapl_mpio / H5Pset_dxpl_mpio used by the parallel IC read and the per-rank
+# profile.hdf5 collective writes. Non-MPI builds use the serial hdf5 keg (still kept by
+# Homebrew under /opt/homebrew/Cellar/hdf5 even when unlinked in favour of hdf5-mpi).
 	CXX_RELEASE = g++-15
-	HDF5_CFLAGS ?= -I/opt/homebrew/opt/hdf5/include
-	HDF5_LIBS ?= -L/opt/homebrew/opt/hdf5/lib -lhdf5
+ifeq ($(MPI_ENABLED),USE_MPI)
+	HDF5_PREFIX := /opt/homebrew/opt/hdf5-mpi
+else
+	HDF5_PREFIX := $(shell test -d /opt/homebrew/opt/hdf5 && echo /opt/homebrew/opt/hdf5 || ls -d /opt/homebrew/Cellar/hdf5/*/ 2>/dev/null | head -n1)
+endif
+	HDF5_CFLAGS ?= -I$(HDF5_PREFIX)/include
+	HDF5_LIBS ?= -L$(HDF5_PREFIX)/lib -lhdf5
 endif
 
 ifeq ($(SYSTYPE),MPCDF)
-# VERA (A100): module load gcc/15 hdf5-serial/1.12.2 cuda/13.0 
+# USE_MPI builds need a parallel HDF5 module (the IC read uses MPI-IO). The -serial
+# modules below only work for non-MPI builds; for multi-rank runs swap to the matching
+# MPI-built HDF5 (e.g. VERA: hdf5-mpi/1.12.2 instead of hdf5-serial/1.12.2).
+# VERA (A100): module load gcc/15 hdf5-serial/1.12.2 cuda/13.0
 # BinAC2 (A100): module load compiler/gnu/14.2 lib/hdf5/1.12-gnu-14.2 devel/cuda/13.0
 	CXX_RELEASE = g++
     HDF5_CFLAGS ?= -I${HDF5_HOME}/include
@@ -132,19 +161,26 @@ ifeq ($(SYSTYPE),MPCDF)
 	CUDA_ARCH ?= sm_80
 endif
 
-ifeq ($(SYSTYPE),Jupiter)
-# JUWELS Booster (A100): module load CUDA/13 HDF5/1.14.6-serial
+ifeq ($(SYSTYPE),JUWELS)
+# JUWELS Booster (A100): for USE_MPI use the parallel HDF5 build (drop the -serial suffix):
+#   module load CUDA/13 HDF5/1.14.6
+# (HDF5/1.14.6-serial only works for single-rank builds).
         CXX_RELEASE = g++
-        HDF5_CFLAGS ?= -I/p/software/default/stages/2026/software/HDF5/1.14.6-GCCcore-14.3.0-serial/include
-        HDF5_LIBS ?= -L/p/software/default/stages/2026/software/HDF5/1.14.6-GCCcore-14.3.0-serial/lib -lhdf5
+        HDF5_CFLAGS ?= -I${EBROOTHDF5}/include
+        HDF5_LIBS ?= -L${EBROOTHDF5}/lib -lhdf5
         CUDA_ARCH ?= sm_80
 endif
 
 ifeq ($(SYSTYPE),HorekaGH200)
 # HorekaFTP (GH200): module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
-	CXX_RELEASE = nvc++
-	HDF5_CFLAGS ?= -I/software/easybuild/software/HDF5/1.14.5-gompi-2024a/include
-	HDF5_LIBS ?= -L/software/easybuild/software/HDF5/1.14.5-gompi-2024a/lib -lhdf5
+# HDF5/1.14.5-gompi-2024a transitively loads OpenMPI/5.0.3-GCC-13.3.0 (CUDA-aware:
+# mpi_built_with_cuda_support:true) plus GCC/13.3.0. We use g++ (not nvc++) as the
+# host compiler because nvc++ rejects -Wno-unknown-pragmas. nvcc 12.6 supports
+# gcc up to 13.x, so g++-13.3 works as -ccbin for both serial and -ccbin mpicxx
+# (mpicxx wraps OMPI_CXX=g++).
+	CXX_RELEASE = g++
+	HDF5_CFLAGS ?= -I${EBROOTHDF5}/include
+	HDF5_LIBS ?= -L${EBROOTHDF5}/lib -lhdf5
 	CUDA_ARCH ?= sm_90
 endif
 
@@ -211,7 +247,11 @@ ifeq ($(MPI_ENABLED),USE_MPI)
         else
                 CXX = $(MPICXX)
         endif
-        MPI_MESSAGE = MPI enabled
+        ifeq ($(GPU_AWARE_MPI_ENABLED),GPU_AWARE_MPI)
+                MPI_MESSAGE = MPI enabled (GPU-aware path)
+        else
+                MPI_MESSAGE = MPI enabled (host-staged path)
+        endif
 else
         MPI_MESSAGE = MPI disabled
 endif
@@ -313,6 +353,9 @@ $(BUILD_DIR)/halo.o: $(MPI_DIR)/halo.cu $(MPI_DIR)/halo.h \
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/migrate.o: $(MPI_DIR)/migrate.cu $(MPI_DIR)/migrate.h $(MPI_DIR)/decomp.h $(MPI_DIR)/halo.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/rebalance.o: $(MPI_DIR)/rebalance.cu $(MPI_DIR)/rebalance.h $(MPI_DIR)/decomp.h $(MPI_DIR)/halo.h $(MPI_DIR)/migrate.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 

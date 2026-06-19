@@ -2,166 +2,320 @@
 // Included into halo.cu inside namespace proteus_mpi.
 
 // ============================================================
+// CUDA kernels (CUDA mode only)
+// ============================================================
+
+#if !defined(CPU_DEBUG) && defined(USE_MPI)
+GLOBAL static void kernel_pack_seed(int                  total_send,
+                                    const POINT_TYPE*    pts,
+                                    const int*           export_indices,
+                                    const unsigned char* dir_of_slot,
+                                    const double*        neighbor_shift_flat,
+                                    POINT_TYPE*          sendbuf) {
+    int s = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s >= total_send) return;
+    pack::pack_seed_body(s, pts, export_indices, dir_of_slot, neighbor_shift_flat, sendbuf);
+}
+
+GLOBAL static void
+kernel_unpack_seed(int n_mpi, int pts_mpi_base, const POINT_TYPE* recvbuf, POINT_TYPE* pts, double3* seeds_g) {
+    int slot = blockIdx.x * blockDim.x + threadIdx.x;
+    if (slot >= n_mpi) return;
+    pack::unpack_seed_body(slot, pts_mpi_base, recvbuf, pts, seeds_g);
+}
+
+GLOBAL static void kernel_fill_is_outer_layer(
+    int nn, const int* recv_n_outer, const int* ghost_offset, const int* recv_count, unsigned char* is_outer_layer) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= nn) return;
+    pack::fill_is_outer_layer_body(n, recv_n_outer, ghost_offset, recv_count, is_outer_layer);
+}
+
+GLOBAL static void kernel_pack_prim(int                    total_send,
+                                    const int*             used_export_indices,
+                                    const hydro::primvars* primvar,
+                                    HaloPrimCell*          sendbuf) {
+    int s = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s >= total_send) return;
+    pack::pack_prim_body(s, used_export_indices, primvar, sendbuf);
+}
+
+GLOBAL static void
+kernel_unpack_prim(int n_recv, const int* used_to_full_slot, const HaloPrimCell* recvbuf, hydro::primvars* primvar) {
+    int s = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s >= n_recv) return;
+    pack::unpack_prim_body(s, used_to_full_slot, recvbuf, primvar);
+}
+
+GLOBAL static void kernel_pack_grad(int                             total_send,
+                                    const int*                      used_export_indices,
+                                    const gradients::PrimGradients* grads,
+                                    POINT_TYPE*                     sendbuf) {
+    int slot = blockIdx.x * blockDim.x + threadIdx.x;
+    if (slot >= total_send) return;
+    pack::pack_grad_body(slot, used_export_indices, grads, sendbuf);
+}
+
+GLOBAL static void kernel_unpack_grad(int                       n_recv,
+                                      const int*                used_to_full_slot,
+                                      const POINT_TYPE*         recvbuf,
+                                      gradients::PrimGradients* grads) {
+    int slot = blockIdx.x * blockDim.x + threadIdx.x;
+    if (slot >= n_recv) return;
+    pack::unpack_grad_body(slot, used_to_full_slot, recvbuf, grads);
+}
+
+#ifdef MOVING_MESH
+GLOBAL static void
+kernel_pack_v_mesh(int total_send, const int* used_export_indices, const POINT_TYPE* v_mesh, POINT_TYPE* sendbuf) {
+    int s = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s >= total_send) return;
+    pack::pack_v_mesh_body(s, used_export_indices, v_mesh, sendbuf);
+}
+
+GLOBAL static void
+kernel_unpack_v_mesh(int n_recv, const int* used_to_full_slot, const POINT_TYPE* recvbuf, POINT_TYPE* v_mesh_g) {
+    int slot = blockIdx.x * blockDim.x + threadIdx.x;
+    if (slot >= n_recv) return;
+    pack::unpack_v_mesh_body(slot, used_to_full_slot, recvbuf, v_mesh_g);
+}
+#endif // MOVING_MESH
+
+// Small managed staging buffer holding per-direction counts the is_outer_layer
+// kernel needs (recv_n_outer, ghost_offset (n+1 entries), recv_count). Lazily
+// allocated on first use; freed in halo_free.
+//   layout: [recv_n_outer | ghost_offset (n+1) | recv_count]
+static int* s_is_outer_meta_dev = nullptr;
+
+#endif // !CPU_DEBUG && USE_MPI
+
+// ============================================================
 // Public entry points
 // ============================================================
 
 void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
 #ifndef USE_MPI
-    (void)mesh; (void)pts; (void)pts_mpi_base;
+    (void)mesh;
+    (void)pts;
+    (void)pts_mpi_base;
     return;
 #else
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
 
-    Profiler::StartTimer("MPI_PACK");
-    const int n_hydro    = (int)mesh->n_hydro;
+    PROFILE("HALO_SEED");
     const int total_send = halo.send_offset[halo.n_neighbors];
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (int s = 0; s < total_send; s++) {
-        const int    n  = halo.dir_of_slot[s];
-        const int    k  = halo.export_indices[s];
-        const double sx = halo.neighbor_shift[n][0];
-        const double sy = halo.neighbor_shift[n][1];
-        POINT_TYPE   p  = pts[k];
-        p.x += sx;
-        p.y += sy;
-#ifdef dim_3D
-        p.z += halo.neighbor_shift[n][2];
-#endif
-        halo.sendbuf_seed[s] = p;
-    }
-    Profiler::EndTimer("MPI_PACK");
+    const int n_mpi      = halo.n_mpi_ghosts;
+    const int nn         = halo.n_neighbors;
 
-    Profiler::StartTimer("MPI_WAIT");
-    exchange_full_halo(halo.sendbuf_seed, halo.recvbuf_seed, halo.mpi_point_t, MSG_SEED);
-    Profiler::EndTimer("MPI_WAIT");
-
-    Profiler::StartTimer("MPI_UNPACK");
-    const int nn    = halo.n_neighbors;
-    const int n_mpi = halo.n_mpi_ghosts;
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (int slot = 0; slot < n_mpi; slot++) {
-        const POINT_TYPE p     = halo.recvbuf_seed[slot];
-        const int        ext_k = n_hydro + slot;
-        const int        pts_k = pts_mpi_base + slot;
-        pts[pts_k] = p;
-#ifdef dim_3D
-        mesh->seeds[ext_k] = double3{p.x, p.y, p.z};
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (total_send + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("PACK");
+            kernel_pack_seed<<<blocks, tpb>>>(
+                total_send, pts, halo.export_indices, halo.dir_of_slot, halo.neighbor_shift_flat, halo.sendbuf_seed);
+        }
+        GPU_SYNC();
 #else
-        mesh->seeds[ext_k] = double3{p.x, p.y, 0.0};
+        PROFILE("PACK");
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (int s = 0; s < total_send; s++) {
+            // CPU_DEBUG: neighbor_shift inline array is flat-equivalent (3 doubles per direction,
+            // row-major); cast to flat double* matches what the kernel sees.
+            pack::pack_seed_body(s,
+                                 pts,
+                                 halo.export_indices,
+                                 halo.dir_of_slot,
+                                 (const double*)&halo.neighbor_shift[0][0],
+                                 halo.sendbuf_seed);
+        }
 #endif
     }
 
-    // derive is_outer_layer positionally: the first recv_n_outer[n] slots of
-    // each direction's receive range are the outermost-layer cells
-    for (int n = 0; n < nn; n++) {
-        const int base  = halo.ghost_offset[n];
-        const int n_out = halo.recv_n_outer[n];
-        const int n_tot = halo.recv_count[n];
-        for (int j = 0; j < n_out; j++)        halo.is_outer_layer[base + j] = 1;
-        for (int j = n_out; j < n_tot; j++)    halo.is_outer_layer[base + j] = 0;
+    {
+        PROFILE_MPI("WAIT");
+        mpi_sync_before_send(halo.sendbuf_seed, sizeof(POINT_TYPE) * (size_t)total_send);
+        exchange_full_halo(halo.sendbuf_seed, halo.recvbuf_seed, halo.mpi_point_t, MSG_SEED);
+        mpi_sync_after_recv(halo.recvbuf_seed, sizeof(POINT_TYPE) * (size_t)n_mpi);
     }
-    Profiler::EndTimer("MPI_UNPACK");
+
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (n_mpi + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("UNPACK");
+            kernel_unpack_seed<<<blocks, tpb>>>(n_mpi, pts_mpi_base, halo.recvbuf_seed, pts, mesh->seeds_g);
+        }
+        GPU_SYNC();
+
+        // is_outer_layer: small managed staging buffer with the 3 host inline arrays,
+        // then one thread per direction. Stays inside the unpack scope so PROFILE_KERNEL
+        // covers the seed unpack itself; this trailing fill is fast (n_neighbors threads).
+        if (s_is_outer_meta_dev == nullptr) {
+            s_is_outer_meta_dev = (int*)gpu_malloc(sizeof(int) * (3 * HALO_MAX_NEIGHBORS + 1));
+        }
+        int* recv_n_outer_dev = s_is_outer_meta_dev;
+        int* ghost_offset_dev = s_is_outer_meta_dev + HALO_MAX_NEIGHBORS;
+        int* recv_count_dev   = s_is_outer_meta_dev + 2 * HALO_MAX_NEIGHBORS + 1; // ghost_offset has n+1
+        for (int n = 0; n < nn; n++) {
+            recv_n_outer_dev[n] = halo.recv_n_outer[n];
+            ghost_offset_dev[n] = halo.ghost_offset[n];
+            recv_count_dev[n]   = halo.recv_count[n];
+        }
+        ghost_offset_dev[nn] = halo.ghost_offset[nn];
+
+        {
+            const int tpb_n    = (nn < _MPI_PACK_BLOCK_SIZE_) ? std::max(nn, 1) : _MPI_PACK_BLOCK_SIZE_;
+            const int blocks_n = (nn + tpb_n - 1) / tpb_n;
+            kernel_fill_is_outer_layer<<<blocks_n, tpb_n>>>(
+                nn, recv_n_outer_dev, ghost_offset_dev, recv_count_dev, halo.is_outer_layer);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("UNPACK");
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (int slot = 0; slot < n_mpi; slot++) {
+            pack::unpack_seed_body(slot, pts_mpi_base, halo.recvbuf_seed, pts, mesh->seeds_g);
+        }
+        for (int n = 0; n < nn; n++) {
+            pack::fill_is_outer_layer_body(
+                n, halo.recv_n_outer, halo.ghost_offset, halo.recv_count, halo.is_outer_layer);
+        }
+#endif
+    }
 #endif
 }
 
 void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar) {
 #ifndef USE_MPI
-    (void)mesh; (void)primvar;
+    (void)mesh;
+    (void)primvar;
     return;
 #else
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
-    if (!halo.used_subset_ready) return;  // nothing to do until mesh exists
+    if (!halo.used_subset_ready) return; // nothing to do until mesh exists
+    (void)mesh;
 
-    Profiler::StartTimer("MPI_PACK");
+    PROFILE("HALO_PRIM");
     const int total_send = halo.n_used_send;
+    const int n_recv     = halo.n_used_recv;
+
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (total_send + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("PACK");
+            kernel_pack_prim<<<blocks, tpb>>>(total_send, halo.used_export_indices, primvar, halo.sendbuf_prim);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("PACK");
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int s = 0; s < total_send; s++) {
-        const int    k = halo.used_export_indices[s];
-        HaloPrimCell pkt;
-        pkt.rho = primvar->rho[k];
-        pkt.v   = primvar->v[k];
-        pkt.E   = primvar->E[k];
-        halo.sendbuf_prim[s] = pkt;
+        for (int s = 0; s < total_send; s++) {
+            pack::pack_prim_body(s, halo.used_export_indices, primvar, halo.sendbuf_prim);
+        }
+#endif
     }
-    Profiler::EndTimer("MPI_PACK");
 
-    Profiler::StartTimer("MPI_WAIT");
-    exchange_used_subset(halo.sendbuf_prim, halo.recvbuf_prim, halo.mpi_prim_t, MSG_PRIM);
-    Profiler::EndTimer("MPI_WAIT");
+    {
+        PROFILE_MPI("WAIT");
+        mpi_sync_before_send(halo.sendbuf_prim, sizeof(HaloPrimCell) * (size_t)total_send);
+        exchange_used_subset(halo.sendbuf_prim, halo.recvbuf_prim, halo.mpi_prim_t, MSG_PRIM);
+        mpi_sync_after_recv(halo.recvbuf_prim, sizeof(HaloPrimCell) * (size_t)n_recv);
+    }
 
-    Profiler::StartTimer("MPI_UNPACK");
-    const int n_hydro = (int)mesh->n_hydro;
-    const int n_recv  = halo.n_used_recv;
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (n_recv + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("UNPACK");
+            kernel_unpack_prim<<<blocks, tpb>>>(n_recv, halo.used_to_full_slot, halo.recvbuf_prim, primvar);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("UNPACK");
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int s = 0; s < n_recv; s++) {
-        const HaloPrimCell pkt   = halo.recvbuf_prim[s];
-        const int          ext_k = n_hydro + halo.used_to_full_slot[s];
-        primvar->rho[ext_k] = pkt.rho;
-        primvar->v[ext_k]   = pkt.v;
-        primvar->E[ext_k]   = pkt.E;
+        for (int s = 0; s < n_recv; s++) {
+            pack::unpack_prim_body(s, halo.used_to_full_slot, halo.recvbuf_prim, primvar);
+        }
+#endif
     }
-    Profiler::EndTimer("MPI_UNPACK");
 #endif
 }
 
 void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
 #ifndef USE_MPI
-    (void)mesh; (void)grads;
+    (void)mesh;
+    (void)grads;
     return;
 #else
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
     if (!halo.used_subset_ready) return;
-    Profiler::StartTimer("MPI_PACK");
+    (void)mesh;
+
+    PROFILE("HALO_GRAD");
     const int N_COMP     = 3 + DIMENSION;
     const int total_send = halo.n_used_send;
+    const int n_recv     = halo.n_used_recv;
+
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (total_send + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("PACK");
+            kernel_pack_grad<<<blocks, tpb>>>(total_send, halo.used_export_indices, grads, halo.sendbuf_grad);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("PACK");
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int slot = 0; slot < total_send; slot++) {
-        const int k = halo.used_export_indices[slot];
-        const int s = slot * N_COMP;
-        int       c = 0;
-        halo.sendbuf_grad[s + c++] = grads->rho[k];
-        halo.sendbuf_grad[s + c++] = grads->vx[k];
-        halo.sendbuf_grad[s + c++] = grads->vy[k];
-#ifdef dim_3D
-        halo.sendbuf_grad[s + c++] = grads->vz[k];
+        for (int slot = 0; slot < total_send; slot++) {
+            pack::pack_grad_body(slot, halo.used_export_indices, grads, halo.sendbuf_grad);
+        }
 #endif
-        halo.sendbuf_grad[s + c++] = grads->E[k];
     }
-    Profiler::EndTimer("MPI_PACK");
 
-    Profiler::StartTimer("MPI_WAIT");
-    exchange_used_subset(halo.sendbuf_grad, halo.recvbuf_grad, halo.mpi_grad_cell_t, MSG_GRAD);
-    Profiler::EndTimer("MPI_WAIT");
+    {
+        PROFILE_MPI("WAIT");
+        mpi_sync_before_send(halo.sendbuf_grad, sizeof(POINT_TYPE) * (size_t)total_send * N_COMP);
+        exchange_used_subset(halo.sendbuf_grad, halo.recvbuf_grad, halo.mpi_grad_cell_t, MSG_GRAD);
+        mpi_sync_after_recv(halo.recvbuf_grad, sizeof(POINT_TYPE) * (size_t)n_recv * N_COMP);
+    }
 
-    Profiler::StartTimer("MPI_UNPACK");
-    const int n_hydro = (int)mesh->n_hydro;
-    const int n_recv  = halo.n_used_recv;
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (n_recv + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("UNPACK");
+            kernel_unpack_grad<<<blocks, tpb>>>(n_recv, halo.used_to_full_slot, halo.recvbuf_grad, grads);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("UNPACK");
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int slot = 0; slot < n_recv; slot++) {
-        const int ext_k = n_hydro + halo.used_to_full_slot[slot];
-        const int s     = slot * N_COMP;
-        int       c     = 0;
-        grads->rho[ext_k] = halo.recvbuf_grad[s + c++];
-        grads->vx[ext_k]  = halo.recvbuf_grad[s + c++];
-        grads->vy[ext_k]  = halo.recvbuf_grad[s + c++];
-#ifdef dim_3D
-        grads->vz[ext_k] = halo.recvbuf_grad[s + c++];
+        for (int slot = 0; slot < n_recv; slot++) {
+            pack::unpack_grad_body(slot, halo.used_to_full_slot, halo.recvbuf_grad, grads);
+        }
 #endif
-        grads->E[ext_k] = halo.recvbuf_grad[s + c++];
     }
-    Profiler::EndTimer("MPI_UNPACK");
 #endif
 }
 
@@ -173,32 +327,58 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 #ifdef MOVING_MESH
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
     if (!halo.used_subset_ready) return;
-    Profiler::StartTimer("MPI_PACK");
+
+    PROFILE("HALO_VMESH");
     const int total_send = halo.n_used_send;
+    const int n_recv     = halo.n_used_recv;
+
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (total_send + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("PACK");
+            kernel_pack_v_mesh<<<blocks, tpb>>>(
+                total_send, halo.used_export_indices, mesh->v_mesh, halo.sendbuf_v_mesh);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("PACK");
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int s = 0; s < total_send; s++) {
-        const int k              = halo.used_export_indices[s];
-        halo.sendbuf_v_mesh[s] = mesh->v_mesh[k];
+        for (int s = 0; s < total_send; s++) {
+            pack::pack_v_mesh_body(s, halo.used_export_indices, mesh->v_mesh, halo.sendbuf_v_mesh);
+        }
+#endif
     }
-    Profiler::EndTimer("MPI_PACK");
 
-    Profiler::StartTimer("MPI_WAIT");
-    exchange_used_subset(halo.sendbuf_v_mesh, halo.recvbuf_v_mesh, halo.mpi_point_t, MSG_V_MESH);
-    Profiler::EndTimer("MPI_WAIT");
+    {
+        PROFILE_MPI("WAIT");
+        mpi_sync_before_send(halo.sendbuf_v_mesh, sizeof(POINT_TYPE) * (size_t)total_send);
+        exchange_used_subset(halo.sendbuf_v_mesh, halo.recvbuf_v_mesh, halo.mpi_point_t, MSG_V_MESH);
+        mpi_sync_after_recv(halo.recvbuf_v_mesh, sizeof(POINT_TYPE) * (size_t)n_recv);
+    }
 
-    Profiler::StartTimer("MPI_UNPACK");
-    const int n_hydro = (int)mesh->n_hydro;
-    const int n_recv  = halo.n_used_recv;
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (n_recv + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("UNPACK");
+            kernel_unpack_v_mesh<<<blocks, tpb>>>(n_recv, halo.used_to_full_slot, halo.recvbuf_v_mesh, mesh->v_mesh_g);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("UNPACK");
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int slot = 0; slot < n_recv; slot++) {
-        const int ext_k     = n_hydro + halo.used_to_full_slot[slot];
-        mesh->v_mesh[ext_k] = halo.recvbuf_v_mesh[slot];
+        for (int slot = 0; slot < n_recv; slot++) {
+            pack::unpack_v_mesh_body(slot, halo.used_to_full_slot, halo.recvbuf_v_mesh, mesh->v_mesh_g);
+        }
+#endif
     }
-    Profiler::EndTimer("MPI_UNPACK");
 #else
     (void)mesh;
 #endif
@@ -207,10 +387,11 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 
 void halo_dt_allreduce(double* dt) {
 #ifdef USE_MPI
-    Profiler::StartTimer("MPI_REDUCE");
+    // 1 double — launch-overhead-bound, no GPU-aware benefit. Stays host even when
+    // GPU_AWARE_MPI is on; no sync_before/after_recv calls.
+    PROFILE_MPI("DT_ALLREDUCE");
     double local = *dt;
     MPI_Allreduce(&local, dt, 1, MPI_DOUBLE, MPI_MIN, decomp.cart_comm);
-    Profiler::EndTimer("MPI_REDUCE");
 #else
     (void)dt;
 #endif

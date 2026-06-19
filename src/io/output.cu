@@ -10,6 +10,7 @@
 #include <vector>
 
 static void write_attr_int(hid_t group, const char* name, int value);
+static void write_attr_int64(hid_t group, const char* name, int64_t value);
 static void write_attr_double(hid_t group, const char* name, double value);
 static bool write_dataset_1d(hid_t parent, const char* name, const double* data, hsize_t n);
 static bool write_dataset_2d(hid_t parent, const char* name, const double* data, hsize_t n, hsize_t dim);
@@ -36,9 +37,10 @@ bool OutputHandler::initialize() {
         if (ok) logging::root() << "OUTPUT: directory: " << outputDirectory << std::endl;
     }
 #ifdef USE_MPI
-    Profiler::StartTimer("MPI_WAIT");
-    MPI_Barrier(proteus_mpi::decomp.cart_comm);
-    Profiler::EndTimer("MPI_WAIT");
+    {
+        PROFILE_MPI("OUTPUT_INIT_BARRIER");
+        MPI_Barrier(proteus_mpi::decomp.cart_comm);
+    }
 #endif
     return ok;
 }
@@ -48,12 +50,12 @@ bool OutputHandler::initialize() {
 // ============================================================
 
 void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, double t_sim, int step) {
-    Profiler::StartTimer("SNAPSHOTS");
+    PROFILE("IO_SNAPSHOT");
 
-    const int n_hydro  = (int)mesh->n_hydro;
-    const int nranks   = proteus_mpi::nranks();
-    const int rank     = proteus_mpi::rank();
-    const int n_global = logging::sum_global(n_hydro);
+    const int     n_hydro  = (int)mesh->n_hydro;
+    const int     nranks   = proteus_mpi::nranks();
+    const int     rank     = proteus_mpi::rank();
+    const int64_t n_global = logging::sum_global((long long)n_hydro);
 
     // file-per-rank under multi-rank
     std::string output_file = "snapshot_" + std::to_string(snap_num);
@@ -76,12 +78,21 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
     // write header
     hid_t header_group = H5Gcreate(file_id, "header", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     write_attr_int(header_group, "dimension", DIMENSION);
-    write_attr_double(header_group, "extent", 1.0);
     write_attr_double(header_group, "time", t_sim);
     write_attr_int(header_group, "step", step);
-    write_attr_int(header_group, "n_global", n_global);
+    write_attr_int64(header_group, "n_global", n_global);
     write_attr_int(header_group, "nranks", nranks);
     write_attr_int(header_group, "rank", rank);
+
+    // /header/profiler: one double attr per timer with this rank's cum seconds.
+    // Restart reads these to seed Profiler::m_Timings directly — no more reliance
+    // on a text profile log for restart state.
+    hid_t prof_group = H5Gcreate(header_group, "profiler", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    for (const auto& kv : Profiler::CurrentCumulative()) {
+        write_attr_double(prof_group, kv.first.c_str(), kv.second);
+    }
+    H5Gclose(prof_group);
+
     H5Gclose(header_group);
 
     // flatten seeds (mesh->seeds always 3D, we store 2D/3D depending on DIMENSION)
@@ -114,8 +125,6 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
     }
     H5Gclose(hydro_group);
     H5Fclose(file_id);
-
-    Profiler::EndTimer("SNAPSHOTS");
 }
 
 // ============================================================
@@ -141,6 +150,14 @@ static void write_attr_int(hid_t group, const char* name, int value) {
     hid_t space = H5Screate(H5S_SCALAR);
     hid_t a     = H5Acreate(group, name, H5T_NATIVE_INT, space, H5P_DEFAULT, H5P_DEFAULT);
     H5Awrite(a, H5T_NATIVE_INT, &value);
+    H5Aclose(a);
+    H5Sclose(space);
+}
+
+static void write_attr_int64(hid_t group, const char* name, int64_t value) {
+    hid_t space = H5Screate(H5S_SCALAR);
+    hid_t a     = H5Acreate(group, name, H5T_NATIVE_INT64, space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(a, H5T_NATIVE_INT64, &value);
     H5Aclose(a);
     H5Sclose(space);
 }

@@ -69,13 +69,14 @@ def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_
     with h5py.File(filename, "w") as f:
         header_group = f.create_group("header")
         header_group.attrs["dimension"] = dimension
-        header_group.attrs["extent"] = extent
-        header_group.attrs["gamma"] = gamma
 
-        f.create_dataset("pos", data=pos)
-        f.create_dataset("rho", data=rho)
-        f.create_dataset("vel", data=vel)
-        f.create_dataset("energy", data=energy)
+        mesh_group = f.create_group("mesh")
+        mesh_group.create_dataset("pos", data=pos)
+
+        hydro_group = f.create_group("hydro")
+        hydro_group.create_dataset("rho", data=rho)
+        hydro_group.create_dataset("vel", data=vel)
+        hydro_group.create_dataset("energy", data=energy)
 
     print(f"\nSuccessfully created {filename}\n")
 

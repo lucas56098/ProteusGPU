@@ -71,6 +71,9 @@
 #ifndef _MESH_BLOCK_SIZE_
 #define _MESH_BLOCK_SIZE_ 256
 #endif
+#ifndef _MPI_PACK_BLOCK_SIZE_
+#define _MPI_PACK_BLOCK_SIZE_ 256
+#endif
 
 // hydro / mesh
 #ifndef _GAMMA_EOS_
@@ -116,9 +119,8 @@ struct SimState {
     double CFL;
     double output_dt;
 
-    // wall-clock + per-step profile log
+    // wall-clock start; per-step profile log lives in profile.hdf5 (see Profiler::OpenProfileLog)
     std::chrono::steady_clock::time_point wall_start;
-    logging::FileLogger                   profile_log;
 };
 
 // globals

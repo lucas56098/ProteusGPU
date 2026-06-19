@@ -117,8 +117,8 @@ namespace voronoi {
                                                   double&        wx_accum,
                                                   double&        wy_accum,
                                                   double&        wz_accum) {
-        face_area              = 0.0;
-        const double4 v0       = face_verts[0];
+        face_area        = 0.0;
+        const double4 v0 = face_verts[0];
 
         for (int i = 1; i + 1 < n_fv; i++) {
             // triangle area = 0.5 * |edge1 x edge2|

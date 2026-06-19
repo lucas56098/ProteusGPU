@@ -22,9 +22,17 @@ namespace hydro {
 
     // hydro primitive variable arrays
     struct primvars {
+        // real-cell SoA storage, size max_n_local. indexed [0, n_hydro).
         double*     rho;
         POINT_TYPE* v;
         double*     E; // per unit volume
+
+        // MPI ghost SoA storage, size proteus_mpi::n_mpi_capacity. indexed [0, n_mpi_ghosts).
+        // populated by halo_exchange_primvars; nullptr on single-rank builds.
+        // grows independently of the real arrays via proteus_mpi::grow_ghost_arrays.
+        double*     rho_g;
+        POINT_TYPE* v_g;
+        double*     E_g;
     };
 
     // single-cell primitive state
@@ -57,21 +65,35 @@ namespace proteus_mpi {
     // total MPI-ghost capacity
     extern int n_mpi_capacity;
 
-    // migration headroom on n_local
-    constexpr double ALLOC_GROWTH = 1.5;
+    // global ceiling on n_local across ranks. Set once in begrun via Allreduce(MAX) on the
+    // per-rank initial count; 0 means "not yet set, fall back to the n_initial arg".
+    // Sizing all per-cell buffers from this rather than per-rank n_initial lets sparse ranks
+    // receive migrants from denser ones during rebalance without overflowing.
+    extern int n_local_initial_max;
+
+    // migration headroom on n_local. Sized for "homogeneous + occasional rebalance":
+    // a 1.10 imbalance threshold (rebalance_config default) lets one rank grow to
+    // ~10% past its initial n_local before rebalance fires, and the split chooser can
+    // overshoot at bucket granularity. 2.0 gives generous headroom (100%) for both
+    // the steady-state imbalance and any transient spikes during a rebalance step.
+    // If a run still hits the "n_hydro_new > n_local_max" exit from migrate.cu,
+    // either the IC is far from homogeneous or this needs bumping further.
+    constexpr double ALLOC_GROWTH = 2.0;
 
     inline int max_n_local(int n_initial) {
-        return (int)((double)n_initial * ALLOC_GROWTH);
+        const int base = (n_local_initial_max > 0) ? n_local_initial_max : n_initial;
+        return (int)((double)base * ALLOC_GROWTH);
     }
 
-    // runtime live size
+    // runtime live size — local cells only; ghosts live in separate _g arrays now.
     inline int extended_size(int n_local) {
-        return n_local + n_mpi_capacity;
+        return n_local;
     }
 
-    // allocated size
+    // allocated per-cell size — local-only; MPI ghosts live in separate _g buffers
+    // sized to n_mpi_capacity, which is grown independently by halo_grow_capacity.
     inline int alloc_per_cell_size(int n_initial) {
-        return max_n_local(n_initial) + n_mpi_capacity;
+        return max_n_local(n_initial);
     }
 
 } // namespace proteus_mpi
@@ -100,7 +122,17 @@ namespace gradients {
         POINT_TYPE* E;
         size_t      n; // number of cells
 
-        // load single-cell gradients from SoA arrays
+        // MPI ghost SoA storage, size proteus_mpi::n_mpi_capacity. populated by
+        // halo_exchange_gradients; nullptr on single-rank.
+        POINT_TYPE* rho_g;
+        POINT_TYPE* vx_g;
+        POINT_TYPE* vy_g;
+#ifdef dim_3D
+        POINT_TYPE* vz_g;
+#endif
+        POINT_TYPE* E_g;
+
+        // load single-cell gradients from real SoA arrays (own cell, never a ghost)
         HD inline PrimGradient load(size_t i) const {
             PrimGradient g;
             g.rho = rho[i];
@@ -110,6 +142,30 @@ namespace gradients {
             g.vz = vz[i];
 #endif
             g.E = E[i];
+            return g;
+        }
+
+        // load with possible ghost-region read; k may be a neighbor (>= n_hydro)
+        HD inline PrimGradient load_at(int k, int n_hydro) const {
+            PrimGradient g;
+            if (k < n_hydro) {
+                g.rho = rho[k];
+                g.vx  = vx[k];
+                g.vy  = vy[k];
+#ifdef dim_3D
+                g.vz = vz[k];
+#endif
+                g.E = E[k];
+            } else {
+                const int s = k - n_hydro;
+                g.rho       = rho_g[s];
+                g.vx        = vx_g[s];
+                g.vy        = vy_g[s];
+#ifdef dim_3D
+                g.vz = vz_g[s];
+#endif
+                g.E = E_g[s];
+            }
             return g;
         }
     };

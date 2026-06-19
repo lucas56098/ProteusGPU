@@ -19,35 +19,33 @@ def create_test_ic(filename="IC.hdf5", num_seeds=100, extent=1.0, dimension=3):
     print(f"  Extent: {extent}")
     
     with h5py.File(filename, 'w') as f:
-        # Create header group and attributes
         header_group = f.create_group("header")
-        
         header_group.attrs['dimension'] = dimension
-        header_group.attrs['extent'] = extent
-        
-        print(f"  Created header group with attributes")
-        
-        # Create seed positions dataset (num_seeds x dimension)
+
+        # Seed positions (num_seeds x dimension)
         rng = np.random.default_rng(424242)
         pos = rng.uniform(0, extent, size=(num_seeds, dimension)).astype(np.float64)
-        f.create_dataset("pos", data=pos)
-        
-        print(f"  Created pos dataset: {pos.shape}")
+
+        mesh_group = f.create_group("mesh")
+        mesh_group.create_dataset("pos", data=pos)
+
+        print(f"  Created mesh/pos dataset: {pos.shape}")
         print(f"    Min values: {pos.min(axis=0)}")
         print(f"    Max values: {pos.max(axis=0)}")
-        
-        # Create hydro quantities
-        rho = np.ones(num_seeds, dtype=np.float64)  # uniform density
-        f.create_dataset("rho", data=rho)
-        print(f"  Created rho dataset: {rho.shape}")
-        
-        vel = np.zeros((num_seeds, dimension), dtype=np.float64)  # zero velocity
-        f.create_dataset("vel", data=vel)
-        print(f"  Created vel dataset: {vel.shape}")
-        
-        energy = np.ones(num_seeds, dtype=np.float64)  # uniform energy
-        f.create_dataset("energy", data=energy)
-        print(f"  Created energy dataset: {energy.shape}")
+
+        # Hydro quantities
+        rho    = np.ones(num_seeds, dtype=np.float64)                  # uniform density
+        vel    = np.zeros((num_seeds, dimension), dtype=np.float64)    # zero velocity
+        energy = np.ones(num_seeds, dtype=np.float64)                  # uniform energy
+
+        hydro_group = f.create_group("hydro")
+        hydro_group.create_dataset("rho", data=rho)
+        hydro_group.create_dataset("vel", data=vel)
+        hydro_group.create_dataset("energy", data=energy)
+
+        print(f"  Created hydro/rho dataset: {rho.shape}")
+        print(f"  Created hydro/vel dataset: {vel.shape}")
+        print(f"  Created hydro/energy dataset: {energy.shape}")
     
     print(f"Successfully created {filename}\n")
 

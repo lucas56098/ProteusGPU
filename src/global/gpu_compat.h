@@ -35,6 +35,7 @@ inline void gpu_memcpy(void* dst, const void* src, size_t bytes) {
 }
 inline void gpu_advise_gpu_preferred(void*, size_t) {}
 inline void gpu_prefetch_to_cpu(void*, size_t) {}
+inline void gpu_prefetch_to_gpu(void*, size_t) {}
 
 // emulate CUDA types
 
@@ -152,6 +153,18 @@ inline void gpu_prefetch_to_cpu(void* ptr, size_t bytes) {
     cudaMemLocation loc = {};
     loc.type            = cudaMemLocationTypeHost;
     loc.id              = 0;
+    CUDA_CHECK(cudaMemPrefetchAsync(ptr, bytes, loc, 0));
+}
+
+// prefetch managed memory to the current GPU device. Used after an MPI
+// receive (host-staged path) so the next compute kernel that touches the
+// buffer doesn't fault each page back in one at a time.
+inline void gpu_prefetch_to_gpu(void* ptr, size_t bytes) {
+    int dev;
+    cudaGetDevice(&dev);
+    cudaMemLocation loc = {};
+    loc.type            = cudaMemLocationTypeDevice;
+    loc.id              = dev;
     CUDA_CHECK(cudaMemPrefetchAsync(ptr, bytes, loc, 0));
 }
 

@@ -51,13 +51,14 @@ def compute_quantity(quantity, rho, vel, energy):
 
 
 def _rank_path(rank0_path, rank):
-    """Given a path to a `*.rank_0.hdf5` file, return the sibling `*.rank_<rank>.hdf5`."""
+    """Given a path to a `*.rank_0.hdf5` or `*.0.hdf5` anchor file, return the sibling for `rank`."""
     name = rank0_path.name
-    if '.rank_0.hdf5' not in name:
-        raise ValueError(
-            f'Expected a `.rank_0.hdf5` anchor file, got: {name}'
-        )
-    return rank0_path.with_name(name.replace('.rank_0.hdf5', f'.rank_{rank}.hdf5'))
+    if '.rank_0.hdf5' in name:
+        return rank0_path.with_name(name.replace('.rank_0.hdf5', f'.rank_{rank}.hdf5'))
+    if name.endswith('.0.hdf5'):
+        # snapshot_<N>.<rank>.hdf5 layout
+        return rank0_path.with_name(name[:-len('.0.hdf5')] + f'.{rank}.hdf5')
+    raise ValueError(f'Expected a `.rank_0.hdf5` or `.0.hdf5` anchor file, got: {name}')
 
 
 def discover_snapshots(input_dir, pattern, n_ranks=None):
@@ -66,9 +67,14 @@ def discover_snapshots(input_dir, pattern, n_ranks=None):
         raise FileNotFoundError(f'Input path is not a directory: {input_dir}')
 
     # In rank-aware mode, enumerate frames via their rank-0 files unless the
-    # user overrode --pattern themselves.
+    # user overrode --pattern themselves. Try both naming conventions in order.
     if n_ranks is not None and pattern == 'snapshot_*.hdf5':
-        pattern = 'snapshot_*.rank_0.hdf5'
+        for trial in ('snapshot_*.rank_0.hdf5', 'snapshot_*.0.hdf5'):
+            if list(input_path.glob(trial)):
+                pattern = trial
+                break
+        else:
+            pattern = 'snapshot_*.rank_0.hdf5'  # fall through to the error below
 
     files = list(input_path.glob(pattern))
     if not files:
@@ -98,7 +104,7 @@ def read_snapshot(snapshot_path, quantity, n_ranks=None):
 
     seeds_parts, rho_parts, vel_parts, energy_parts = [], [], [], []
     counts = []
-    extent = None
+    extent = 1.0  # domain is hardcoded to [0,1]^D in the code
 
     for fp in files:
         with h5py.File(fp, 'r') as f:
@@ -107,8 +113,6 @@ def read_snapshot(snapshot_path, quantity, n_ranks=None):
                 raise ValueError(
                     f'{Path(fp).name}: expected 2D data, got {dimension}D'
                 )
-            if extent is None:
-                extent = float(f['header'].attrs['extent'])
             s = f['mesh/pos'][:]
             seeds_parts.append(s)
             counts.append(len(s))
