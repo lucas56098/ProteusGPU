@@ -106,6 +106,7 @@ struct SimState {
     hydro::primvars*          prim_new; // swap target each step
     gradients::PrimGradients* grads;    // per-step gradient scratch
     VMesh*                    mesh;
+    double*                   dt;
 
     // running state
     double t_sim;

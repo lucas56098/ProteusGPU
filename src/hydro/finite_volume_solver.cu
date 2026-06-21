@@ -58,6 +58,9 @@ namespace hydro {
         sim.grads = gpu_alloc<gradients::PrimGradients>(1);
         gradients::allocate_grad(sim.n_hydro, sim.grads);
 
+        // allocate dt
+        sim.dt = gpu_alloc<double>(1);
+
         const int n_hydro_global = logging::sum_global(n_hydro);
         logging::root() << "HYDRO: Initialized hydro for " << n_hydro_global << " particles" << std::endl;
     }
@@ -72,11 +75,13 @@ namespace hydro {
         gpu_free(sim.primvar);
         gpu_free(sim.prim_new);
         gpu_free(sim.grads);
+        gpu_free(sim.dt);
 
         // set to nullptr
         sim.primvar  = nullptr;
         sim.prim_new = nullptr;
         sim.grads    = nullptr;
+        sim.dt       = nullptr;
     }
 
     // ============================================================
@@ -161,38 +166,42 @@ namespace hydro {
 #endif
     }
 
-    // global CFL timestep: min over all hydro cells
-    double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar) {
-        PROFILE("CFL");
+    double calc_timestep(double CFL, const VMesh* mesh, const primvars* primvar) {
 
-        double min_dt = 1e100;
+        {
+            // per rank CFL timestep (min over all cells)
+            PROFILE("CFL");
+
+            double* min_dt = sim.dt;
+            *min_dt        = 1e100;
 
 #ifndef CPU_DEBUG
-        static double* d_min_dt = nullptr;
-        if (!d_min_dt) d_min_dt = gpu_alloc<double>(1);
-
-        *d_min_dt = 1e100;
-
-        int tpb    = _HYDRO_BLOCK_SIZE_;
-        int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("DT_CFL");
-            kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, d_min_dt);
-        }
-
-        GPU_SYNC();
-        min_dt = *d_min_dt;
+            int tpb    = _HYDRO_BLOCK_SIZE_;
+            int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
+            {
+                PROFILE_KERNEL("DT_CFL");
+                kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, min_dt);
+            }
+            GPU_SYNC();
 #else
 #ifdef USE_OPENMP
-#pragma omp parallel for reduction(min : min_dt)
+#pragma omp parallel for reduction(min : min_dt[0])
 #endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            double dt_i = dt_CFL_for_cell(i, CFL, mesh, primvar);
-            if (dt_i < min_dt) { min_dt = dt_i; }
+            for (hsize_t i = 0; i < mesh->n_hydro; i++) {
+                double dt_i = dt_CFL_for_cell(i, CFL, mesh, primvar);
+                if (dt_i < *min_dt) { *min_dt = dt_i; }
+            }
+#endif
         }
-#endif
 
-        return min_dt;
+        // global all rank minimum dt
+        proteus_mpi::halo_dt_allreduce(sim.dt);
+
+        // limit to snapshot/end of simulation
+        if (sim.t_sim + *sim.dt > sim.t_nextoutput) { *sim.dt = sim.t_nextoutput - sim.t_sim; }
+        if (sim.t_sim + *sim.dt > sim.t_end) { *sim.dt = sim.t_end - sim.t_sim; }
+
+        return *sim.dt;
     }
 
     // ============================================================

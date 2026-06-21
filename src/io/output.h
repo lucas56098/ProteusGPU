@@ -20,11 +20,10 @@ class OutputHandler {
     std::string getOutputDirectory() const { return outputDirectory; }
 
     // write snapshot
-    void snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, double t_sim, int step);
+    void write_snapshot();
 };
 
 // runtime printout
-void print_log(
-    int step, std::chrono::steady_clock::time_point wall, double t_sim, double dt, double t_start, double t_end);
+void print_log();
 
 #endif // OUTPUT_H

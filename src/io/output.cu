@@ -1,6 +1,7 @@
 #include "../global/allvars.h"
 #include "../mpi/decomp.h"
 #include "../mpi/mpi_compat.h"
+#include "../mpi/rebalance.h"
 #include "../voronoi/voronoi.h"
 #include "output.h"
 #include "profiler/profiler.h"
@@ -49,16 +50,16 @@ bool OutputHandler::initialize() {
 // write snapshot
 // ============================================================
 
-void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* primvar, double t_sim, int step) {
+void OutputHandler::write_snapshot() {
     PROFILE("IO_SNAPSHOT");
 
-    const int     n_hydro  = (int)mesh->n_hydro;
+    const int     n_hydro  = (int)sim.mesh->n_hydro;
     const int     nranks   = proteus_mpi::nranks();
     const int     rank     = proteus_mpi::rank();
     const int64_t n_global = logging::sum_global((long long)n_hydro);
 
     // file-per-rank under multi-rank
-    std::string output_file = "snapshot_" + std::to_string(snap_num);
+    std::string output_file = "snapshot_" + std::to_string(sim.snap_num);
     if (nranks > 1) output_file += "." + std::to_string(rank);
     output_file += ".hdf5";
     const std::string fullPath = outputDirectory + output_file;
@@ -78,8 +79,8 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
     // write header
     hid_t header_group = H5Gcreate(file_id, "header", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     write_attr_int(header_group, "dimension", DIMENSION);
-    write_attr_double(header_group, "time", t_sim);
-    write_attr_int(header_group, "step", step);
+    write_attr_double(header_group, "time", sim.t_sim);
+    write_attr_int(header_group, "step", sim.step);
     write_attr_int64(header_group, "n_global", n_global);
     write_attr_int(header_group, "nranks", nranks);
     write_attr_int(header_group, "rank", rank);
@@ -98,10 +99,10 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
     // flatten seeds (mesh->seeds always 3D, we store 2D/3D depending on DIMENSION)
     std::vector<double> pos_flat(n_hydro * DIMENSION);
     for (int i = 0; i < n_hydro; i++) {
-        pos_flat[i * DIMENSION + 0] = mesh->seeds[i].x;
-        pos_flat[i * DIMENSION + 1] = mesh->seeds[i].y;
+        pos_flat[i * DIMENSION + 0] = sim.mesh->seeds[i].x;
+        pos_flat[i * DIMENSION + 1] = sim.mesh->seeds[i].y;
 #ifdef dim_3D
-        pos_flat[i * DIMENSION + 2] = mesh->seeds[i].z;
+        pos_flat[i * DIMENSION + 2] = sim.mesh->seeds[i].z;
 #endif
     }
 
@@ -116,29 +117,36 @@ void OutputHandler::snapshot(int snap_num, VMesh* mesh, const hydro::primvars* p
 
     // write hydro/{rho,vel,energy}
     hid_t hydro_group = H5Gcreate(file_id, "hydro", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (!write_dataset_1d(hydro_group, "rho", primvar->rho, n_hydro) ||
-        !write_dataset_2d(hydro_group, "vel", reinterpret_cast<const double*>(primvar->v), n_hydro, DIMENSION) ||
-        !write_dataset_1d(hydro_group, "energy", primvar->E, n_hydro)) {
+    if (!write_dataset_1d(hydro_group, "rho", sim.primvar->rho, n_hydro) ||
+        !write_dataset_2d(hydro_group, "vel", reinterpret_cast<const double*>(sim.primvar->v), n_hydro, DIMENSION) ||
+        !write_dataset_1d(hydro_group, "energy", sim.primvar->E, n_hydro)) {
         H5Gclose(hydro_group);
         H5Fclose(file_id);
         exit(EXIT_FAILURE);
     }
     H5Gclose(hydro_group);
     H5Fclose(file_id);
+
+    sim.snap_num += 1;
+    if (sim.snap_num != 0) { sim.t_nextoutput += sim.output_dt; }
 }
 
 // ============================================================
 // per-step log line
 // ============================================================
 
-// prints current step, t, dt and ETA
-void print_log(
-    int step, std::chrono::steady_clock::time_point wall, double t_sim, double dt, double t_start, double t_end) {
+// prints all per-step diagnostics: step, t, dt, ETA and the load-imbalance probe
+void print_log() {
 
-    const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count();
-    logging::root() << "\nSIM: Step " << step << "  t = " << t_sim << "  dt = " << dt << "  ETA = "
-                    << format_hms((t_sim > t_start) ? elapsed_s * (t_end - t_sim) / (t_sim - t_start) : 0.0)
+    const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - sim.wall_start).count();
+    logging::root() << "\nSIM: Step " << sim.step << "  t = " << sim.t_sim << "  dt = " << *sim.dt << "  ETA = "
+                    << format_hms((sim.t_sim > sim.t_start)
+                                      ? elapsed_s * (sim.t_end - sim.t_sim) / (sim.t_sim - sim.t_start)
+                                      : 0.0)
                     << std::endl;
+
+    // load-imbalance probe (no-op in serial / on non-probe steps)
+    proteus_mpi::rebalance_imbalance_log(sim.step, sim.mesh);
 }
 
 // ============================================================

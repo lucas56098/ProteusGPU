@@ -21,7 +21,7 @@ namespace hydro {
                              const primvars*                 prim_old,
                              const gradients::PrimGradients* grads,
                              primvars*                       prim_new);
-    double dt_CFL(double CFL, const VMesh* mesh, const primvars* primvar);
+    double calc_timestep(double CFL, const VMesh* mesh, const primvars* primvar);
 
     // HD helpers
     HD void apply_spatial_extrapolation(const prim                    state,
