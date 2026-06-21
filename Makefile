@@ -162,26 +162,33 @@ ifeq ($(SYSTYPE),MPCDF)
 endif
 
 ifeq ($(SYSTYPE),JUWELS)
-# JUWELS Booster (A100): for USE_MPI use the parallel HDF5 build (drop the -serial suffix):
-#   module load CUDA/13 HDF5/1.14.6
-# (HDF5/1.14.6-serial only works for single-rank builds).
-        CXX_RELEASE = g++
-        HDF5_CFLAGS ?= -I${EBROOTHDF5}/include
-        HDF5_LIBS ?= -L${EBROOTHDF5}/lib -lhdf5
-        CUDA_ARCH ?= sm_80
+# JUWELS Booster (A100):
+# to run the GPU-aware MPI version load (auto loads PSP_CUDA=1)
+# 	module load GCC/14.3.0
+#	module load ParaStationMPI/5.13.0-1
+# 	module load CUDA/13
+# 	module load HDF5/1.14.6
+# to turn off GPU-aware MPI do (unsets PSP_CUDA)
+# 	module swap MPI-settings/CUDA MPI-settings/UCX
+
+	CXX_RELEASE = g++
+    HDF5_CFLAGS ?= -I${EBROOTHDF5}/include
+    HDF5_LIBS ?= -L${EBROOTHDF5}/lib -lhdf5
+    CUDA_ARCH ?= sm_80
+
 endif
 
 ifeq ($(SYSTYPE),HorekaGH200)
-# HorekaFTP (GH200): module load NVHPC/24.9-CUDA-12.6.0 HDF5/1.14.5-gompi-2024a
-# HDF5/1.14.5-gompi-2024a transitively loads OpenMPI/5.0.3-GCC-13.3.0 (CUDA-aware:
-# mpi_built_with_cuda_support:true) plus GCC/13.3.0. We use g++ (not nvc++) as the
-# host compiler because nvc++ rejects -Wno-unknown-pragmas. nvcc 12.6 supports
-# gcc up to 13.x, so g++-13.3 works as -ccbin for both serial and -ccbin mpicxx
-# (mpicxx wraps OMPI_CXX=g++).
+# HoreKa FTP (GH200):
+# to run GPU-aware MPI version load
+# 	module load HDF5/1.14.5-gompi-2024a
+# 	module load OpenMPI/5.0.3-NVHPC-24.9-CUDA-12.6.0
+
 	CXX_RELEASE = g++
 	HDF5_CFLAGS ?= -I${EBROOTHDF5}/include
 	HDF5_LIBS ?= -L${EBROOTHDF5}/lib -lhdf5
 	CUDA_ARCH ?= sm_90
+
 endif
 
 ####################################################################################
