@@ -27,10 +27,10 @@ namespace proteus_mpi {
     int     n_local_initial_max = 0;
 
 // composed from sub-files in dependency order
+#include "halo_internal.cu" // shared low-level helpers (must come first)
 #include "halo_build.cu"    // halo_build_exports / halo_build_used_subset / halo_remap_export_indices
 #include "halo_exchange.cu" // halo_exchange_seeds / _primvars / _gradients / _v_mesh / halo_dt_allreduce
 #include "halo_init.cu"     // halo_init / halo_free / halo_default_width
-#include "halo_internal.cu" // shared low-level helpers
 
 #ifdef USE_MPI
     // runtime growth driven by halo_build_exports overflow. Grows the halo struct's send/recv
