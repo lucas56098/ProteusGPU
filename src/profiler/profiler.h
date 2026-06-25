@@ -69,6 +69,10 @@ class Profiler {
 #endif
     };
 
+    static void   StartTotalTimer();
+    static void   StopTotalTimer();
+    static double TotalSeconds();
+
     // End-of-run summary on rank 0 (with cross-rank min/avg/max).
     static void PrintResults();
 

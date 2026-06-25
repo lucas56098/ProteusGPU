@@ -21,13 +21,6 @@ struct VMesh;
 
 namespace proteus_mpi {
 
-    struct RebalanceConfig {
-        int    rebalance_interval;     // run rebalance every N steps; 0 disables (default)
-        int    imbalance_log_interval; // log imbalance ratio every N steps; 0 disables (default)
-        double imbalance_threshold;    // skip rebalance unless pre-imbalance exceeds this (default 1.10)
-    };
-    extern RebalanceConfig rebalance_config;
-
     // one fused 2-int Allreduce + a logging printf. No mesh mutation.
     void rebalance_imbalance_log(int step, VMesh* mesh);
 

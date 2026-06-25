@@ -23,9 +23,6 @@ namespace proteus_mpi {
     static void init_splits_even(int N);
     static void apply_splits_for_this_rank();
     static void check_bricks_nonempty(int N);
-    static int  keep_owned_cells(ICData& ic, int N_grid, double buff);
-    static void resize_ic_to(ICData& ic, int n_kept);
-    static void check_global_cell_count(int n_kept, int n_total);
 
     // ============================================================
     // Public entry points
@@ -100,28 +97,6 @@ namespace proteus_mpi {
                                           decomp.coord_to_rank);
     }
 
-    void distribute_ic_local(ICData& ic, double buff) {
-        const int n_total = (int)ic.pos_dims[0];
-
-        // sequential global IDs in input order (every rank reads the full IC)
-        ic.global_id.resize(n_total);
-        for (int i = 0; i < n_total; i++)
-            ic.global_id[i] = (uint64_t)i;
-
-        if (decomp.nranks <= 1) {
-            if (decomp.rank == 0) printf("DECOMP: single-rank, n_local=%d (no filtering)\n", n_total);
-            return;
-        }
-
-        const int n_kept = keep_owned_cells(ic, decomp.N_grid_global, buff);
-        resize_ic_to(ic, n_kept);
-
-        printf("DECOMP: rank %d kept %d / %d cells\n", decomp.rank, n_kept, n_total);
-        fflush(stdout);
-
-        check_global_cell_count(n_kept, n_total);
-    }
-
     void decomp_even_split(int64_t N, int P, int i, int64_t* lo, int64_t* hi) {
         const int64_t base = N / P;
         const int64_t rem  = N % P;
@@ -142,7 +117,7 @@ namespace proteus_mpi {
     };
 
     void distribute_ic_parallel(ICData& ic, double buff) {
-        const int n_local_in = (int)ic.pos_dims[0];
+        const int n_local_in = (int)ic.header.n_seeds;
         const int my_rank    = decomp.rank;
         const int nr         = decomp.nranks;
         const int N_grid     = decomp.N_grid_global;
@@ -255,7 +230,7 @@ namespace proteus_mpi {
             ic.energy[j]    = m.energy;
             ic.global_id[j] = m.global_id;
         }
-        ic.pos_dims[0] = (hsize_t)n_local_out;
+        ic.header.n_seeds = (hsize_t)n_local_out;
 
         printf("DECOMP: rank %d routed IC: read %d, kept %d (self %d, recv %d, sent %d)\n",
                my_rank,
@@ -438,70 +413,6 @@ namespace proteus_mpi {
                              decomp.dims[a]);
             }
         }
-    }
-
-    // in-place compaction: keep only cells whose bucket lies in this rank's brick
-    static int keep_owned_cells(ICData& ic, int N_grid, double buff) {
-        const int n_total = (int)ic.pos_dims[0];
-        int       n_kept  = 0;
-        for (int i = 0; i < n_total; i++) {
-            double px = ic.pos[DIMENSION * i + 0];
-            double py = ic.pos[DIMENSION * i + 1];
-#ifdef dim_3D
-            double pz = ic.pos[DIMENSION * i + 2];
-#else
-            double pz = 0.0;
-#endif
-
-            int bx, by, bz;
-            decomp_bucket_of_point(px, py, pz, N_grid, buff, &bx, &by, &bz);
-
-            if (!decomp_owns_bucket(bx, by, bz)) continue;
-
-            if (n_kept != i) {
-                for (int d = 0; d < DIMENSION; d++) {
-                    ic.pos[DIMENSION * n_kept + d] = ic.pos[DIMENSION * i + d];
-                    ic.vel[DIMENSION * n_kept + d] = ic.vel[DIMENSION * i + d];
-                }
-                ic.rho[n_kept]       = ic.rho[i];
-                ic.energy[n_kept]    = ic.energy[i];
-                ic.global_id[n_kept] = ic.global_id[i];
-            }
-            n_kept++;
-        }
-        return n_kept;
-    }
-
-    static void resize_ic_to(ICData& ic, int n_kept) {
-        ic.pos.resize((size_t)DIMENSION * n_kept);
-        ic.vel.resize((size_t)DIMENSION * n_kept);
-        ic.rho.resize(n_kept);
-        ic.energy.resize(n_kept);
-        ic.global_id.resize(n_kept);
-        ic.pos_dims[0] = (hsize_t)n_kept;
-    }
-
-    // conservation: sum of per-rank n_kept must equal global n_total
-    static void check_global_cell_count(int n_kept, int n_total) {
-#ifdef USE_MPI
-        const long long n_kept_ll     = (long long)n_kept;
-        long long       n_global_kept = 0;
-        {
-            PROFILE_MPI("ICDIST_CONS_ALLREDUCE");
-            MPI_Allreduce(&n_kept_ll, &n_global_kept, 1, MPI_LONG_LONG, MPI_SUM, decomp.cart_comm);
-        }
-        if (n_global_kept != (long long)n_total) {
-            exit_failure(
-                "DECOMP: FATAL cell-count mismatch — sum(n_kept) = %lld, expected %d.\n", n_global_kept, n_total);
-        }
-        if (decomp.rank == 0) {
-            printf("DECOMP: cell-count check passed (sum of per-rank n_kept = %lld).\n", n_global_kept);
-            fflush(stdout);
-        }
-#else
-        (void)n_kept;
-        (void)n_total;
-#endif
     }
 
 } // namespace proteus_mpi

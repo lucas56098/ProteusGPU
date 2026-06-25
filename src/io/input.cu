@@ -13,7 +13,7 @@ static void read_attr_int(hid_t group, const char* name, int& out);
 static void read_attr_int64(hid_t group, const char* name, int64_t& out);
 static void read_attr_double(hid_t group, const char* name, double& out);
 static bool read_dataset_1d(hid_t parent, const char* name, std::vector<double>& out);
-static bool read_dataset_2d(hid_t parent, const char* name, std::vector<double>& out, hsize_t* out_dims = nullptr);
+static bool read_dataset_2d(hid_t parent, const char* name, std::vector<double>& out, hsize_t* out_rows = nullptr);
 #ifdef USE_MPI
 static bool
 read_dataset_1d_hyperslab(hid_t parent, const char* name, hsize_t row_lo, hsize_t n_local, std::vector<double>& out);
@@ -21,15 +21,14 @@ static bool read_dataset_2d_hyperslab(
     hid_t parent, const char* name, hsize_t row_lo, hsize_t n_local, hsize_t expected_dim, std::vector<double>& out);
 #endif
 
-InputHandler::InputHandler(const std::string& filename) : paramFilePath(filename) {}
-
 // ============================================================
 // read from parameter file
 // ============================================================
 
 // load parameters from file
-bool InputHandler::loadParameters() {
+bool InputHandler::loadParameters(const std::string& filename) {
 
+    paramFilePath = filename;
     std::ifstream file(paramFilePath);
 
     // check if file opened successfully
@@ -127,8 +126,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     // read mesh/pos and hydro/{rho,vel,energy}
     hid_t mesh_group  = H5Gopen(file_id, "mesh", H5P_DEFAULT);
     hid_t hydro_group = H5Gopen(file_id, "hydro", H5P_DEFAULT);
-    icData.pos_dims.resize(2);
-    if (!read_dataset_2d(mesh_group, "pos", icData.pos, icData.pos_dims.data()) ||
+    if (!read_dataset_2d(mesh_group, "pos", icData.pos, &icData.header.n_seeds) ||
         !read_dataset_1d(hydro_group, "rho", icData.rho) || !read_dataset_2d(hydro_group, "vel", icData.vel) ||
         !read_dataset_1d(hydro_group, "energy", icData.energy)) {
         H5Gclose(mesh_group);
@@ -142,10 +140,16 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     // close file
     H5Fclose(file_id);
     logging::root() << "INPUT: IC file " << filename << " loaded successfully!" << std::endl;
+
+    const int n_total = (int)icData.header.n_seeds;
+
+    // set sequential global IDs in input order
+    icData.global_id.resize(n_total);
+    for (int i = 0; i < n_total; i++)
+        icData.global_id[i] = (uint64_t)i;
+
     return true;
 }
-
-#ifdef USE_MPI
 
 // peek IC file header + global particle count without reading the bulk arrays.
 // Opens serially on every rank (independent, no MPIIO setup) since it's a few bytes.
@@ -186,6 +190,8 @@ bool InputHandler::readICHeader(const std::string& filename, ICHeader& header, h
     return true;
 }
 
+#ifdef USE_MPI
+
 // collective parallel-HDF5 read of rows [row_lo, row_lo + n_local) for this rank.
 bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icData, hsize_t row_lo, hsize_t n_local) {
 
@@ -217,9 +223,7 @@ bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icDa
         return false;
     }
 
-    icData.pos_dims.resize(2);
-    icData.pos_dims[0] = n_local;
-    icData.pos_dims[1] = (hsize_t)DIMENSION;
+    icData.header.n_seeds = n_local;
 
     hid_t mesh_group  = H5Gopen(file_id, "mesh", H5P_DEFAULT);
     hid_t hydro_group = H5Gopen(file_id, "hydro", H5P_DEFAULT);
@@ -342,8 +346,7 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     // read mesh/pos and hydro/{rho,vel,energy}
     hid_t mesh_group  = H5Gopen(file_id, "mesh", H5P_DEFAULT);
     hid_t hydro_group = H5Gopen(file_id, "hydro", H5P_DEFAULT);
-    icData.pos_dims.resize(2);
-    if (!read_dataset_2d(mesh_group, "pos", icData.pos, icData.pos_dims.data()) ||
+    if (!read_dataset_2d(mesh_group, "pos", icData.pos, &icData.header.n_seeds) ||
         !read_dataset_1d(hydro_group, "rho", icData.rho) || !read_dataset_2d(hydro_group, "vel", icData.vel) ||
         !read_dataset_1d(hydro_group, "energy", icData.energy)) {
         H5Gclose(mesh_group);
@@ -355,7 +358,7 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     H5Gclose(hydro_group);
     H5Fclose(file_id);
 
-    logging::root() << "INPUT: Snapshot loaded successfully! (" << icData.pos_dims[0] << " cells, t = " << snap.t_sim
+    logging::root() << "INPUT: Snapshot loaded successfully! (" << icData.header.n_seeds << " cells, t = " << snap.t_sim
                     << ")" << std::endl;
     return true;
 }
@@ -407,7 +410,7 @@ static bool read_dataset_1d(hid_t parent, const char* name, std::vector<double>&
     return true;
 }
 
-static bool read_dataset_2d(hid_t parent, const char* name, std::vector<double>& out, hsize_t* out_dims) {
+static bool read_dataset_2d(hid_t parent, const char* name, std::vector<double>& out, hsize_t* out_rows) {
     hid_t dset = H5Dopen(parent, name, H5P_DEFAULT);
     if (dset < 0) {
         std::cerr << "INPUT: Error! Could not open dataset '" << name << "'" << std::endl;
@@ -420,10 +423,7 @@ static bool read_dataset_2d(hid_t parent, const char* name, std::vector<double>&
     H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data());
     H5Sclose(space);
     H5Dclose(dset);
-    if (out_dims) {
-        out_dims[0] = dims[0];
-        out_dims[1] = dims[1];
-    }
+    if (out_rows) { *out_rows = dims[0]; }
     return true;
 }
 

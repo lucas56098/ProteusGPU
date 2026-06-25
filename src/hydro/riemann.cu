@@ -1,3 +1,4 @@
+/* hllc riemann solver : computes flux given st_L and st_R */
 #include "../global/allvars.h"
 #include "riemann.h"
 
@@ -5,7 +6,7 @@ namespace hydro {
 
     HD flux_t riemann_hllc(prim st_l, prim st_r) {
 
-        // compute pressure once per side (avoids triple-computation via get_flux→get_P)
+        // compute pressure once per side (avoids triple-computation via get_flux->get_P)
         double v2_l = st_l.v.x * st_l.v.x + st_l.v.y * st_l.v.y;
         double v2_r = st_r.v.x * st_r.v.x + st_r.v.y * st_r.v.y;
 #ifdef dim_3D

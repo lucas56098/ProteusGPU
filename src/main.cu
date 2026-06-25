@@ -1,3 +1,4 @@
+/* main simulation routine */
 #include "begrun/begrun.h"
 #include "global/allvars.h"
 #include "hydro/finite_volume_solver.h"
@@ -53,7 +54,7 @@ int main(int argc, char* argv[]) {
             Profiler::LogTimestep(sim.step);
             sim.step++;
         }
-    } // HYDRO scope ends here
+    }
 
     // clean up
     begrun::endrun();

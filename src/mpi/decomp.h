@@ -102,6 +102,7 @@ namespace proteus_mpi {
 #ifdef dim_3D
         if (bz < 0 || bz >= N_grid_global) return -1;
 #else
+        (void)bz;
         bz = 0;
         (void)dims_z;
         (void)splits_z;
@@ -147,15 +148,10 @@ namespace proteus_mpi {
 #endif
     }
 
-    // distribute already-loaded ICData: each rank keeps only cells whose bucket lies
-    // in its brick. assigns sequential global IDs in input order.
-    void distribute_ic_local(::ICData& ic, double buff);
-
     // parallel-read variant: each rank arrives with its own chunk of the global IC
     // (read via parallel HDF5 hyperslab), holding cells with global IDs [row_lo, row_lo+n_local).
     // Routes each cell to its owner via decomp_owner_of_bucket + MPI_Alltoallv over the Cart
-    // comm. After the call, ic holds only this rank's owned cells. Conservation check identical
-    // to distribute_ic_local. No-op for nranks <= 1.
+    // comm. After the call, ic holds only this rank's owned cells. No-op for nranks <= 1.
     void distribute_ic_parallel(::ICData& ic, double buff);
 
     // even split of N items across P slots; slot i gets the i'th contiguous chunk.

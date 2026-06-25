@@ -72,7 +72,7 @@ namespace proteus_mpi {
     extern int n_local_initial_max;
 
     // migration headroom on n_local. Sized for "homogeneous + occasional rebalance":
-    // a 1.10 imbalance threshold (rebalance_config default) lets one rank grow to
+    // a 1.10 imbalance threshold (sim.imbalance_threshold default) lets one rank grow to
     // ~10% past its initial n_local before rebalance fires, and the split chooser can
     // overshoot at bucket granularity. 2.0 gives generous headroom (100%) for both
     // the steady-state imbalance and any transient spikes during a rebalance step.

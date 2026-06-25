@@ -109,9 +109,9 @@ struct SimState {
     double*                   dt;
 
     // running state
-    double t_sim;
-    int    snap_num;
-    int    step;
+    double t_sim    = 0.0;
+    int    snap_num = 0;
+    int    step     = 0;
     double t_nextoutput;
 
     // run config
@@ -119,6 +119,9 @@ struct SimState {
     double t_end;
     double CFL;
     double output_dt;
+    int    rebalance_interval;
+    int    imbalance_log_interval;
+    double imbalance_threshold;
 
     // wall-clock start; per-step profile log lives in profile.hdf5 (see Profiler::OpenProfileLog)
     std::chrono::steady_clock::time_point wall_start;

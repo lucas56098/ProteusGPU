@@ -1,5 +1,4 @@
-#include "../global/gpu_compat.h"
-#include "../global/log.h"
+#include "../global/allvars.h"
 #include "../mpi/mpi_compat.h"
 #include "hdf5.h"
 #include "profiler.h"
@@ -8,6 +7,7 @@
 #include <deque>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <sys/resource.h>
@@ -218,6 +218,38 @@ Profiler::KernelScope::~KernelScope() {
 }
 
 // ============================================================
+// TOTAL root timer
+// ============================================================
+
+// TOTAL spans begrun() through endrun(), so it can't be a stack-RAII scope.
+// Held on the heap here; StopTotalTimer destructs it, accumulating the final time.
+static std::unique_ptr<Profiler::Scope> s_total_scope;
+
+void Profiler::StartTotalTimer() {
+    s_total_scope  = std::make_unique<Scope>("TOTAL");
+    sim.wall_start = std::chrono::steady_clock::now(); // session wall clock for ETA + final runtime
+}
+
+void Profiler::StopTotalTimer() {
+    s_total_scope.reset();
+}
+
+// cumulative TOTAL seconds for this rank (folds the live offset if still open).
+// Includes runtime resumed from a restart, since SeedFromCumulative rewinds TOTAL's start.
+double Profiler::TotalSeconds() {
+    long long us = 0;
+    auto      it = s_cum_us.find("TOTAL");
+    if (it != s_cum_us.end()) us = it->second;
+    auto live = s_live_start.find("TOTAL");
+    if (live != s_live_start.end()) {
+        us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() -
+                                                                    live->second)
+                  .count();
+    }
+    return us / 1e6;
+}
+
+// ============================================================
 // GPU drain
 // ============================================================
 
@@ -307,7 +339,7 @@ void Profiler::SeedFromCumulative(const std::unordered_map<std::string, double>&
 // ============================================================
 
 namespace {
-
+#ifdef USE_MPI
     // Pack/unpack helpers reused for the end-of-run all-ranks name catalogue.
     std::vector<char> pack_names(const std::vector<std::string>& names) {
         std::vector<char> buf;
@@ -317,6 +349,7 @@ namespace {
         }
         return buf;
     }
+
     std::vector<std::string> unpack_names(const char* buf, int len) {
         std::vector<std::string> out;
         int                      start = 0;
@@ -328,6 +361,7 @@ namespace {
         }
         return out;
     }
+#endif
 
     std::vector<std::vector<std::string>> allgather_timer_names(const std::vector<std::string>& my_names, int nranks) {
         std::vector<std::vector<std::string>> result(nranks);
@@ -390,10 +424,9 @@ namespace {
         std::string              full_path;
         std::string              leaf;
         char                     kind      = 'c';
-        double                   cum_r0_s  = 0.0; // rank 0's value — the headline number
-        double                   cum_min_s = 0.0; // across ranks (for imbal)
-        double                   cum_max_s = 0.0;
-        std::vector<std::string> children; // full paths
+        double                   cum_sum_s = 0.0; // summed across ranks — the headline number
+        double                   imbalance = 1.0; // max / avg across ranks
+        std::vector<std::string> children;        // full paths
     };
 
     // Split "A.B.C" → parent="A.B", leaf="C". Top-level: parent="", leaf=path.
@@ -424,25 +457,30 @@ namespace {
         const TreeNode& n = it->second;
 
         const std::string indent(depth * 2, ' ');
-        const double      pct_tot = (total_s > 0.0) ? 100.0 * n.cum_r0_s / total_s : 0.0;
-        const double      imbal   = (n.cum_min_s > 0.0) ? n.cum_max_s / n.cum_min_s : 1.0;
+        const double      pct_tot = (total_s > 0.0) ? 100.0 * n.cum_sum_s / total_s : 0.0;
 
         const std::string name = indent + n.leaf;
         const char*       tag  = (n.kind == 'm') ? "[mpi]" : (n.kind == 'g') ? "[gpu]" : "     ";
 
         char buf[256];
-        std::snprintf(
-            buf, sizeof(buf), "%-30s  %-5s  %7.3fs  %9.1f%%  %9.3f\n", name.c_str(), tag, n.cum_r0_s, pct_tot, imbal);
+        std::snprintf(buf,
+                      sizeof(buf),
+                      "%-30s  %-5s  %7.3fs  %9.1f%%  %9.3f\n",
+                      name.c_str(),
+                      tag,
+                      n.cum_sum_s,
+                      pct_tot,
+                      n.imbalance);
         out << buf;
 
-        // children, sorted by rank-0 time desc
+        // children, sorted by summed time desc
         std::vector<const TreeNode*> kids;
         for (const auto& c : n.children) {
             auto cit = nodes.find(c);
             if (cit != nodes.end()) kids.push_back(&cit->second);
         }
         std::sort(
-            kids.begin(), kids.end(), [](const TreeNode* a, const TreeNode* b) { return a->cum_r0_s > b->cum_r0_s; });
+            kids.begin(), kids.end(), [](const TreeNode* a, const TreeNode* b) { return a->cum_sum_s > b->cum_sum_s; });
         for (const auto* k : kids)
             print_subtree(out, nodes, k->full_path, depth + 1, total_s);
     }
@@ -483,12 +521,12 @@ void Profiler::PrintResults() {
         }
     }
 
-    // 4) cross-rank min / max reductions (just enough for imbalance = max/min).
-    // The printed headline number is rank 0's view (my_cum on rank 0).
-    std::vector<double> cum_min = my_cum, cum_max = my_cum;
+    // 4) cross-rank sum + max reductions. The headline number is the sum over all
+    // ranks; max feeds the imbalance = max / avg column (avg = sum / nranks).
+    std::vector<double> cum_sum = my_cum, cum_max = my_cum;
 #ifdef USE_MPI
     if (nranks > 1 && ntimers > 0) {
-        MPI_Allreduce(MPI_IN_PLACE, cum_min.data(), ntimers, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, cum_sum.data(), ntimers, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(MPI_IN_PLACE, cum_max.data(), ntimers, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     }
 #endif
@@ -513,7 +551,7 @@ void Profiler::PrintResults() {
 
     if (rank != 0) return;
 
-    // 6) build the tree (rank 0 only — my_cum here is rank 0's view)
+    // 6) build the tree (rank 0 only — values are the cross-rank sum / max)
     std::unordered_map<std::string, TreeNode> nodes;
     for (int i = 0; i < ntimers; i++) {
         TreeNode n;
@@ -521,9 +559,9 @@ void Profiler::PrintResults() {
         std::string parent;
         split_path(n.full_path, parent, n.leaf);
         n.kind             = out_kind[i] ? out_kind[i] : 'c';
-        n.cum_r0_s         = my_cum[i];
-        n.cum_min_s        = cum_min[i];
-        n.cum_max_s        = cum_max[i];
+        n.cum_sum_s        = cum_sum[i];
+        const double avg   = cum_sum[i] / (double)nranks;
+        n.imbalance        = (avg > 0.0) ? cum_max[i] / avg : 1.0;
         nodes[n.full_path] = n;
     }
     // wire parent → children
@@ -545,32 +583,42 @@ void Profiler::PrintResults() {
     // 7) print
     std::ostream&     out   = logging::root();
     constexpr int     WIDTH = 70;
-    const std::string title = " Profiling Results (rank 0) ";
+    const std::string title = " Profiling Results ";
     const int         side  = (WIDTH - (int)title.size()) / 2;
     const int         rside = WIDTH - side - (int)title.size();
     out << "\n" << std::string(side, '=') << title << std::string(rside, '=') << "\n";
+
+    // "sum of N ranks (T threads, G GPUs)" sits in the name/tag area; column titles to its right.
+    const int total_threads = nranks * logging::omp_threads();
+#ifdef CPU_DEBUG
+    const int total_gpus = 0;
+#else
+    const int total_gpus = nranks; // one GPU per rank
+#endif
+    char left[64];
+    std::snprintf(left, sizeof(left), "sum of %d ranks (%d threads, %d GPUs)", nranks, total_threads, total_gpus);
     char hdr[256];
-    std::snprintf(hdr, sizeof(hdr), "%-30s  %-5s  %8s  %10s  %9s\n", "", "", "time", "percentage", "imbalance");
+    std::snprintf(hdr, sizeof(hdr), "%-37s  %8s  %10s  %9s\n", left, "time", "percentage", "imbalance");
     out << hdr;
     out << std::string(WIDTH, '-') << "\n";
 
     // TOTAL anchors the % column.
     double total_s = 0.0;
     auto   it_tot  = nodes.find("TOTAL");
-    if (it_tot != nodes.end()) total_s = it_tot->second.cum_r0_s;
+    if (it_tot != nodes.end()) total_s = it_tot->second.cum_sum_s;
 
-    // sort roots by rank-0 time desc
+    // sort roots by summed time desc
     std::sort(roots.begin(), roots.end(), [&](const std::string& a, const std::string& b) {
-        return nodes[a].cum_r0_s > nodes[b].cum_r0_s;
+        return nodes[a].cum_sum_s > nodes[b].cum_sum_s;
     });
     for (const auto& r : roots)
         print_subtree(out, nodes, r, 0, total_s);
 
-    // 8) total time spent in [mpi] / [gpu] leaves (rank 0)
+    // 8) total time spent in [mpi] / [gpu] leaves (summed across ranks)
     double mpi_total_s = 0.0, gpu_total_s = 0.0;
     for (const auto& kv : nodes) {
-        if (kv.second.kind == 'm') mpi_total_s += kv.second.cum_r0_s;
-        if (kv.second.kind == 'g') gpu_total_s += kv.second.cum_r0_s;
+        if (kv.second.kind == 'm') mpi_total_s += kv.second.cum_sum_s;
+        if (kv.second.kind == 'g') gpu_total_s += kv.second.cum_sum_s;
     }
     auto pct = [&](double v) { return (total_s > 0.0) ? 100.0 * v / total_s : 0.0; };
     out << std::string(WIDTH, '-') << "\n";
@@ -586,7 +634,7 @@ void Profiler::PrintResults() {
                   gpu_total_s,
                   pct(gpu_total_s));
     out << foot;
-    out << std::string(WIDTH, '=') << "\n";
+    out << std::string(WIDTH, '=') << "\n\n";
 }
 
 // ============================================================

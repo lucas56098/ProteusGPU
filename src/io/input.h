@@ -10,19 +10,21 @@
 
 // hold IC data
 struct ICHeader {
-    int dimension;
+    std::string ic_filename;
+    bool        restart_flag = false;
+    int         dimension    = 0;
+
+    hsize_t n_seeds  = 0;
+    int64_t n_global = 0;
 };
 
 struct ICData {
-    std::vector<double>  pos;      // dimension * numSeeds
-    std::vector<hsize_t> pos_dims; // [numSeeds, dimension]
+    std::vector<double> pos;    // dimension * n_seeds
+    std::vector<double> rho;    // n_seeds
+    std::vector<double> vel;    // dimension * n_seeds
+    std::vector<double> energy; // n_seeds
 
-    // hydro quantities
-    std::vector<double> rho;    // numSeeds
-    std::vector<double> vel;    // dimension * numSeeds
-    std::vector<double> energy; // numSeeds
-
-    // global cell ID, set in proteus_mpi::distribute_ic_local
+    // global cell ID
     std::vector<uint64_t> global_id;
 
     ICHeader header;
@@ -43,10 +45,8 @@ struct SnapshotHeader {
 // loads parameter file, ICs, snapshots
 class InputHandler {
   public:
-    InputHandler(const std::string& filename = "/ics/param.txt");
-
     // read from parameter file
-    bool loadParameters();
+    bool loadParameters(const std::string& filename);
 
     std::string getParameter(const std::string& key) const;
     double      getParameterDouble(const std::string& key) const;
@@ -54,11 +54,11 @@ class InputHandler {
     // load ic
     bool readICFile(const std::string& filename, ICData& icData);
 
-#ifdef USE_MPI
-    // peek IC header + total particle count (every rank reads independently — cheap, sub-kB).
-    // Used so begrun can size the decomposition before the per-rank chunk read.
+    // peek IC header + total particle count without reading the bulk arrays (serial, sub-kB).
+    // Used so begrun can size the decomposition before the field read in load_IC_fields.
     bool readICHeader(const std::string& filename, ICHeader& header, hsize_t& n_total);
 
+#ifdef USE_MPI
     // collective parallel-HDF5 read of rows [row_lo, row_lo + n_local) for pos/vel/rho/energy.
     // Every rank in MPI_COMM_WORLD must call with identical filename. Fills icData with this
     // rank's chunk only; global IDs assigned as row_lo + i (input-order).

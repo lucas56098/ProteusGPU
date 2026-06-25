@@ -61,6 +61,7 @@ namespace proteus_mpi {
         if (cerr != cudaSuccess) {
             exit_failure("[rank %d] cudaSetDevice(%d) failed (err=%d)\n", s_rank, dev, (int)cerr);
         }
+        cudaDeviceSetLimit(cudaLimitStackSize, 8192); // (3D slow voronoi kernel needs ~5.7KB stack/thread -> use 8KB)
 #endif
 #else // !USE_MPI
         (void)argc;
@@ -137,10 +138,11 @@ namespace proteus_mpi {
     void report_gpu_aware_mpi() {
         if (rank() != 0) return;
 #ifdef USE_MPI
+#ifndef CPU_DEBUG
 #ifdef GPU_AWARE_MPI
-        std::printf("BEGRUN: MPI GPU_AWARE_MPI is COMPILED IN — buffers passed to MPI are device pointers.\n");
+        std::printf("BEGRUN: GPU_AWARE_MPI is set\n");
 #else
-        std::printf("BEGRUN: MPI GPU_AWARE_MPI is OFF — managed-memory buffers staged through host before MPI.\n");
+        std::printf("BEGRUN: GPU_AWARE_MPI not set\n");
 #endif
 
         // OpenMPI runtime probe — only available when <mpi-ext.h> is present.
@@ -154,17 +156,15 @@ namespace proteus_mpi {
             std::printf("BEGRUN: MPI MPICH_GPU_SUPPORT_ENABLED = %s\n", v);
         }
 
+        // TODO: set a warning here if GPU_AWARE_MPI is compiled but the MPI library does
+        // not support cuda/gpu
+#endif
         char version[MPI_MAX_LIBRARY_VERSION_STRING] = {0};
         int  vlen                                    = 0;
         if (MPI_Get_library_version(version, &vlen) == MPI_SUCCESS) {
-            // Strip trailing newlines so the banner stays one line per fact.
-            for (int i = vlen - 1; i >= 0 && (version[i] == '\n' || version[i] == '\r'); i--)
-                version[i] = '\0';
             std::printf("BEGRUN: MPI library = %s\n", version);
         }
         std::fflush(stdout);
-#else
-        // no MPI compiled — nothing useful to report.
 #endif
     }
 

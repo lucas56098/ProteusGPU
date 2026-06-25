@@ -1,5 +1,4 @@
 #include "../global/allvars.h"
-#include "../mpi/decomp.h"
 #include "../mpi/mpi_compat.h"
 #include "../mpi/rebalance.h"
 #include "../voronoi/voronoi.h"
@@ -40,7 +39,7 @@ bool OutputHandler::initialize() {
 #ifdef USE_MPI
     {
         PROFILE_MPI("OUTPUT_INIT_BARRIER");
-        MPI_Barrier(proteus_mpi::decomp.cart_comm);
+        MPI_Barrier(MPI_COMM_WORLD);
     }
 #endif
     return ok;

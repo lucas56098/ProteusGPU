@@ -1,3 +1,4 @@
+/* hydro handling: init/free; hydro stepping; flux calc; CFL timestep */
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../mpi/decomp.h"
@@ -5,7 +6,7 @@
 #include "../mpi/mpi_compat.h"
 #include "../profiler/profiler.h"
 #include "finite_volume_solver.h"
-#include "riemann.cu" // include directly for single translation unit compilation
+#include "riemann.cu"
 #include <utility>
 
 namespace hydro {

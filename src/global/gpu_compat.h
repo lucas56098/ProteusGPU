@@ -12,6 +12,7 @@ typedef unsigned char uchar;
 // CUDA / CPU_DEBUG mode switching
 
 #ifdef CPU_DEBUG
+#define RUN_MODE "CPU"
 
 // empty _host_ _device_ / _global_ wrappers
 #define HD
@@ -74,6 +75,7 @@ inline uchar3 make_uchar3(uchar x, uchar y, uchar z) {
 }
 
 #else // CUDA mode
+#define RUN_MODE "GPU"
 
 // kernel/function macros
 #define HD __host__ __device__

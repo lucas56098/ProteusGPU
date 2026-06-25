@@ -40,6 +40,8 @@ namespace proteus_mpi {
     static MPI_Datatype s_mpi_migrant_t = MPI_DATATYPE_NULL;
 #endif
 
+#ifdef USE_MPI
+
     // persistent staging buffers — managed memory so the pack/unpack/assign kernels
     // introduced in Phase 3 can read/write without page-faulting through the host.
     // Each pair (ptr + cap) tracks an own-grown allocation; logical sizes are
@@ -75,6 +77,7 @@ namespace proteus_mpi {
     // running count for s_migrant_local_k (kernel atomicAdds into it)
     static int* s_n_migrant_local_dev = nullptr;
     // 1-int counter for migrants per kernel call
+#endif
 
     // grow a managed buffer to >= need elements (doubling, floor 64). nullptr-safe.
     template <typename T> static void ensure_managed(T*& ptr, int& cap, int need) {
@@ -85,11 +88,13 @@ namespace proteus_mpi {
         cap = new_cap;
     }
 
+#ifdef USE_MPI
     // lazy-alloc single-int managed counters (called on first use).
     static void ensure_scratch_singletons() {
         if (!s_assign_err) s_assign_err = (int*)gpu_malloc(sizeof(int));
         if (!s_n_migrant_local_dev) s_n_migrant_local_dev = (int*)gpu_malloc(sizeof(int));
     }
+#endif
 
 #ifdef USE_MPI
     // forward declarations

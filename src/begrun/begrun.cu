@@ -1,3 +1,4 @@
+/* begrun: calls everything to start or end a run */
 #include "../global/allvars.h"
 #include "../hydro/finite_volume_solver.h"
 #include "../io/input.h"
@@ -13,85 +14,89 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
-#include <memory>
 
 namespace begrun {
 
     // forward declarations
-    static void         print_banner();
-    static void         log_run_mode();
-    static void         init_gpu();
-    static InputHandler load_params(int argc, char* argv[]);
-    static void         load_initial_conditions(int argc, char* argv[]);
-    static void         init_decomposition();
-    static void         init_hydro_and_mesh();
-    static void         init_run_config();
-    static void         free_initial_conditions();
-
-    // TOTAL spans begrun() through endrun(), so it can't be a stack-RAII scope.
-    // Held on the heap, destructed (and thus accumulated + popped) inside endrun
-    // just before PrintResults.
-    static std::unique_ptr<Profiler::Scope> s_total_scope;
-
-    // restart state populated by load_initial_conditions and consumed by init_decomposition.
-    // int64 throughout because the global cell count exceeds 2^31 from ~1300^3 upward.
-    static bool    s_is_restart       = false;
-    static int64_t s_restart_n_global = 0;
-
-    // fresh-start state: global IC particle count peeked from the file header before any
-    // bulk read. Set in load_initial_conditions, consumed in init_decomposition so we can
-    // size the decomposition before each rank reads its own chunk.
-    static int64_t     s_ic_n_global = 0;
-    static std::string s_ic_filename;
+    static void initial_printouts();
+    static void restart_from_snapshot(const int latest_snap_n, std::string out_dir);
+    static void prepare_sim_struct();
+    static void load_IC_fields();
+    static void init_exch_buffers();
+    static void init_hydro_and_mesh();
+    static void free_initial_conditions();
 
     // ============================================================
-    // Main routines
+    // setup / end a simulation run
     // ============================================================
 
     // setup simulation
     void begrun(int argc, char* argv[]) {
-        s_total_scope  = std::make_unique<Profiler::Scope>("TOTAL");
-        sim.wall_start = std::chrono::steady_clock::now();
+
+        Profiler::StartTotalTimer();
         PROFILE("BEGRUN");
 
-        // initial printouts
-        print_banner();
-        log_run_mode();
+        initial_printouts();
 
-        // GPU init
-        init_gpu();
+        // load parameters
+        input.loadParameters(argc > 1 ? argv[1] : "./ics/param.txt");
 
-        // load params and IC
-        input = load_params(argc, argv);
-        load_initial_conditions(argc, argv);
+        // init OutputHandler
+        std::string out_dir = input.getParameter("output_directory");
+        output              = OutputHandler(out_dir);
+        if (!output.initialize()) { exit(EXIT_FAILURE); }
 
-        // parse load-balance keys early — halo_init needs rebalance_interval to size capacity
-        try {
-            proteus_mpi::rebalance_config.rebalance_interval = (int)input.getParameterDouble("rebalance_interval");
-        } catch (...) { proteus_mpi::rebalance_config.rebalance_interval = 0; }
-        try {
-            proteus_mpi::rebalance_config.imbalance_log_interval =
-                (int)input.getParameterDouble("imbalance_log_interval");
-        } catch (...) { proteus_mpi::rebalance_config.imbalance_log_interval = 0; }
-        try {
-            proteus_mpi::rebalance_config.imbalance_threshold = input.getParameterDouble("imbalance_threshold");
-        } catch (...) { proteus_mpi::rebalance_config.imbalance_threshold = 1.10; }
+        // find latest snap
+        const int latest_snap_n = InputHandler::findLatestSnapshot(out_dir, proteus_mpi::nranks(), proteus_mpi::rank());
 
-        // decomposition
-        init_decomposition();
+        // do we restart?
+        icData.header.restart_flag = (argc > 2) && (std::atoi(argv[2]) == 1);
+        if (icData.header.restart_flag) {
 
-        // init hydro from IC + built initial voronoi mesh
+            // restart sim
+            restart_from_snapshot(latest_snap_n, out_dir);
+
+        } else {
+
+            // new sim from IC file
+            icData.header.ic_filename = input.getParameter("ic_file");
+
+            // read IC header (fields are read after domain decomp)
+            hsize_t n_total = 0;
+            if (!input.readICHeader(icData.header.ic_filename, icData.header, n_total)) { exit(EXIT_FAILURE); }
+            icData.header.n_global = n_total;
+
+            // refuse to silently overwrite existing snapshots
+            if (latest_snap_n > 0) {
+                std::cerr << "RESTART: Stopping! Found existing snapshots but no restart-flag." << std::endl;
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // write parameters into sim struct
+        prepare_sim_struct();
+
+        // create profile log
+        const std::string profile_path = input.getParameter("output_directory") + "/profile.hdf5";
+        Profiler::OpenProfileLog(profile_path, icData.header.restart_flag ? sim.step : -1);
+
+        // decompose domain
+        buff = (1. / pow((double)icData.header.n_global, 1. / ((double)DIMENSION))) * 4;
+        proteus_mpi::decomp_init(icData.header.n_global, buff);
+
+        // load IC fields into icData
+        if (!icData.header.restart_flag) { load_IC_fields(); };
+
+        // init halo and migrate for exchange
+        init_exch_buffers();
+
+        // init hydro from icData + build initial voronoi mesh
         init_hydro_and_mesh();
-
-        // sim parameters from params (incl. profile.txt setup — needs output_directory to exist)
-        init_run_config();
-
-        print_max_memory_usage();
     }
 
-    // free everything begrun built + print final summary
+    // free everything + print summary
     void endrun() {
-        logging::root() << "HYDRO: Finished after " << sim.step << " steps at t = " << sim.t_sim << std::endl;
+        logging::root() << "\nHYDRO: Finished after " << sim.step << " steps at t = " << sim.t_sim << std::endl;
 
         // free mesh/hydro/halo
         voronoi::free_mesh(sim.mesh);
@@ -99,24 +104,24 @@ namespace begrun {
         proteus_mpi::halo_free();
         sim.mesh = nullptr;
 
-        // wall-clock + peak memory + profiler dump
-        const double total_wall_s =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - sim.wall_start).count();
-        logging::root() << "MAIN: Done. (Total runtime = " << total_wall_s << " seconds)" << std::endl;
-        print_max_memory_usage();
-
-        s_total_scope.reset(); // destructs the TOTAL Scope, accumulates final time
+        Profiler::StopTotalTimer(); // accumulates the final TOTAL time
         Profiler::PrintResults();
         Profiler::CloseProfileLog();
+
+        // peak memory + final runtime
+        print_max_memory_usage();
+        logging::root() << "MAIN: Done. (Total runtime = " << Profiler::TotalSeconds() << " s)" << std::endl;
     }
 
     // ============================================================
-    // Helpers
+    // helpers
     // ============================================================
 
-    // print Proteus banner with version + build info
-    static void print_banner() {
+    // print banner + build info
+    static void initial_printouts() {
         std::ostream& out = logging::root();
+
+        // welcome banner
         out << "==========================================================================" << std::endl;
         out << R"(
           _____           _                    _____ _____  _    _
@@ -129,229 +134,161 @@ namespace begrun {
     )" << std::endl;
         out << "       GPU-accelerated moving mesh hydrodynamics for astrophysics" << std::endl;
         out << "==========================================================================" << std::endl;
-#ifndef GIT_COMMIT
-        out << "Version: 0.8" << std::endl;
+
+        // version
+        out << "Version: 0.8";
+#if defined(GIT_DIFFSTAT) && defined(GIT_COMMIT)
+        out << " (commit " << GIT_COMMIT << ", " << GIT_DIFFSTAT << ")";
 #else
-#ifdef GIT_DIFFSTAT
-        out << "Version: 0.8 (commit " << GIT_COMMIT << ", " << GIT_DIFFSTAT << ")" << std::endl;
-#else
-        out << "Version: 0.8 (commit " << GIT_COMMIT << ")" << std::endl;
+        out << " (commit " << GIT_COMMIT << ")";
 #endif
-#endif
-        out << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
+        out << "\nBuild date: " << __DATE__ << " " << __TIME__ << std::endl;
         out << "Authors: Lucas Schleuss, Dylan Nelson" << std::endl;
         out << "Institution: Institute of Theoretical Astrophysics, Heidelberg University" << std::endl;
         out << "==========================================================================" << std::endl;
-    }
+        out << "BEGRUN: Running " << DIMENSION << "D mode on " << RUN_MODE << std::endl;
 
-    // log dimension/CPU-or-GPU + parallelization summary
-    static void log_run_mode() {
-        std::ostream& out = logging::root();
-#ifdef dim_2D
-#ifdef CPU_DEBUG
-        out << "BEGRUN: Running 2D mode on CPU" << std::endl;
-#else
-        out << "BEGRUN: Running 2D mode on GPU" << std::endl;
-#endif
-#elif dim_3D
-#ifdef CPU_DEBUG
-        out << "BEGRUN: Running 3D mode on CPU" << std::endl;
-#else
-        out << "BEGRUN: Running 3D mode on GPU" << std::endl;
-#endif
-#endif
-
+        // MPI info
 #ifdef USE_MPI
-        out << "BEGRUN: MPI ranks      = " << proteus_mpi::nranks() << " (" << proteus_mpi::node_local_size()
-            << " per node)" << std::endl;
-        // GPU-aware MPI path + library/version probe. Rank-0 only.
+        out << "BEGRUN: MPI ranks = " << proteus_mpi::nranks() << " (" << proteus_mpi::node_local_size() << " per node)"
+            << std::endl;
+
         proteus_mpi::report_gpu_aware_mpi();
 #endif
+
+        // OpenMP info
 #ifdef USE_OPENMP
         out << "BEGRUN: OpenMP threads = " << logging::omp_threads() << " (per rank)" << std::endl;
 #endif
+
+        // GPU info
 #ifndef CPU_DEBUG
         const int n_gpus  = proteus_mpi::gpus_per_node();
         const int n_local = proteus_mpi::node_local_size();
         out << "BEGRUN: GPUs per node  = " << n_gpus << " (" << n_local << " ranks/node, "
             << (double)n_local / (n_gpus > 0 ? n_gpus : 1) << " ranks/GPU)" << std::endl;
 #endif
+#ifndef CPU_DEBUG
+        int dev;
+        cudaGetDevice(&dev);
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, dev);
+        std::cout << "CUDA: rank " << proteus_mpi::rank() << " on device " << dev << " (" << prop.name << "), SM "
+                  << prop.major << "." << prop.minor << std::endl;
+#ifdef USE_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+#endif
+#endif
 
-#ifdef DRY_RUN // early exit only used for github CI
+        // early exit (used only in github CI)
+#ifdef DRY_RUN
         out << "Dry run for CI test successful, exiting." << std::endl;
         exit(EXIT_SUCCESS);
 #endif
     }
 
-    // set CUDA device limits + identify device
-    static void init_gpu() {
-#ifndef CPU_DEBUG
-        cudaDeviceSetLimit(cudaLimitStackSize, 8192); // (3D slow voronoi kernel needs ~5.7KB stack/thread -> use 8KB)
-        int dev;
-        cudaGetDevice(&dev);
-        cudaDeviceProp prop;
-        cudaGetDeviceProperties(&prop, dev);
-        logging::root() << "CUDA: rank 0 on device " << dev << " (" << prop.name << "), SM " << prop.major << "."
-                        << prop.minor << std::endl;
-#endif
-    }
+    // restarting from snapshots
+    static void restart_from_snapshot(const int latest_snap_n, std::string out_dir) {
 
-    // load param.txt
-    static InputHandler load_params(int argc, char* argv[]) {
-        std::string paramFile = "./ics/param.txt";
-        if (argc > 1) { paramFile = argv[1]; } // use default or otherwise argv[1]
-
-        InputHandler input(paramFile);
-        if (!input.loadParameters()) {
-            std::cerr << "BEGRUN: Failed to load parameters. Exiting." << std::endl;
+        // is there a snapshot to restart from?
+        if (latest_snap_n < 0) {
+            std::cerr << "RESTART: Error! No snapshots found in " << out_dir
+                      << " (matching this run's rank count = " << proteus_mpi::nranks() << ")" << std::endl;
             exit(EXIT_FAILURE);
         }
-        return input;
+
+        // snapshot filepath belonging to this rank
+        const std::string suffix =
+            (proteus_mpi::nranks() > 1) ? ("." + std::to_string(proteus_mpi::rank()) + ".hdf5") : ".hdf5";
+        const std::string snap_path = out_dir + "snapshot_" + std::to_string(latest_snap_n) + suffix;
+        logging::root() << "RESTART: Loading snapshot snapshot_" << latest_snap_n
+                        << ((proteus_mpi::nranks() > 1) ? ".<rank>.hdf5" : ".hdf5") << " from " << out_dir << std::endl;
+
+        // read snapshot
+        SnapshotHeader snap;
+        if (!input.readSnapshotFile(snap_path, icData, snap)) { exit(EXIT_FAILURE); }
+
+        // does nranks equal the snapshot one?
+        if (snap.nranks != proteus_mpi::nranks()) {
+            std::cerr << "RESTART: Error! Snapshot was written with " << snap.nranks << " ranks, but this run has "
+                      << proteus_mpi::nranks() << ". Restart requires the same nranks." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
+        // does my rank equal the snapshot one?
+        if (snap.rank != proteus_mpi::rank()) {
+            std::cerr << "RESTART: Error! Snapshot file claims rank " << snap.rank << " but this rank is "
+                      << proteus_mpi::rank() << " (filename / rank mismatch)." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
+        // read sim info from snap
+        sim.t_sim              = snap.t_sim;
+        sim.step               = snap.step;
+        sim.snap_num           = latest_snap_n + 1;
+        icData.header.n_global = snap.n_global;
+
+        // restore profiler timings from snapshot
+        if (!snap.profiler_cum.empty()) Profiler::SeedFromCumulative(snap.profiler_cum);
     }
 
-    // load initial conditions from IC file or (if restart) latest snapshot
-    static void load_initial_conditions(int argc, char* argv[]) {
+    // sim parameters from params
+    static void prepare_sim_struct() {
 
-        // is restarting from snapshots specified?
-        const int restart_flag = (argc > 2) ? std::atoi(argv[2]) : 0;
-
-        sim.t_sim    = 0.0;
-        sim.snap_num = 0;
-        sim.step     = 0;
-
-        const int         my_nranks = proteus_mpi::nranks();
-        const int         my_rank   = proteus_mpi::rank();
-        const std::string out_dir   = input.getParameter("output_directory");
-        const int         latest_n  = InputHandler::findLatestSnapshot(out_dir, my_nranks, my_rank);
-
-        if (restart_flag == 1) {
-            // restarting from snapshots
-
-            if (latest_n < 0) {
-                std::cerr << "RESTART: Error! No snapshots found in " << out_dir
-                          << " (matching this run's rank count = " << my_nranks << ")" << std::endl;
-                exit(EXIT_FAILURE);
-            }
-
-            // each rank reads its own per-rank file under multi-rank, plain filename under single-rank
-            const std::string suffix    = (my_nranks > 1) ? ("." + std::to_string(my_rank) + ".hdf5") : ".hdf5";
-            const std::string snap_path = out_dir + "snapshot_" + std::to_string(latest_n) + suffix;
-            logging::root() << "RESTART: Loading snapshot snapshot_" << latest_n
-                            << ((my_nranks > 1) ? ".<rank>.hdf5" : ".hdf5") << " from " << out_dir << std::endl;
-
-            // read snapshot
-            SnapshotHeader snap;
-            if (!input.readSnapshotFile(snap_path, icData, snap)) { exit(EXIT_FAILURE); }
-
-            // validate topology matches this run
-            if (snap.nranks != my_nranks) {
-                std::cerr << "RESTART: Error! Snapshot was written with " << snap.nranks << " ranks, but this run has "
-                          << my_nranks << ". Restart requires the same nranks." << std::endl;
-                exit(EXIT_FAILURE);
-            }
-            if (snap.rank != my_rank) {
-                std::cerr << "RESTART: Error! Snapshot file claims rank " << snap.rank << " but this rank is "
-                          << my_rank << " (filename / rank mismatch)." << std::endl;
-                exit(EXIT_FAILURE);
-            }
-
-            // hand off to init_decomposition / log line
-            sim.t_sim          = snap.t_sim;
-            sim.step           = snap.step;
-            sim.snap_num       = latest_n + 1;
-            s_is_restart       = true;
-            s_restart_n_global = snap.n_global; // int64_t
-
-            // Restore profiler cumulatives from the snapshot's /header/profiler attrs
-            // (one set per rank, written by this rank's own snapshot file). Must run before
-            // any meaningful timing happens in the rest of begrun so live diffs are correct.
-            if (!snap.profiler_cum.empty()) Profiler::SeedFromCumulative(snap.profiler_cum);
-        } else {
-            // no restart: load IC.
-            // Two paths:
-            //   - USE_MPI: peek header only here; the bulk read is a parallel-HDF5 chunked read
-            //     done in init_decomposition once decomp_init has set up the brick splits.
-            //   - non-MPI: serial read of the whole file (legacy path; nranks=1 anyway).
-            s_ic_filename = input.getParameter("ic_file");
-
+        // write parameters into sim struct
+        sim.t_start      = sim.t_sim;
+        sim.t_end        = input.getParameterDouble("time_end");
+        sim.CFL          = input.getParameterDouble("CFL_frac");
+        sim.output_dt    = input.getParameterDouble("output_dt");
+        sim.t_nextoutput = sim.t_sim + sim.output_dt;
 #ifdef USE_MPI
-            hsize_t n_total = 0;
-            if (!input.readICHeader(s_ic_filename, icData.header, n_total)) { exit(EXIT_FAILURE); }
-            s_ic_n_global = (int64_t)n_total;
-#else
-            if (!input.readICFile(s_ic_filename, icData)) { exit(EXIT_FAILURE); }
+        sim.rebalance_interval     = (int)input.getParameterDouble("rebalance_interval");
+        sim.imbalance_log_interval = (int)input.getParameterDouble("imbalance_log_interval");
+        sim.imbalance_threshold    = input.getParameterDouble("imbalance_threshold");
 #endif
-
-            // refuse to silently overwrite an existing snapshot series
-            if (latest_n > 0) {
-                std::cerr << "RESTART: Stopping! Found existing snapshots in " << out_dir << " but no restart-flag."
-                          << std::endl;
-                exit(EXIT_FAILURE);
-            }
-        }
     }
 
-    // setup decomposition
-    static void init_decomposition() {
-
-        // global cell count: fresh start gets it from the IC header (peeked in load_initial_conditions),
-        // restart from the snapshot header. Fresh-start non-MPI builds fall back to icData.pos_dims[0]
-        // because the serial readICFile already loaded everything.
-        // int64 throughout — int32 overflows from ~1300^3 upward.
-        int64_t n_global;
-        if (s_is_restart) {
-            n_global = s_restart_n_global;
-        } else {
+    // load IC seeds and primitive variables into icData
+    static void load_IC_fields() {
 #ifdef USE_MPI
-            n_global = s_ic_n_global;
+
+        // evenly split n_global by rank number
+        int64_t my_lo = 0, my_hi = 0;
+        proteus_mpi::decomp_even_split(
+            icData.header.n_global, proteus_mpi::nranks(), proteus_mpi::rank(), &my_lo, &my_hi);
+        const hsize_t row_lo  = (hsize_t)my_lo;
+        const hsize_t n_local = (hsize_t)(my_hi - my_lo);
+
+        // each rank reads part of the IC
+        if (!input.readICChunkParallel(icData.header.ic_filename, icData, row_lo, n_local)) { exit(EXIT_FAILURE); }
+
+        // exch the seedpoints to the ranks where they belong
+        proteus_mpi::distribute_ic_parallel(icData, buff);
 #else
-            n_global = (int64_t)icData.pos_dims[0];
+        // read the whole file
+        if (!input.readICFile(icData.header.ic_filename, icData)) { exit(EXIT_FAILURE); }
 #endif
-        }
+        // local cell count
+        sim.n_hydro = icData.header.n_seeds;
 
-        // periodic ghost band thickness scales with mean inter-particle spacing
-        buff = (1. / pow((double)n_global, 1. / ((double)DIMENSION))) * 4;
-
-        // domain decomposition (same nranks -> same Cart layout as the snapshot was written with)
-        proteus_mpi::decomp_init(n_global, buff);
-
-        if (!s_is_restart) {
-#ifdef USE_MPI
-            // fresh start: each rank reads its evenly-split slice of the IC in parallel
-            // (collective HDF5 hyperslab), then routes cells to the owning rank via Alltoallv.
-            int64_t my_lo = 0, my_hi = 0;
-            proteus_mpi::decomp_even_split(n_global, proteus_mpi::nranks(), proteus_mpi::rank(), &my_lo, &my_hi);
-            const hsize_t row_lo  = (hsize_t)my_lo;
-            const hsize_t n_local = (hsize_t)(my_hi - my_lo);
-            if (!input.readICChunkParallel(s_ic_filename, icData, row_lo, n_local)) { exit(EXIT_FAILURE); }
-            proteus_mpi::distribute_ic_parallel(icData, buff);
-#else
-            // single-rank build: filter the (already-loaded) global IC down to this rank's brick
-            proteus_mpi::distribute_ic_local(icData, buff);
-#endif
-        }
-        // restart: each rank's icData is already its own partition, skip filtering
-
-        // local cell count owned by this rank
-        sim.n_hydro = icData.pos_dims[0];
-
-        // sanity check: sum of per-rank local counts must equal n_global (catches a missing
-        // or truncated rank file). Same pattern as distribute_ic_local's conservation check.
-        if (s_is_restart) {
+        // sanity check: sum of per-rank local counts must equal n_global
+        if (icData.header.restart_flag) {
             const long long n_global_kept = logging::sum_global((long long)sim.n_hydro);
-            if (n_global_kept != (long long)s_restart_n_global) {
+            if (n_global_kept != (long long)icData.header.n_global) {
                 std::cerr << "RESTART: FATAL cell-count mismatch — sum(per-rank n_local) = " << n_global_kept
-                          << ", expected " << s_restart_n_global << " (from snapshot header)." << std::endl;
+                          << ", expected " << icData.header.n_global << " (from snapshot header)." << std::endl;
                 exit(EXIT_FAILURE);
             }
         }
+    }
 
-        // global max n_local across ranks: sizes every per-cell buffer so the sparsest rank
-        // can still receive migrants from the densest one after a rebalance. Without this,
-        // an inhomogeneous IC overflows the receiver's max_n_local on the first rebalance.
+    // init halo and migrate for exchange
+    static void init_exch_buffers() {
+
+        // store initial max n_local across ranks
         proteus_mpi::n_local_initial_max = logging::max_global((int)sim.n_hydro);
 
-        // halo + migration buffers sized from local count
+        // init halo/migrate
         proteus_mpi::halo_init((int)sim.n_hydro, buff);
         proteus_mpi::migrate_init((int)sim.n_hydro);
     }
@@ -359,16 +296,13 @@ namespace begrun {
     // init hydro from IC + built initial voronoi mesh
     static void init_hydro_and_mesh() {
 
-        // create output directory if missing
-        output = OutputHandler(input.getParameter("output_directory"));
-        if (!output.initialize()) { exit(EXIT_FAILURE); }
-
-        // primitive variables (from IC)
+        // primitive variables (from icData)
         hydro::init_hydro();
 
-        // initial Voronoi mesh from the seed positions
+        // allocate mesh
         sim.mesh = voronoi::allocate_mesh(sim.n_hydro);
-        // dt = 0 -> initial build, no v_mesh perturbation correction to apply
+
+        // initial build
         voronoi::compute_periodic_mesh(
             sim.mesh, (POINT_TYPE*)icData.pos.data(), sim.n_hydro, sim.primvar, sim.prim_new, 0.0);
 
@@ -378,35 +312,11 @@ namespace begrun {
         if (sim.t_sim > 0.0) {
             logging::root() << "HYDRO: restarted from t = " << sim.t_sim << " (snap_num = " << sim.snap_num
                             << ", step = " << sim.step << ", nranks = " << proteus_mpi::nranks()
-                            << ", n_global = " << s_restart_n_global << ")" << std::endl;
+                            << ", n_global = " << icData.header.n_global << ")" << std::endl;
         } else {
-            logging::root() << "HYDRO: started" << std::endl;
+            logging::root() << "HYDRO: started from IC" << std::endl;
         }
-    }
-
-    // sim parameters from params
-    static void init_run_config() {
-
-        sim.t_start      = sim.t_sim;
-        sim.t_end        = input.getParameterDouble("time_end");
-        sim.CFL          = input.getParameterDouble("CFL_frac");
-        sim.output_dt    = input.getParameterDouble("output_dt");
-        sim.t_nextoutput = sim.t_sim + sim.output_dt;
-
-        if (proteus_mpi::rank() == 0) {
-            logging::root() << "BEGRUN: rebalance_interval = " << proteus_mpi::rebalance_config.rebalance_interval
-                            << ", imbalance_log_interval = " << proteus_mpi::rebalance_config.imbalance_log_interval
-                            << ", imbalance_threshold = " << proteus_mpi::rebalance_config.imbalance_threshold
-                            << std::endl;
-        }
-        // sim.step is set in load_initial_conditions (0 for fresh runs, snapshot value on restart)
-
-        // per-timestep profile log: a single profile.hdf5 shared by all ranks.
-        // Each rank writes to /rank_<N>/per_step/<TIMER> + /rank_<N>/cumulative/<TIMER>.
-        // On restart, OpenProfileLog truncates any rows past sim.step so the resumed
-        // run appends cleanly from there.
-        const std::string profile_path = input.getParameter("output_directory") + "/profile.hdf5";
-        Profiler::OpenProfileLog(profile_path, s_is_restart ? sim.step : -1);
+        print_max_memory_usage();
     }
 
     // drop the IC arrays once primvar + mesh are built from them
@@ -416,7 +326,6 @@ namespace begrun {
         std::vector<double>().swap(icData.vel);
         std::vector<double>().swap(icData.energy);
         std::vector<uint64_t>().swap(icData.global_id);
-        std::vector<hsize_t>().swap(icData.pos_dims);
     }
 
 } // namespace begrun

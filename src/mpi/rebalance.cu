@@ -12,8 +12,6 @@
 
 namespace proteus_mpi {
 
-    RebalanceConfig rebalance_config = {0, 0, 1.10};
-
 #ifdef USE_MPI
     // pre-rebalance imbalance, saved by rebalance_decide on rebalance steps
     // for rebalance_log_after_migration to print alongside the post probe.
@@ -40,8 +38,8 @@ namespace proteus_mpi {
 #endif
 
     void rebalance_imbalance_log(int step, VMesh* mesh) {
-        if (rebalance_config.imbalance_log_interval <= 0) return;
-        if (step % rebalance_config.imbalance_log_interval != 0) return;
+        if (sim.imbalance_log_interval <= 0) return;
+        if (step % sim.imbalance_log_interval != 0) return;
 #ifdef USE_MPI
         if (decomp.nranks <= 1) return;
         int       n_max;
@@ -190,9 +188,9 @@ namespace proteus_mpi {
     }
 
     bool rebalance_decide(int step, VMesh* mesh, POINT_TYPE* pts) {
-        if (rebalance_config.rebalance_interval <= 0) return false;
+        if (sim.rebalance_interval <= 0) return false;
         if (step <= 0) return false;
-        if (step % rebalance_config.rebalance_interval != 0) return false;
+        if (step % sim.rebalance_interval != 0) return false;
         if (decomp.nranks <= 1) return false;
 
         PROFILE("BALANCE");
@@ -207,7 +205,7 @@ namespace proteus_mpi {
         // gate on threshold — don't disturb a healthy decomposition. The histogram-based
         // split chooser has bucket-granularity overshoot near concentrated regions (e.g.
         // contact discontinuities), so re-splitting a near-balanced state can hurt.
-        if (pre_imbalance < rebalance_config.imbalance_threshold) {
+        if (pre_imbalance < sim.imbalance_threshold) {
             if (decomp.rank == 0) {
                 printf("DECOMP: Skipped rebalancing (below threshold, imbalance=%.2f)\n", pre_imbalance);
                 fflush(stdout);
