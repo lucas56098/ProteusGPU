@@ -139,7 +139,7 @@ namespace begrun {
         out << "Version: 0.8";
 #if defined(GIT_DIFFSTAT) && defined(GIT_COMMIT)
         out << " (commit " << GIT_COMMIT << ", " << GIT_DIFFSTAT << ")";
-#else
+#elif defined(GIT_COMMIT)
         out << " (commit " << GIT_COMMIT << ")";
 #endif
         out << "\nBuild date: " << __DATE__ << " " << __TIME__ << std::endl;
