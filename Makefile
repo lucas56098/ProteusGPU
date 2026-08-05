@@ -136,9 +136,9 @@ ifeq ($(SYSTYPE),macOS)
 # requires hdf5 installed via homebrew and g++-15 as compiler (apple clang does not support openmp...)
 # also only CPU_DEBUG works here of course.
 # Parallel-HDF5 (brew install hdf5-mpi) is required for USE_MPI builds — it provides
-# H5Pset_fapl_mpio / H5Pset_dxpl_mpio used by the parallel IC read and the per-rank
-# profile.hdf5 collective writes. Non-MPI builds use the serial hdf5 keg (still kept by
-# Homebrew under /opt/homebrew/Cellar/hdf5 even when unlinked in favour of hdf5-mpi).
+# the MPI-IO file driver used by the parallel IC read. Non-MPI builds use the serial hdf5
+# keg (still kept by Homebrew under /opt/homebrew/Cellar/hdf5 even when unlinked in
+# favour of hdf5-mpi).
 	CXX_RELEASE = g++-15
 ifeq ($(MPI_ENABLED),USE_MPI)
 	HDF5_PREFIX := /opt/homebrew/opt/hdf5-mpi
@@ -263,6 +263,12 @@ else
         MPI_MESSAGE = MPI disabled
 endif
 
+ifeq ($(PROFILING_ENABLED),ENABLE_PROFILING)
+        PROFILING_MESSAGE = timers enabled (writes profile.hdf5)
+else
+        PROFILING_MESSAGE = timers compiled out
+endif
+
 
 # ============================================================
 # Default target: build executable and print build summary
@@ -276,6 +282,7 @@ all: $(TARGET)
 	@echo "GPU: $(CUDA_MESSAGE)"
 	@echo "OpenMP: $(OPENMP_MESSAGE)"
 	@echo "MPI: $(MPI_MESSAGE)"
+	@echo "Profiling: $(PROFILING_MESSAGE)"
 	@echo "=========================================="
 ifeq ($(MPI_ENABLED),USE_MPI)
 	@echo "Run with: mpirun -np [nranks] ./$(TARGET) [param.txt] [restart flag]"

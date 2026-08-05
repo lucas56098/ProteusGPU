@@ -26,8 +26,12 @@
 //
 // The macros are RAII over a Scope/MpiScope/KernelScope; the destructor pops
 // the stack and accumulates elapsed time. Don't mix with manual Start/End.
+//
+// Without ENABLE_PROFILING every method is an inline no-op and the macros expand
+// to `(void)0`, so the call sites compile away to nothing.
 class Profiler {
   public:
+#ifdef ENABLE_PROFILING
     // CPU host wall-clock scope.
     class Scope {
       public:
@@ -104,16 +108,45 @@ class Profiler {
     // (TOTAL, HYDRO) extended to "now". One row per full-path timer, regardless
     // of kind — for cpu/mpi rows the unit is CPU µs, for gpu rows it's GPU µs.
     static std::vector<std::pair<std::string, long long>> CollectCurrent();
+#else
+    // Empty RAII types keep the scope classes usable if a call site names one
+    // directly; the macros below degrade to `(void)0` anyway.
+    struct Scope {
+        explicit Scope(const char*) {}
+    };
+    struct MpiScope {
+        explicit MpiScope(const char*) {}
+    };
+    struct KernelScope {
+        explicit KernelScope(const char*) {}
+    };
+
+    static inline void   StartTotalTimer() {}
+    static inline void   StopTotalTimer() {}
+    static inline double TotalSeconds() { return 0.0; }
+    static inline void   PrintResults() {}
+    static inline void   OpenProfileLog(const std::string&, int) {}
+    static inline void   CloseProfileLog() {}
+    static inline void   LogTimestep(int) {}
+    static inline void   SeedFromCumulative(const std::unordered_map<std::string, double>&) {}
+    static inline std::unordered_map<std::string, double> CurrentCumulative() { return {}; }
+#endif // ENABLE_PROFILING
 };
 
 // Macros — each one declares a uniquely-named RAII object so multiple PROFILE
 // lines can live in the same scope. __COUNTER__ would also work; __LINE__ is
 // enough and the diagnostics are kinder.
+#ifdef ENABLE_PROFILING
 #define PROFILE_CAT_(a, b) a##b
 #define PROFILE_CAT(a, b) PROFILE_CAT_(a, b)
 #define PROFILE(name) Profiler::Scope PROFILE_CAT(_prof_scope_, __LINE__)(name)
 #define PROFILE_MPI(name) Profiler::MpiScope PROFILE_CAT(_prof_mscope_, __LINE__)(name)
 #define PROFILE_KERNEL(name) Profiler::KernelScope PROFILE_CAT(_prof_kscope_, __LINE__)(name)
+#else
+#define PROFILE(name) ((void)0)
+#define PROFILE_MPI(name) ((void)0)
+#define PROFILE_KERNEL(name) ((void)0)
+#endif
 
 inline std::string format_hms(double seconds) {
     if (seconds < 0.0) { seconds = 0.0; }

@@ -13,6 +13,8 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#ifdef ENABLE_PROFILING
+
 // Per-rank profile log written as a single HDF5 file. Layout:
 //   /rank_<N>/per_step/<FULL_PATH>     1D extensible double, index i = step i, value = diff seconds
 //   /rank_<N>/cumulative/<FULL_PATH>   1D extensible double, index i = step i, value = cum seconds
@@ -925,6 +927,8 @@ void Profiler::LogTimestep(int step) {
     // flush each step so an MPI_Abort on any rank still leaves a readable file
     H5Fflush(s_file, H5F_SCOPE_GLOBAL);
 }
+
+#endif // ENABLE_PROFILING
 
 // ============================================================
 // Peak memory dump (unchanged)

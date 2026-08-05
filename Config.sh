@@ -11,7 +11,8 @@ dim_3D                              # run in 3D mode
 #CUDA                                # run in GPU mode
 CPU_DEBUG                          # run in CPU mode
 
-#CUDA_PROFILING                      # enable profiling of GPU kernels
+#ENABLE_PROFILING                    # enable the hierarchical timers and profile.hdf5 (off = compiled away)
+#CUDA_PROFILING                      # enable profiling of GPU kernels (needs ENABLE_PROFILING)
 
 ################################################################
 # hydro
