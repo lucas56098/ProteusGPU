@@ -11,9 +11,11 @@
 #include "voronoi.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -42,12 +44,7 @@ namespace voronoi {
     // ---- forward declarations ----
     static BuildStats build_mesh_growing_halo(
         VMesh* mesh, POINT_TYPE* pts_data, hsize_t n_hydro, hydro::primvars* primvar, hydro::primvars* primvar_aux);
-    static void cpu_perturb_and_rebuild(VMesh*           mesh,
-                                        POINT_TYPE*      pts_data,
-                                        hydro::primvars* primvar,
-                                        hydro::primvars* primvar_aux,
-                                        BuildStats&      stats,
-                                        double           dt);
+    static void cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt);
     static void exchange_used_ghost_primvars(VMesh* mesh, hydro::primvars* primvar);
     static void adapt_halo_width(const BuildStats& stats);
     static void print_step_summary(const BuildStats& stats);
@@ -67,7 +64,6 @@ namespace voronoi {
     static int     count_local_beyond_data_cells(const VMesh* mesh);
     static void    sum_ints_across_ranks(const int* local, int* global, int n);
     static void    check_ghost_count(hsize_t n_ghosts, hsize_t max_ghosts);
-    static void    copy_perturbed_seeds_back(const VMesh* mesh, POINT_TYPE* pts_data);
     static int     default_starting_halo_width();
     static void    set_data_extent_for_build(VMesh* mesh, int W, bool have_mpi);
 
@@ -100,7 +96,7 @@ namespace voronoi {
         // perturb-and-rebuild fallback for cells that still failed (on any rank)
         if (stats.global_failed_cells > 0) {
             PROFILE("PERTURB");
-            cpu_perturb_and_rebuild(mesh, pts_data, primvar, primvar_aux, stats, dt);
+            cpu_perturb_and_repair(mesh, stats, dt);
         }
 
         // refresh used-ghost primvars, remember halo width, print summary
@@ -127,7 +123,7 @@ namespace voronoi {
         stats.have_mpi_neighbors = have_mpi;
         stats.final_halo_width   = have_mpi ? std::max(default_starting_halo_width(), s_last_W) : 0;
 
-        int prev_beyond = -1; // uncertified count from the previous iteration (no-progress backstop)
+        int prev_beyond = INT_MAX; // uncertified count from the previous iteration (no-progress backstop)
         for (int iter = 0; iter < MAX_WIDEN_ITERS; iter++) {
             stats.widen_iters_used = iter;
 
@@ -155,7 +151,7 @@ namespace voronoi {
             if (iter == 0 && have_mpi) remap_exports_and_pts(mesh, pts_data, n_hydro);
 
             // "converged" only means no cell is halo-limited; it says nothing about overflows,
-            // degeneracies or K-limited cells. Those still have to reach cpu_perturb_and_rebuild,
+            // degeneracies or K-limited cells. Those still have to reach cpu_perturb_and_repair,
             // which fires off stats.local_failed_cells — so record it on every exit path.
             int        local_failed = 0, global_beyond = 0;
             const bool converged = widen_converged_across_ranks(mesh, have_mpi, &local_failed, &global_beyond);
@@ -207,40 +203,69 @@ namespace voronoi {
         return stats; // unreachable
     }
 
-    // CPU perturbation cascade: rebuild failed cells with seed perturbation; if any rank
-    // perturbed, rebuild the mesh (perturbation invalidates neighbour-rank MPI ghosts)
-    static void cpu_perturb_and_rebuild(VMesh*           mesh,
-                                        POINT_TYPE*      pts_data,
-                                        hydro::primvars* primvar,
-                                        hydro::primvars* primvar_aux,
-                                        BuildStats&      stats,
-                                        double           dt) {
-        constexpr int MAX_CASCADE_ITERS = 4;
+    // CPU perturbation cascade with targeted cross-rank repair.
+    //
+    // Each round: (1) this rank repairs its own failed cells (perturb ladder + local symmetry
+    // cascade); (2) one fused Allreduce establishes whether any moved seed anywhere is
+    // exported, i.e. some other rank holds a ghost copy of it; (3) if so, exactly those
+    // positions travel to exactly the ranks holding a copy (frozen full-halo layout — same
+    // slots, same counts, no re-export), and each receiver rebuilds exactly the cells the
+    // moved ghosts can influence, certified per cell by the stored security radius. A repair
+    // can itself be forced to perturb further cells; those become the next round's work.
+    //
+    // This replaces a full cross-rank mesh rebuild per round (ghost regen + seed exchange +
+    // KNN sort + all n_hydro cells — measured at 0.6 s/step/rank, 6.6% of runtime, on the
+    // 2-node 360^3 KH benchmark) with work proportional to the handful of cells that
+    // actually saw a moved seed. Seeds move at most by the perturbation delta, so pts_data
+    // staleness is not an issue: the next step re-derives everything from mesh->seeds, which
+    // every rebuild path keeps current at emit time.
+    static void cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt) {
+        // Rounds are cheap now (no full rebuild), so the cap is generous; a chain that deep
+        // means pathological geometry and gets reported loudly below.
+        constexpr int MAX_CASCADE_ITERS = 8;
         const bool    have_mpi          = stats.have_mpi_neighbors;
 
+        // seeds moved on this rank whose cross-rank effects are not yet resolved
+        std::vector<int> pending;
+
         for (int iter = 0; iter < MAX_CASCADE_ITERS; iter++) {
-            // re-read scratch_pts / ghost_ids each iter — see widen-loop comment.
-            POINT_TYPE* pts          = mesh->scratch_pts;
-            hsize_t*    original_ids = mesh->ghost_ids;
-            // attempt local CPU rebuild on this rank's failed cells
+            // local repair of this rank's failed cells; appends every permanently perturbed
+            // cell (ladder + symmetry cascade) to `pending`. From iter 1 on this is a cheap
+            // status sweep: the targeted repair below leaves no failed cells behind, so it
+            // only fires if something regressed — defence in depth at one kernel's cost.
             int       local_num_failed = 0;
-            const int local_perturbed  = cpu_fallback_failed_cells(mesh, &local_num_failed, dt);
+            const int local_perturbed  = cpu_fallback_failed_cells(mesh, &local_num_failed, dt, &pending);
             stats.cells_perturbed_total += local_perturbed;
 
-            // converged across all ranks: no perturbation anywhere.
-            // Fuse the perturbed + failed counts into one Allreduce so the per-iter
-            // global-fallback diagnostic is free of an extra collective.
-            int local[2]  = {local_perturbed, local_num_failed};
-            int global[2] = {local_perturbed, local_num_failed};
-            if (have_mpi) sum_ints_across_ranks(local, global, 2);
-            const int global_perturbed  = global[0];
+            // dedupe + deterministic order (a cell can be re-perturbed across rounds)
+            std::sort(pending.begin(), pending.end());
+            pending.erase(std::unique(pending.begin(), pending.end()), pending.end());
+
+            // Which pending seeds does some other rank hold a copy of? Scanning the frozen
+            // export layout is ground truth — unlike a position-band test it cannot disagree
+            // with the layout the ghosts were actually built from (a max-rung perturbation
+            // can cross a decomposition bucket, which would fool the band test both ways).
+            // A seed with no ghost copy anywhere needs nothing: the local symmetry cascade
+            // already restored consistency around it.
+            proteus_mpi::MovedExportLists lists;
+            const int                     local_exported =
+                have_mpi ? proteus_mpi::halo_collect_moved_exports(mesh, pending, &lists) : 0;
+
+            // one fused Allreduce for convergence, diagnostics and the exported gate
+            int local[3]  = {(int)pending.size(), local_num_failed, local_exported};
+            int global[3] = {local[0], local[1], local[2]};
+            if (have_mpi) sum_ints_across_ranks(local, global, 3);
+            const int global_pending    = global[0];
             const int global_num_failed = global[1];
+            const int global_exported   = global[2];
 
             if (global_num_failed > 0) {
                 logging::root() << "VORONOI: fallback recovered " << global_num_failed << " cells globally (iter "
                                 << iter << ")." << std::endl;
             }
-            if (global_perturbed == 0) {
+
+            // converged: no seed anywhere moved without its ghost copies being repaired
+            if (global_pending == 0) {
                 stats.perturb_loop_iters_used = iter;
                 if (iter > 0)
                     logging::root() << "VORONOI: perturbation cascade converged in " << iter << " round(s)."
@@ -249,28 +274,40 @@ namespace voronoi {
             }
             stats.perturb_loop_iters_used = iter + 1;
 
-            // last iter or single rank: log and return
-            if (iter == MAX_CASCADE_ITERS - 1) {
-                logging::root() << "VORONOI: perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << " with "
-                                << global_perturbed << " cells perturbed in last round." << std::endl;
-                return;
-            }
-            if (!have_mpi) return;
+            // every moved seed is interior to its own rank (single rank always lands here):
+            // the local symmetry cascade already restored consistency, nothing to ship
+            if (global_exported == 0) return;
 
-            // push perturbed seeds back into pts_data, regen ghosts, exchange, rebuild
-            copy_perturbed_seeds_back(mesh, pts_data);
-            const hsize_t n_ghosts = regenerate_periodic_ghosts(mesh->n_hydro, pts_data, pts, original_ids, buff);
-            const hsize_t n_mpi    = exchange_seeds_across_ranks(
-                mesh, pts_data, pts, original_ids, mesh->n_hydro, n_ghosts, stats.final_halo_width);
-            mesh->n_mpi_ghosts   = proteus_mpi::halo.n_mpi_ghosts;
-            set_data_extent_for_build(mesh, stats.final_halo_width, have_mpi);
-            compute_mesh(mesh,
-                         pts,
-                         (int)(mesh->n_hydro + n_ghosts + n_mpi),
-                         primvar,
-                         primvar_aux,
-                         stats.widen_iters_used + 1 + iter);
+            // ship exactly the moved positions to exactly the ranks holding a copy, and
+            // repair around whatever arrives. Collective: every rank participates, with or
+            // without moved seeds of its own. The repair's own perturbations (if any) become
+            // the next round's pending set.
+            std::vector<proteus_mpi::MovedSeed> received;
+            {
+                PROFILE("EXCHANGE");
+                proteus_mpi::halo_exchange_moved_seeds(lists, &received);
+            }
+            pending.clear();
+            {
+                PROFILE("REPAIR");
+                repair_cells_for_moved_ghosts(mesh, received, dt, &pending);
+            }
         }
+
+        // MAX_CASCADE_ITERS exhausted. The final repair round ran, but anything IT perturbed
+        // was never tested against the export layout — if such a seed is exported, neighbour
+        // ranks keep a stale ghost position for one step. Local scan only (no collective:
+        // every rank exits this loop together, and the warning is per-rank information).
+        if (!pending.empty()) {
+            proteus_mpi::MovedExportLists tail;
+            const int                     tail_exported = proteus_mpi::halo_collect_moved_exports(mesh, pending, &tail);
+            if (tail_exported > 0) {
+                std::cerr << "VORONOI: WARNING perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << " with "
+                          << tail_exported << " exported seed(s) moved in the final repair round; neighbour "
+                          << "ranks keep a stale ghost position for one step." << std::endl;
+            }
+        }
+        logging::root() << "VORONOI: perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << "." << std::endl;
     }
 
     // refresh primvars (+ v_mesh if moving) on the subset of MPI ghosts that appear as
@@ -281,6 +318,9 @@ namespace voronoi {
         proteus_mpi::halo_exchange_primvars(mesh, primvar);
 #ifdef MOVING_MESH
         proteus_mpi::halo_exchange_v_mesh(mesh);
+#endif
+#ifdef VOL_REGULARIZE
+        proteus_mpi::halo_exchange_volumes(mesh);
 #endif
     }
 
@@ -478,17 +518,6 @@ namespace voronoi {
             std::cerr << "VORONOI: Error! ghost count " << n_ghosts << " exceeds estimated max " << max_ghosts
                       << ". Distribution is highly non-uniform." << std::endl;
             exit(EXIT_FAILURE);
-        }
-    }
-
-    // push the perturbed seed positions from mesh->seeds back into pts_data
-    static void copy_perturbed_seeds_back(const VMesh* mesh, POINT_TYPE* pts_data) {
-        for (hsize_t k = 0; k < mesh->n_hydro; k++) {
-            pts_data[k].x = mesh->seeds[k].x;
-            pts_data[k].y = mesh->seeds[k].y;
-#ifdef dim_3D
-            pts_data[k].z = mesh->seeds[k].z;
-#endif
         }
     }
 

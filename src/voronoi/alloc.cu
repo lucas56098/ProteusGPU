@@ -29,6 +29,27 @@ namespace voronoi {
         mesh->volumes        = gpu_calloc<double>(ext);
         mesh->face_counts    = gpu_calloc<hsize_t>(ext);
         mesh->face_ptr       = gpu_calloc<hsize_t>(ext);
+        // reference cell for the size-equalizing drift. Default: the mean cell (V_ref = 1/N_global,
+        // unit box). If the IC declares `vol_ref_cell_size` (the finest designed cell size, code
+        // units), use that instead so a statically-refined IC isn't de-refined by the drift — it then
+        // only fires on cells crushed below the finest level. For a uniform IC the two are identical.
+        double V_ref = 1.0 / (double)icData.header.n_global;
+#ifdef VOL_REGULARIZE
+        if (input.hasParameter("vol_ref_cell_size")) {
+            const double vs = input.getParameterDouble("vol_ref_cell_size");
+#ifdef dim_2D
+            V_ref = vs * vs;
+#else
+            V_ref = vs * vs * vs;
+#endif
+        }
+#endif
+#ifdef dim_2D
+        mesh->Ri_ref = sqrt(V_ref / PI);
+#else
+        mesh->Ri_ref = cbrt(3.0 * V_ref / (4.0 * PI));
+#endif
+
         mesh->cell_status = gpu_alloc<Status>(ext);
 #ifdef USE_MPI
         // only the MPI perturb repair reads this; on single-rank builds the array would be
@@ -52,6 +73,9 @@ namespace voronoi {
         const int gc = proteus_mpi::n_mpi_capacity;
         if (gc > 0) {
             mesh->seeds_g = gpu_alloc<double3>(gc);
+#ifdef VOL_REGULARIZE
+            mesh->volumes_g = gpu_alloc<double>(gc);
+#endif
 #ifdef MOVING_MESH
             mesh->v_mesh_g = gpu_alloc<POINT_TYPE>(gc);
 #endif
@@ -61,6 +85,9 @@ namespace voronoi {
 #endif
         } else {
             mesh->seeds_g = nullptr;
+#ifdef VOL_REGULARIZE
+            mesh->volumes_g = nullptr;
+#endif
 #ifdef MOVING_MESH
             mesh->v_mesh_g = nullptr;
 #endif
@@ -151,6 +178,9 @@ namespace voronoi {
         gpu_free(mesh->scratch_move);
         gpu_free(mesh->d_real_counter);
         if (mesh->seeds_g) gpu_free(mesh->seeds_g);
+#ifdef VOL_REGULARIZE
+        if (mesh->volumes_g) gpu_free(mesh->volumes_g);
+#endif
 #ifdef MOVING_MESH
         if (mesh->v_mesh_g) gpu_free(mesh->v_mesh_g);
 #endif
@@ -162,6 +192,10 @@ namespace voronoi {
     void mesh_grow_ghosts(VMesh* mesh, int new_cap) {
         if (mesh->seeds_g) gpu_free(mesh->seeds_g);
         mesh->seeds_g = (new_cap > 0) ? gpu_alloc<double3>(new_cap) : nullptr;
+#ifdef VOL_REGULARIZE
+        if (mesh->volumes_g) gpu_free(mesh->volumes_g);
+        mesh->volumes_g = (new_cap > 0) ? gpu_alloc<double>(new_cap) : nullptr;
+#endif
 #ifdef MOVING_MESH
         if (mesh->v_mesh_g) gpu_free(mesh->v_mesh_g);
         mesh->v_mesh_g = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;

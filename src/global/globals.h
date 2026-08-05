@@ -76,6 +76,12 @@
 #define _BIG_MAX_T_ 2048
 #endif
 
+// size-equalizing mesh drift (VOL_REGULARIZE): fraction of the local signal speed the
+// drift may use when a cell is smaller than the reference size
+#ifndef _VOL_SHAPING_SPEED_
+#define _VOL_SHAPING_SPEED_ 0.7
+#endif
+
 // GPU kernel block sizes
 #ifndef _VORO_BLOCK_SIZE_
 #define _VORO_BLOCK_SIZE_ 64
@@ -159,6 +165,7 @@ extern double        buff; // buffer for the periodic bc (box will be 1 + 2*buff
 constexpr double gamma_eos         = (double)_GAMMA_EOS_;
 constexpr double CellShapingSpeed  = (double)_CELL_SHAPING_SPEED_;
 constexpr double CellShapingFactor = (double)_CELL_SHAPING_FACTOR_;
+constexpr double VolShapingSpeed   = (double)_VOL_SHAPING_SPEED_;
 constexpr double PI                = 3.14159265358979323846;
 
 #endif // GLOBALS_H

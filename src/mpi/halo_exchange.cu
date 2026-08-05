@@ -81,6 +81,22 @@ kernel_unpack_v_mesh(int n_recv, const int* used_to_full_slot, const POINT_TYPE*
 }
 #endif // MOVING_MESH
 
+#ifdef VOL_REGULARIZE
+GLOBAL static void
+kernel_pack_vol(int total_send, const int* used_export_indices, const double* volumes, double* sendbuf) {
+    int s = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s >= total_send) return;
+    pack::pack_vol_body(s, used_export_indices, volumes, sendbuf);
+}
+
+GLOBAL static void
+kernel_unpack_vol(int n_recv, const int* used_to_full_slot, const double* recvbuf, double* volumes_g) {
+    int slot = blockIdx.x * blockDim.x + threadIdx.x;
+    if (slot >= n_recv) return;
+    pack::unpack_vol_body(slot, used_to_full_slot, recvbuf, volumes_g);
+}
+#endif // VOL_REGULARIZE
+
 // Small managed staging buffer holding per-direction counts the is_outer_layer
 // kernel needs (recv_n_outer, ghost_offset (n+1 entries), recv_count). Lazily
 // allocated on first use; freed in halo_free.
@@ -396,3 +412,190 @@ void halo_dt_allreduce(double* dt) {
     (void)dt;
 #endif
 }
+
+// Scan the frozen export layout for slots shipping one of `moved_ks`. Positions are read
+// from mesh->seeds (the fallback rewrites them at emit, so they hold the post-perturbation
+// values) and pre-shifted per direction exactly like pack_seed_body. Cost is one pass over
+// the export list with a hash lookup per slot — a few ms at worst, paid only on the rare
+// steps where a perturbation happened at all.
+int halo_collect_moved_exports(const VMesh* mesh, const std::vector<int>& moved_ks, MovedExportLists* lists) {
+    for (int n = 0; n < HALO_MAX_NEIGHBORS; n++) {
+        lists->js[n].clear();
+        lists->pos[n].clear();
+    }
+    if (halo.n_neighbors == 0 || moved_ks.empty()) return 0;
+
+#ifdef USE_MPI
+    const std::unordered_set<int> moved(moved_ks.begin(), moved_ks.end());
+    std::unordered_set<int>       exported;
+
+    const int total_send = halo.send_offset[halo.n_neighbors];
+    for (int s = 0; s < total_send; s++) {
+        const int k = halo.export_indices[s];
+        if (!moved.count(k)) continue;
+        const int n = (int)halo.dir_of_slot[s];
+
+        POINT_TYPE p;
+        p.x = mesh->seeds[k].x + halo.neighbor_shift[n][0];
+        p.y = mesh->seeds[k].y + halo.neighbor_shift[n][1];
+#ifdef dim_3D
+        p.z = mesh->seeds[k].z + halo.neighbor_shift[n][2];
+#endif
+        lists->js[n].push_back(s - halo.send_offset[n]);
+        lists->pos[n].push_back(p);
+        exported.insert(k);
+    }
+    return (int)exported.size();
+#else
+    (void)mesh;
+    return 0;
+#endif
+}
+
+// Counts handshake, then slot-offset + position payloads per neighbour, all requests in one
+// Waitall. Buffers are plain host vectors: the payload is a handful of entries on the rare
+// repair rounds, so there is nothing for GPU-aware MPI to win here and no sync_before/after
+// wrappers are needed.
+void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedSeed>* received) {
+    received->clear();
+    if (halo.n_neighbors == 0) return;
+
+#ifdef USE_MPI
+    const int nn = halo.n_neighbors;
+
+    // phase 1: per-neighbour counts (same pattern as exchange_send_recv_counts)
+    int sendcnt[HALO_MAX_NEIGHBORS] = {0};
+    int recvcnt[HALO_MAX_NEIGHBORS] = {0};
+    for (int n = 0; n < nn; n++)
+        sendcnt[n] = (int)lists.js[n].size();
+
+    if (halo.use_neighbor_coll) {
+        MPI_Neighbor_alltoall(sendcnt, 1, MPI_INT, recvcnt, 1, MPI_INT, halo.graph_comm);
+    } else {
+        MPI_Request reqs[2 * HALO_MAX_NEIGHBORS];
+        int         n_reqs = 0;
+        for (int n = 0; n < nn; n++) {
+            const int dx   = halo.neighbor_dirs[n][0];
+            const int dy   = halo.neighbor_dirs[n][1];
+            const int dz   = halo.neighbor_dirs[n][2];
+            const int peer = halo.neighbor_ranks[n];
+            MPI_Isend(&sendcnt[n], 1, MPI_INT, peer, msg_tag(dx, dy, dz, MSG_MOVED_COUNT), decomp.cart_comm,
+                      &reqs[n_reqs++]);
+            MPI_Irecv(&recvcnt[n], 1, MPI_INT, peer, msg_tag(-dx, -dy, -dz, MSG_MOVED_COUNT), decomp.cart_comm,
+                      &reqs[n_reqs++]);
+        }
+        MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
+    }
+
+    // phase 2: payloads. Point-to-point unconditionally — the neighbour-collective path
+    // would need flattened displacement arrays for a message of a few dozen bytes.
+    std::vector<int>        recv_js[HALO_MAX_NEIGHBORS];
+    std::vector<POINT_TYPE> recv_pos[HALO_MAX_NEIGHBORS];
+    {
+        PROFILE_MPI("WAIT");
+        MPI_Request reqs[4 * HALO_MAX_NEIGHBORS];
+        int         n_reqs = 0;
+        for (int n = 0; n < nn; n++) {
+            const int dx   = halo.neighbor_dirs[n][0];
+            const int dy   = halo.neighbor_dirs[n][1];
+            const int dz   = halo.neighbor_dirs[n][2];
+            const int peer = halo.neighbor_ranks[n];
+            if (sendcnt[n] > 0) {
+                MPI_Isend(lists.js[n].data(), sendcnt[n], MPI_INT, peer, msg_tag(dx, dy, dz, MSG_MOVED_SLOT),
+                          decomp.cart_comm, &reqs[n_reqs++]);
+                MPI_Isend(lists.pos[n].data(), sendcnt[n], halo.mpi_point_t, peer,
+                          msg_tag(dx, dy, dz, MSG_MOVED_POS), decomp.cart_comm, &reqs[n_reqs++]);
+            }
+            if (recvcnt[n] > 0) {
+                recv_js[n].resize(recvcnt[n]);
+                recv_pos[n].resize(recvcnt[n]);
+                MPI_Irecv(recv_js[n].data(), recvcnt[n], MPI_INT, peer, msg_tag(-dx, -dy, -dz, MSG_MOVED_SLOT),
+                          decomp.cart_comm, &reqs[n_reqs++]);
+                MPI_Irecv(recv_pos[n].data(), recvcnt[n], halo.mpi_point_t, peer,
+                          msg_tag(-dx, -dy, -dz, MSG_MOVED_POS), decomp.cart_comm, &reqs[n_reqs++]);
+            }
+        }
+        if (n_reqs > 0) MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
+    }
+
+    // unpack: slot offset j within neighbour n's receive range -> full ghost slot
+    for (int n = 0; n < nn; n++) {
+        for (int i = 0; i < recvcnt[n]; i++) {
+            const int j = recv_js[n][i];
+            if (j < 0 || j >= halo.recv_count[n]) {
+                exit_failure("HALO: moved-seed slot offset %d out of range [0, %d) for neighbour %d\n", j,
+                             halo.recv_count[n], n);
+            }
+            MovedSeed ms;
+            ms.pos        = recv_pos[n][i];
+            ms.ghost_slot = halo.ghost_offset[n] + j;
+            received->push_back(ms);
+        }
+    }
+#else
+    (void)lists;
+#endif
+}
+
+#ifdef VOL_REGULARIZE
+void halo_exchange_volumes(VMesh* mesh) {
+#ifndef USE_MPI
+    (void)mesh;
+    return;
+#else
+    if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
+    if (!halo.used_subset_ready) return;
+
+    PROFILE("HALO_VOL");
+    const int total_send = halo.n_used_send;
+    const int n_recv     = halo.n_used_recv;
+
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (total_send + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("PACK");
+            kernel_pack_vol<<<blocks, tpb>>>(total_send, halo.used_export_indices, mesh->volumes, halo.sendbuf_vol);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("PACK");
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (int s = 0; s < total_send; s++) {
+            pack::pack_vol_body(s, halo.used_export_indices, mesh->volumes, halo.sendbuf_vol);
+        }
+#endif
+    }
+
+    {
+        PROFILE_MPI("WAIT");
+        mpi_sync_before_send(halo.sendbuf_vol, sizeof(double) * (size_t)total_send);
+        exchange_used_subset(halo.sendbuf_vol, halo.recvbuf_vol, MPI_DOUBLE, MSG_VOL);
+        mpi_sync_after_recv(halo.recvbuf_vol, sizeof(double) * (size_t)n_recv);
+    }
+
+    {
+#ifndef CPU_DEBUG
+        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
+        const int blocks = (n_recv + tpb - 1) / tpb;
+        {
+            PROFILE_KERNEL("UNPACK");
+            kernel_unpack_vol<<<blocks, tpb>>>(n_recv, halo.used_to_full_slot, halo.recvbuf_vol, mesh->volumes_g);
+        }
+        GPU_SYNC();
+#else
+        PROFILE("UNPACK");
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (int slot = 0; slot < n_recv; slot++) {
+            pack::unpack_vol_body(slot, halo.used_to_full_slot, halo.recvbuf_vol, mesh->volumes_g);
+        }
+#endif
+    }
+#endif
+}
+#endif // VOL_REGULARIZE

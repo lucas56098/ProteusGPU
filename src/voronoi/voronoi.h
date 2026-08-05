@@ -53,6 +53,10 @@ struct VMesh {
     // there, and the array would cost HBM the single-rank runs do not have to spare.
     double* security_d2;
 
+#ifdef VOL_REGULARIZE
+    double* volumes_g; // ghost cell volumes, populated by halo_exchange_volumes
+#endif
+
     // MPI ghost SoA storage (size proteus_mpi::n_mpi_capacity). seeds_g[slot] is the
     // ghost cell's seed position; v_mesh_g[slot] its mesh velocity. Populated by
     // halo_exchange_seeds and halo_exchange_v_mesh. nullptr on single-rank.
@@ -91,6 +95,10 @@ struct VMesh {
     POINT_TYPE* scratch_move; // post-move seed buffer;        size n_hydro
 
     int* d_real_counter; // build_index_maps atomic counter, size 1
+
+    // effective radius of the mean-volume cell (V_ref = 1/N_global, unit box); reference
+    // for the size-equalizing mesh drift. Set once in allocate_mesh.
+    double Ri_ref;
 
     // periodic-buffer width: bounding box covers [-buff, 1+buff]^d; reals stay in [0, 1]^d
     double buff;
@@ -169,6 +177,13 @@ HD inline double3 get_seed_at(int k, int n_hydro, const VMesh* mesh) {
 HD inline POINT_TYPE get_vmesh_at(int k, int n_hydro, const VMesh* mesh) {
     return (k < n_hydro) ? mesh->v_mesh[k] : mesh->v_mesh_g[k - n_hydro];
 }
+
+#ifdef VOL_REGULARIZE
+// ghost-aware cell-volume read; neighbours in a face loop may be MPI ghosts (>= n_hydro).
+HD inline double get_volume_at(int k, int n_hydro, const VMesh* mesh) {
+    return (k < n_hydro) ? mesh->volumes[k] : mesh->volumes_g[k - n_hydro];
+}
+#endif
 #endif
 
 // ghost-aware read: k may be a neighbor at >= n_hydro; falls back to primvar->*_g[].

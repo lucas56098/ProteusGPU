@@ -86,6 +86,9 @@ namespace voronoi {
         // KNN spatial sort over the augmented seed buffer
         {
             PROFILE("KNN_PREP");
+            // anchor the KNN grid to this rank's current extent (W/brick already set by
+            // set_data_extent_for_build) so cell occupancy stays ~3 pts/cell at any rank count
+            knn::set_local_extent(mesh->knn, mesh->data_lo, mesh->data_hi);
             knn::prepare(mesh->knn, (const POINT_TYPE*)pts_data, n_total);
         }
 

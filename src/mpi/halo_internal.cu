@@ -158,6 +158,12 @@ enum HaloMsgKind {
     MSG_GRAD        = 3,
     MSG_V_MESH      = 4,
     MSG_USED_BITMAP = 5,
+    MSG_VOL         = 6,
+    // targeted moved-seed exchange (perturb cascade repair): per-neighbour count,
+    // then slot-offset + position payloads
+    MSG_MOVED_COUNT = 7,
+    MSG_MOVED_SLOT  = 8,
+    MSG_MOVED_POS   = 9,
 };
 
 // (dx,dy,dz) -> [1, 27]

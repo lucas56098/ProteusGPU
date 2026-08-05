@@ -92,6 +92,10 @@ void halo_free() {
     if (halo.recvbuf_v_mesh) gpu_free(halo.recvbuf_v_mesh);
     if (halo.sendbuf_grad) gpu_free(halo.sendbuf_grad);
     if (halo.recvbuf_grad) gpu_free(halo.recvbuf_grad);
+#ifdef VOL_REGULARIZE
+    if (halo.sendbuf_vol) gpu_free(halo.sendbuf_vol);
+    if (halo.recvbuf_vol) gpu_free(halo.recvbuf_vol);
+#endif
     if (halo.is_outer_layer) gpu_free(halo.is_outer_layer);
     if (halo.neighbor_shift_flat) gpu_free(halo.neighbor_shift_flat);
 
@@ -210,6 +214,10 @@ static void free_halo_buffers() {
     if (halo.recvbuf_v_mesh) gpu_free(halo.recvbuf_v_mesh);
     if (halo.sendbuf_grad) gpu_free(halo.sendbuf_grad);
     if (halo.recvbuf_grad) gpu_free(halo.recvbuf_grad);
+#ifdef VOL_REGULARIZE
+    if (halo.sendbuf_vol) gpu_free(halo.sendbuf_vol);
+    if (halo.recvbuf_vol) gpu_free(halo.recvbuf_vol);
+#endif
     if (halo.is_outer_layer) gpu_free(halo.is_outer_layer);
 }
 
@@ -231,6 +239,10 @@ static void allocate_halo_buffers(int n_capacity) {
     const int grad_components = 3 + DIMENSION;
     halo.sendbuf_grad         = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity * grad_components);
     halo.recvbuf_grad         = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity * grad_components);
+#ifdef VOL_REGULARIZE
+    halo.sendbuf_vol = (double*)gpu_malloc(sizeof(double) * n_capacity);
+    halo.recvbuf_vol = (double*)gpu_malloc(sizeof(double) * n_capacity);
+#endif
 
     halo.is_outer_layer = (unsigned char*)gpu_malloc(sizeof(unsigned char) * n_capacity);
 }

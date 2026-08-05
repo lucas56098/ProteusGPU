@@ -58,3 +58,10 @@ USE_OPENMP                          # enable multithreading on CPU (uses all ava
 # wide CPU-fallback tier: 32-bit indices, used when a cell overflows the 8-bit limits above
 #_BIG_MAX_P_=1024                    # max clipping planes per cell, wide tier (default 1024)
 #_BIG_MAX_T_=2048                    # max triangles per cell, wide tier (default 2048)
+
+################################################################
+# mesh regularization
+################################################################
+
+#VOL_REGULARIZE=1                    # size-equalizing drift: threshold in Ri_ref/Ri before it engages
+#_VOL_SHAPING_SPEED_=0.7             # drift speed as a fraction of max(c_s, |v_gas|) (default 0.7)

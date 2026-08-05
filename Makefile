@@ -335,7 +335,7 @@ $(BUILD_DIR)/begrun.o: $(BEGRUN_DIR)/begrun.cu $(BEGRUN_DIR)/begrun.h | $(BUILD_
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # voronoi mesh construction
-$(BUILD_DIR)/voronoi.o: $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/voronoi.h $(VORONOI_DIR)/internal.h $(VORONOI_DIR)/alloc.cu $(VORONOI_DIR)/build.cu $(VORONOI_DIR)/cell.cu $(VORONOI_DIR)/cell.h $(VORONOI_DIR)/fallback.cu $(VORONOI_DIR)/geometry.cu $(VORONOI_DIR)/geometry.h $(VORONOI_DIR)/ghosts.cu | $(BUILD_DIR)
+$(BUILD_DIR)/voronoi.o: $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/voronoi.h $(VORONOI_DIR)/internal.h $(VORONOI_DIR)/alloc.cu $(VORONOI_DIR)/build.cu $(VORONOI_DIR)/cell.cu $(VORONOI_DIR)/cell.h $(VORONOI_DIR)/fallback.cu $(VORONOI_DIR)/geometry.cu $(VORONOI_DIR)/geometry.h $(VORONOI_DIR)/ghosts.cu $(MPI_DIR)/halo.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/moving.o: $(VORONOI_DIR)/moving.cu $(VORONOI_DIR)/voronoi.h | $(BUILD_DIR)

@@ -11,10 +11,10 @@ namespace knn {
 
 #ifndef CPU_DEBUG
     // kernels
-    GLOBAL void kernel_count_cells(const POINT_TYPE*, int, int, double, double, int*);
+    GLOBAL void kernel_count_cells(const POINT_TYPE*, int, int, const double*, double, int*);
     GLOBAL void kernel_compute_ptrs(int*, int*, int*, int);
-    GLOBAL void
-    kernel_scatter_points(const POINT_TYPE*, int, int, double, double, int*, const int*, POINT_TYPE*, unsigned int*);
+    GLOBAL void kernel_scatter_points(
+        const POINT_TYPE*, int, int, const double*, double, int*, const int*, POINT_TYPE*, unsigned int*);
 #endif
 
     // ============================================================
@@ -38,9 +38,19 @@ namespace knn {
         // bucket grid spans [-buff, 1+buff]^d; cellFromPoint uses inv_boxsize to index into it
         knn->buff                = buff;
         knn->inv_boxsize         = 1.0 / (1.0 + 2.0 * buff);
-        knn->d_cell_offsets      = NULL;
-        knn->d_cell_offset_dists = NULL;
-        knn->d_permutation       = NULL;
+        // default to the global box; set_local_extent() re-anchors to the rank's extent each build
+        knn->inv_cell_size = (double)knn->N_grid * knn->inv_boxsize;
+        knn->grid_lo[0]    = -buff;
+        knn->grid_lo[1]    = -buff;
+#ifdef dim_2D
+        knn->grid_lo[2] = 0.0;
+#else
+        knn->grid_lo[2] = -buff;
+#endif
+        knn->d_cell_offsets           = NULL;
+        knn->d_cell_offset_dists      = NULL;
+        knn->d_cell_offset_dists_unit = NULL;
+        knn->d_permutation            = NULL;
         knn->d_counters          = NULL;
         knn->d_ptrs              = NULL;
         knn->d_globcounter       = NULL;
@@ -52,15 +62,20 @@ namespace knn {
             exit(EXIT_FAILURE);
         }
 
-        // ring-expansion offset table: grid-cell offsets ordered by Chebyshev ring distance
-        int     alloc             = N_max * N_max * N_max * N_max; // very naive upper bound
+        // ring-expansion offset table: grid-cell offsets ordered by Chebyshev ring distance.
+        // cell_offset_dists holds the lower-bound dist^2 for the *current* cell_size; the _unit
+        // copy holds it at cell_size==1 so set_local_extent() can rescale per build.
+        double  cell_size         = (1.0 + 2.0 * buff) / (double)knn->N_grid; // global-box default
+        int     alloc             = N_max * N_max * N_max * N_max;             // very naive upper bound
         int*    cell_offsets      = gpu_alloc<int>(alloc);
         double* cell_offset_dists = gpu_alloc<double>(alloc);
+        double* cell_offset_dists_unit = gpu_alloc<double>(alloc);
 
         // ring 0: the home cell itself
-        cell_offsets[0]      = 0;
-        cell_offset_dists[0] = 0.0;
-        knn->N_cell_offsets  = 1;
+        cell_offsets[0]           = 0;
+        cell_offset_dists[0]      = 0.0;
+        cell_offset_dists_unit[0] = 0.0;
+        knn->N_cell_offsets       = 1;
 
         // rings 1..N_max-1
         for (int ring = 1; ring < N_max; ring++) {
@@ -72,10 +87,11 @@ namespace knn {
                     int id_offset                     = i + j * knn->N_grid;
                     cell_offsets[knn->N_cell_offsets] = id_offset;
 
-                    // lower-bound distance from home cell to this ring cell. Bucket grid spans
-                    // (1+2*buff) per axis split into N_grid cells, so each cell is that wide.
-                    double d = (double)(ring - 1) * (1.0 + 2.0 * buff) / (double)(knn->N_grid);
-                    cell_offset_dists[knn->N_cell_offsets] = d * d;
+                    // lower-bound dist^2 from home cell to this ring cell, at unit cell_size and
+                    // at the current cell_size. A ring-r cell is >= (r-1) cells away.
+                    double du                                   = (double)(ring - 1);
+                    cell_offset_dists_unit[knn->N_cell_offsets] = du * du;
+                    cell_offset_dists[knn->N_cell_offsets]      = du * du * cell_size * cell_size;
 
                     knn->N_cell_offsets++;
                 }
@@ -89,8 +105,9 @@ namespace knn {
                         int id_offset                     = i + j * knn->N_grid + k * knn->N_grid * knn->N_grid;
                         cell_offsets[knn->N_cell_offsets] = id_offset;
 
-                        double d = (double)(ring - 1) * (1.0 + 2.0 * buff) / (double)(knn->N_grid);
-                        cell_offset_dists[knn->N_cell_offsets] = d * d;
+                        double du                                   = (double)(ring - 1);
+                        cell_offset_dists_unit[knn->N_cell_offsets] = du * du;
+                        cell_offset_dists[knn->N_cell_offsets]      = du * du * cell_size * cell_size;
 
                         knn->N_cell_offsets++;
                     }
@@ -99,8 +116,9 @@ namespace knn {
 #endif
         }
 
-        knn->d_cell_offsets      = cell_offsets;
-        knn->d_cell_offset_dists = cell_offset_dists;
+        knn->d_cell_offsets           = cell_offsets;
+        knn->d_cell_offset_dists      = cell_offset_dists;
+        knn->d_cell_offset_dists_unit = cell_offset_dists_unit;
 
         // per-call grid bookkeeping (counters + prefix-sum pointers + atomic counter)
         int Npow        = knn->Npow;
@@ -119,6 +137,50 @@ namespace knn {
         gpu_advise_gpu_preferred(knn->d_cell_offset_dists, knn->N_cell_offsets * sizeof(double));
 
         return knn;
+    }
+
+    // Re-anchor the KNN grid to this rank's local extent so occupancy stays ~3 pts/cell at every
+    // rank count (instead of spreading N_grid cells over the whole global box). Isotropic cells
+    // keep the cubic ring-distance table valid. Degenerate extent (single-rank sentinel lo==hi)
+    // falls back to the global box, making non-MPI behaviour identical. Called per build, before
+    // prepare(); only this rank's KNN grid is affected — the MPI/decomp grid is untouched.
+    void set_local_extent(knn_problem* knn, const double* data_lo, const double* data_hi) {
+        const int    N_grid       = knn->N_grid;
+        const bool   extent_valid = (data_hi[0] > data_lo[0]); // same predicate as cell.cu safe-radius
+        double       cell_size;
+
+        if (extent_valid) {
+            // isotropic cell sized from the largest active-axis span; origin at data_lo
+            double span = data_hi[0] - data_lo[0];
+            span        = std::max(span, data_hi[1] - data_lo[1]);
+            knn->grid_lo[0] = data_lo[0];
+            knn->grid_lo[1] = data_lo[1];
+#ifdef dim_2D
+            knn->grid_lo[2] = 0.0;
+#else
+            span            = std::max(span, data_hi[2] - data_lo[2]);
+            knn->grid_lo[2] = data_lo[2];
+#endif
+            cell_size          = span / (double)N_grid;
+            knn->inv_cell_size = 1.0 / cell_size;
+        } else {
+            // global-box fallback: bit-identical to init_once's mapping
+            cell_size          = (1.0 + 2.0 * knn->buff) / (double)N_grid;
+            knn->inv_cell_size = (double)N_grid * knn->inv_boxsize;
+            knn->grid_lo[0]    = -knn->buff;
+            knn->grid_lo[1]    = -knn->buff;
+#ifdef dim_2D
+            knn->grid_lo[2] = 0.0;
+#else
+            knn->grid_lo[2] = -knn->buff;
+#endif
+        }
+
+        // rescale ring lower-bounds to the new cell_size (unit table holds them at cell_size==1)
+        const double cs2 = cell_size * cell_size;
+        for (int m = 0; m < knn->N_cell_offsets; m++) {
+            knn->d_cell_offset_dists[m] = knn->d_cell_offset_dists_unit[m] * cs2;
+        }
     }
 
     // per-timestep refresh: zero counters and rebuild the grid bucket sort
@@ -144,6 +206,7 @@ namespace knn {
     void knn_free(knn_problem** knn) {
         gpu_free((*knn)->d_cell_offsets);
         gpu_free((*knn)->d_cell_offset_dists);
+        gpu_free((*knn)->d_cell_offset_dists_unit);
         gpu_free((*knn)->d_permutation);
         gpu_free((*knn)->d_counters);
         gpu_free((*knn)->d_ptrs);
@@ -173,11 +236,11 @@ namespace knn {
 
     static void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
 
-        int    N_grid      = knn->N_grid;
-        int    Npow        = knn->Npow;
-        double buff_local  = knn->buff;
-        double inv_boxsize = knn->inv_boxsize;
-        int*   d_counters  = knn->d_counters;
+        int           N_grid        = knn->N_grid;
+        int           Npow          = knn->Npow;
+        const double* grid_lo       = knn->grid_lo;
+        double        inv_cell_size = knn->inv_cell_size;
+        int*          d_counters    = knn->d_counters;
 
 #ifndef CPU_DEBUG
         int tpb = _KNN_BLOCK_SIZE_;
@@ -186,7 +249,7 @@ namespace knn {
         int blocks1 = (len_pts + tpb - 1) / tpb;
         {
             PROFILE_KERNEL("COUNT");
-            kernel_count_cells<<<blocks1, tpb>>>(pts, len_pts, N_grid, buff_local, inv_boxsize, d_counters);
+            kernel_count_cells<<<blocks1, tpb>>>(pts, len_pts, N_grid, grid_lo, inv_cell_size, d_counters);
             GPU_SYNC();
         }
 
@@ -205,8 +268,8 @@ namespace knn {
             kernel_scatter_points<<<blocks1, tpb>>>(pts,
                                                     len_pts,
                                                     N_grid,
-                                                    buff_local,
-                                                    inv_boxsize,
+                                                    grid_lo,
+                                                    inv_cell_size,
                                                     d_counters,
                                                     knn->d_ptrs,
                                                     knn->d_stored_points,
@@ -220,7 +283,7 @@ namespace knn {
 #pragma omp parallel for schedule(static)
 #endif
         for (int id = 0; id < len_pts; id++) {
-            int cell = cellFromPoint(N_grid, buff_local, inv_boxsize, pts[id]);
+            int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
             portable_atomicAdd(d_counters + cell, 1);
         }
 
@@ -251,7 +314,7 @@ namespace knn {
 #endif
             for (int id = 0; id < len_pts; id++) {
                 POINT_TYPE p         = pts[id];
-                int        cell      = cellFromPoint(N_grid, buff_local, inv_boxsize, p);
+                int        cell      = cellFromPoint(N_grid, grid_lo, inv_cell_size, p);
                 int        pos       = d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1);
                 d_stored_points[pos] = p;
                 d_permutation[pos]   = id;
@@ -266,10 +329,10 @@ namespace knn {
 #ifndef CPU_DEBUG
 
     GLOBAL void kernel_count_cells(
-        const POINT_TYPE* pts, int len_pts, int N_grid, double buff_local, double inv_boxsize, int* d_counters) {
+        const POINT_TYPE* pts, int len_pts, int N_grid, const double* grid_lo, double inv_cell_size, int* d_counters) {
         int id = blockIdx.x * blockDim.x + threadIdx.x;
         if (id >= len_pts) return;
-        int cell = cellFromPoint(N_grid, buff_local, inv_boxsize, pts[id]);
+        int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
         portable_atomicAdd(d_counters + cell, 1);
     }
 
@@ -283,8 +346,8 @@ namespace knn {
     GLOBAL void kernel_scatter_points(const POINT_TYPE* pts,
                                       int               len_pts,
                                       int               N_grid,
-                                      double            buff_local,
-                                      double            inv_boxsize,
+                                      const double*     grid_lo,
+                                      double            inv_cell_size,
                                       int*              d_counters,
                                       const int*        d_ptrs,
                                       POINT_TYPE*       d_stored_points,
@@ -292,7 +355,7 @@ namespace knn {
         int id = blockIdx.x * blockDim.x + threadIdx.x;
         if (id >= len_pts) return;
         POINT_TYPE p         = pts[id];
-        int        cell      = cellFromPoint(N_grid, buff_local, inv_boxsize, p);
+        int        cell      = cellFromPoint(N_grid, grid_lo, inv_cell_size, p);
         int        pos       = d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1);
         d_stored_points[pos] = p;
         d_permutation[pos]   = id;
@@ -304,12 +367,12 @@ namespace knn {
     // helpers (grid mapping)
     // ============================================================
 
-    HD int cellFromPoint(int N_grid, double buff, double inv_boxsize, POINT_TYPE point) {
-        // bucket grid spans [-buff, 1+buff]^d, total width 1+2*buff. Shift by +buff so the grid
-        // starts at 0, then map into [0, N_grid) via inv_boxsize = 1/(1+2*buff).
-        const double scale = (double)N_grid * inv_boxsize;
-        int          i     = (int)floor((point.x + buff) * scale);
-        int          j     = (int)floor((point.y + buff) * scale);
+    HD int cellFromPoint(int N_grid, const double* grid_lo, double inv_cell_size, POINT_TYPE point) {
+        // grid origin grid_lo[a], isotropic cell width 1/inv_cell_size. Map (point - grid_lo) into
+        // [0, N_grid); out-of-extent ghosts clamp into the edge cells. For the global-box fallback
+        // grid_lo = -buff and inv_cell_size = N_grid/(1+2*buff), i.e. the old mapping exactly.
+        int i = (int)floor((point.x - grid_lo[0]) * inv_cell_size);
+        int j = (int)floor((point.y - grid_lo[1]) * inv_cell_size);
 
         i = imax(0, imin(i, N_grid - 1));
         j = imax(0, imin(j, N_grid - 1));
@@ -317,7 +380,7 @@ namespace knn {
 #ifdef dim_2D
         return i + j * N_grid;
 #else
-        int k = (int)floor((point.z + buff) * scale);
+        int k = (int)floor((point.z - grid_lo[2]) * inv_cell_size);
         k     = imax(0, imin(k, N_grid - 1));
         return i + j * N_grid + k * N_grid * N_grid;
 #endif

@@ -276,6 +276,77 @@ namespace voronoi {
             }
         }
 
+#ifdef VOL_REGULARIZE
+        // size-equalizing drift: nudge small cells toward larger neighbours (soft de-refinement).
+        // engages only once smallness Ri_ref/Ri exceeds the VOL_REGULARIZE threshold, ramping to
+        // the full speed cap at twice the threshold.
+        if (L.Ri > 0.0 && mesh->Ri_ref > 0.0) {
+            const double thresh     = (double)VOL_REGULARIZE;
+            const double size_ratio = mesh->Ri_ref / L.Ri;
+            double       vf         = 0.0;
+            if (size_ratio > thresh) vf = VolShapingSpeed * fmin((size_ratio - thresh) / thresh, 1.0);
+
+            if (vf > 0.0) {
+                const double rho     = primvar->rho[i];
+                hydro::prim  state_i = get_state(i, primvar);
+                const double p       = fmax(0.0, hydro::get_P_ideal_gas(&state_i));
+                if (rho > 0.0 && p > 0.0) {
+                    // discrete size-gradient: sum_j area_j * (V_j - V_i) * unit(seed_i -> seed_j)
+                    const int     n_hydro_int = (int)mesh->n_hydro;
+                    const double  Vi          = mesh->volumes[i];
+                    const hsize_t fp          = mesh->face_ptr[i];
+                    const hsize_t fc          = mesh->face_counts[i];
+                    double        gx = 0.0, gy = 0.0;
+#ifdef dim_3D
+                    double gz = 0.0;
+#endif
+                    for (hsize_t fj = 0; fj < fc; fj++) {
+                        const int nb = mesh->neighbor_cell[fp + fj];
+                        if (nb < 0) continue; // box boundary
+                        const double3 sj = get_seed_at(nb, n_hydro_int, mesh);
+                        const double  rx = wrap_periodic_delta(sj.x - mesh->seeds[i].x);
+                        const double  ry = wrap_periodic_delta(sj.y - mesh->seeds[i].y);
+#ifdef dim_3D
+                        const double rz   = wrap_periodic_delta(sj.z - mesh->seeds[i].z);
+                        const double rlen = sqrt(rx * rx + ry * ry + rz * rz);
+#else
+                        const double rlen = sqrt(rx * rx + ry * ry);
+#endif
+                        if (rlen < 1e-30) continue;
+                        const double w = mesh->face_area[fp + fj] * (get_volume_at(nb, n_hydro_int, mesh) - Vi) / rlen;
+                        gx += w * rx;
+                        gy += w * ry;
+#ifdef dim_3D
+                        gz += w * rz;
+#endif
+                    }
+#ifdef dim_3D
+                    const double glen = sqrt(gx * gx + gy * gy + gz * gz);
+#else
+                    const double glen = sqrt(gx * gx + gy * gy);
+#endif
+                    if (glen > 0.0) {
+                        // scale by max(c_s, |v_gas|): in cold condensing gas c_s collapses, so
+                        // the inflow speed is the signal that must be matched to hold the mesh.
+                        const double ci = sqrt(gamma_eos * p / rho);
+#ifdef dim_3D
+                        const double vmag = sqrt(primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y +
+                                                 primvar->v[i].z * primvar->v[i].z);
+#else
+                        const double vmag = sqrt(primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y);
+#endif
+                        const double speed = fmax(ci, vmag);
+                        v_gas.x += vf * speed * gx / glen;
+                        v_gas.y += vf * speed * gy / glen;
+#ifdef dim_3D
+                        v_gas.z += vf * speed * gz / glen;
+#endif
+                    }
+                }
+            }
+        }
+#endif
+
         // commit the final velocity
         mesh->v_mesh[i].x = v_gas.x;
         mesh->v_mesh[i].y = v_gas.y;

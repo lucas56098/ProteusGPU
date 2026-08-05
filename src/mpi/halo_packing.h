@@ -151,6 +151,23 @@ namespace proteus_mpi {
         // Used-recv bitmap construction (idempotent writes of 1 — race-safe)
         // ============================================================
 
+        // ============================================================
+        // Cell volume (used subset, VOL_REGULARIZE only)
+        // ============================================================
+
+#ifdef VOL_REGULARIZE
+        HD inline void pack_vol_body(int s, const int* used_export_indices, const double* volumes, double* sendbuf) {
+            const int k = used_export_indices[s];
+            sendbuf[s]  = volumes[k];
+        }
+
+        HD inline void
+        unpack_vol_body(int slot, const int* used_to_full_slot, const double* recvbuf, double* volumes_g) {
+            const int g  = used_to_full_slot[slot];
+            volumes_g[g] = recvbuf[slot];
+        }
+#endif
+
         HD inline void mark_used_bitmap_body(
             int f, const int* neighbor_cell, int mpi_base, int mpi_top, unsigned char* recv_used_bitmap) {
             const int kn = neighbor_cell[f];
