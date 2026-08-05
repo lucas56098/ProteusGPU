@@ -238,6 +238,10 @@ namespace voronoi {
         for (int k : target_ks)
             cs.per_cell[k];
 
+        // the sweep below streams the whole array; bulk-prefetch instead of paying a
+        // page fault per 4 KiB of GPU-resident managed memory
+        gpu_prefetch_to_cpu(mesh->sid_to_neighbor, mesh->n_seeds * sizeof(unsigned int));
+
         const int n_seeds = (int)mesh->n_seeds;
         for (int sid = 0; sid < n_seeds; sid++) {
             const int k = (int)mesh->sid_to_neighbor[sid];
