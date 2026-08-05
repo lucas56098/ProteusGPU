@@ -20,8 +20,6 @@ ics/IC_*
 run_*.sh
 voronoi*.md
 *_*.md
-/ICs
-/vis
 
 # file types
 *.hdf5
@@ -29,3 +27,7 @@ voronoi*.md
 *.ncu-rep
 *.pdf
 *.txt
+
+!ics/*.py
+!ics/param.txt
+!ics/cooling_table_*.txt
