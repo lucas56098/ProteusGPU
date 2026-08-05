@@ -140,9 +140,8 @@ namespace voronoi {
                 portable_atomicExch(overflow_flag, 1);
                 return;
             }
-            mesh->face_counts[k] = (hsize_t)fc;
             mesh->face_ptr[k]    = my_offset;
-            extract_cell_all(cell, mesh, (hsize_t)k);
+            mesh->face_counts[k] = extract_cell_all(cell, mesh, (hsize_t)k);
         }
     }
 
@@ -167,13 +166,16 @@ namespace voronoi {
 
     // emit cell volume + centroid + per-face data into the global mesh arrays
     template <int MAX_P, int MAX_T>
-    HD void extract_cell_all(const BasicConvexCell<MAX_P, MAX_T>& cell, VMesh* mesh, hsize_t cell_index) {
+    HD hsize_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T>& cell, VMesh* mesh, hsize_t cell_index) {
         const double3 seed      = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
         mesh->seeds[cell_index] = seed;
 
 #ifdef dim_2D
         // resolve dual triangles -> primal polygon vertices
-        double4 vertices_2d[MAX_P];
+        // sized by MAX_T, not MAX_P: the fill loop below runs to nb_t, which is bounded
+        // by MAX_T. The old MAX_P extent overran whenever MAX_T > MAX_P (the shipped 2D
+        // defaults, 30 vs 60), resting on an unenforced nb_t <= nb_v invariant.
+        double4 vertices_2d[MAX_T];
         for (int vi = 0; vi < cell.nb_t; vi++)
             vertices_2d[vi] = cell.compute_vertex_point(cell.triangle[vi], true);
 
@@ -196,6 +198,7 @@ namespace voronoi {
             write_face(mesh, fi, neighbor_id, face_measure, face_verts, n_fv, cell.voro_seed, neighbor);
             fi++;
         }
+        return fi - mesh->face_ptr[cell_index];
 #else
         // 3D: fan-triangulate each face; volume via divergence theorem on (seed,v0,vi,vi+1) tets
         double  total_volume = 0.0;
@@ -276,6 +279,7 @@ namespace voronoi {
             mesh->com[cell_index] = seed;
         }
         mesh->volumes[cell_index] = fabs(total_volume);
+        return fi - mesh->face_ptr[cell_index];
 #endif
     }
 

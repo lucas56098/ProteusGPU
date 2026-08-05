@@ -454,11 +454,13 @@ namespace voronoi {
 
     // write a successfully built ConvexCell into mesh's face arrays + reserve capacity
     static void append_cell_to_mesh(VMesh* mesh, int k, const ConvexCell& cell) {
+        // count_cell_faces sizes the reservation; extract_cell_all reports what it actually
+        // wrote, which can be fewer. num_faces still advances by the reservation, so the
+        // unwritten tail stays slack that face_counts keeps anyone from reading.
         const int fc = count_cell_faces(cell);
         ensure_face_capacity(mesh, mesh->num_faces + fc);
         mesh->face_ptr[k]    = mesh->num_faces;
-        mesh->face_counts[k] = (hsize_t)fc;
-        extract_cell_all(cell, mesh, (hsize_t)k);
+        mesh->face_counts[k] = extract_cell_all(cell, mesh, (hsize_t)k);
         mesh->num_faces += (hsize_t)fc;
     }
 

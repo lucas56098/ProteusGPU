@@ -22,7 +22,7 @@ namespace voronoi {
         }
 
         // walk the polygon boundary: two vertices (uchar2) are adjacent if they share a plane index
-        bool visited[MAX_P]; // nb_t <= MAX_P in 2D
+        bool visited[MAX_T]; // indexed by triangle index, so bounded by MAX_T (not MAX_P)
         for (int i = 0; i < nb_t; i++)
             visited[i] = false;
         visited[0] = true;

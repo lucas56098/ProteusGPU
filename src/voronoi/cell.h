@@ -80,9 +80,14 @@ namespace voronoi {
     // number of planes that contribute a face (at least DIMENSION triangles reference them)
     template <int MAX_P, int MAX_T> HD int count_cell_faces(const BasicConvexCell<MAX_P, MAX_T>& cell);
 
-    // emit cell volume + centroid + per-face data into the global mesh SoA arrays
+    // emit cell volume + centroid + per-face data into the global mesh SoA arrays.
+    // Returns the number of faces actually written. Callers MUST store this in
+    // face_counts[k]: count_cell_faces is only an upper bound, since a plane can pass its
+    // triangle-reference test and still have its ordering walk fail to close the face.
+    // Using the estimate instead leaves unwritten entries inside the cell's live face
+    // slice, which the flux loop then reads as real faces.
     template <int MAX_P, int MAX_T>
-    HD void extract_cell_all(const BasicConvexCell<MAX_P, MAX_T>& cell, VMesh* mesh, hsize_t cell_index);
+    HD hsize_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T>& cell, VMesh* mesh, hsize_t cell_index);
 
     // build the Voronoi cell for seed `k` by clipping the bounding box against its K nearest
     // neighbours; on success atomically reserves face storage and emits geometry into mesh
