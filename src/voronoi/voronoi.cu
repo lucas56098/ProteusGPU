@@ -52,13 +52,13 @@ namespace voronoi {
     static void adapt_halo_width(const BuildStats& stats);
     static void print_step_summary(const BuildStats& stats);
 
-    static hsize_t exchange_seeds_across_ranks(VMesh*      mesh,
-                                               POINT_TYPE* pts_data,
-                                               POINT_TYPE* pts,
-                                               hsize_t*    original_ids,
-                                               hsize_t     n_hydro,
-                                               hsize_t     n_ghosts,
-                                               int         W);
+    static hsize_t exchange_seeds_across_ranks(VMesh*       mesh,
+                                               POINT_TYPE*  pts_data,
+                                               POINT_TYPE*& pts,
+                                               hsize_t*&    original_ids,
+                                               hsize_t      n_hydro,
+                                               hsize_t      n_ghosts,
+                                               int          W);
     static void    record_mpi_ghost_indices(hsize_t* original_ids, hsize_t n_hydro, hsize_t n_ghosts);
     static void    remap_exports_and_pts(VMesh* mesh, POINT_TYPE* pts_data, hsize_t n_hydro);
     static bool    widen_converged_across_ranks(VMesh* mesh, hsize_t n_ghosts, bool have_mpi, int* local_failed_out);
@@ -316,17 +316,18 @@ namespace voronoi {
     }
 
     // build the MPI export list, exchange seeds, record indices of freshly-arrived ghost slots
-    static hsize_t exchange_seeds_across_ranks(VMesh*      mesh,
-                                               POINT_TYPE* pts_data,
-                                               POINT_TYPE* pts,
-                                               hsize_t*    original_ids,
-                                               hsize_t     n_hydro,
-                                               hsize_t     n_ghosts,
-                                               int         W) {
+    static hsize_t exchange_seeds_across_ranks(VMesh*       mesh,
+                                               POINT_TYPE*  pts_data,
+                                               POINT_TYPE*& pts,
+                                               hsize_t*&    original_ids,
+                                               hsize_t      n_hydro,
+                                               hsize_t      n_ghosts,
+                                               int          W) {
         proteus_mpi::halo_build_exports(pts_data, (int)n_hydro, buff, W);
         // halo_build_exports may have grown n_mpi_capacity, which reallocates mesh->scratch_pts
-        // and mesh->ghost_ids inside halo_grow_capacity. Re-read the live pointers so subsequent
-        // writes go to the new buffers (the local copies passed in are now dangling).
+        // and mesh->ghost_ids inside halo_grow_capacity, freeing the old buffers. Re-read the
+        // live pointers so subsequent writes go to the new ones. pts/original_ids are references
+        // so this also repairs the caller's copies, which it otherwise hands to compute_mesh.
         pts          = mesh->scratch_pts;
         original_ids = mesh->ghost_ids;
         proteus_mpi::halo_exchange_seeds(mesh, pts, (int)(n_hydro + n_ghosts));
