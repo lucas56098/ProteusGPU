@@ -227,6 +227,8 @@ namespace begrun {
         sim.step               = snap.step;
         sim.snap_num           = latest_snap_n + 1;
         icData.header.n_global = snap.n_global;
+        // load_IC_fields() is the only other writer of n_hydro and is skipped on restart
+        sim.n_hydro = icData.header.n_seeds;
 
         // restore profiler timings from snapshot
         if (!snap.profiler_cum.empty()) Profiler::SeedFromCumulative(snap.profiler_cum);
