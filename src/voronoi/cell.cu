@@ -33,6 +33,25 @@ namespace voronoi {
     // ============================================================
 
 
+#ifdef USE_MPI
+    // Store the squared security diameter (2R)^2 for cell k from the num/denom pair the
+    // caller already computed for data-extent certification — this is the influence
+    // certificate the MPI perturb repair queries (see the field's comment in voronoi.h).
+    // Deliberately fed from the EXISTING max_vertex_r2_ratio evaluation rather than a fresh
+    // one in extract_cell_all: an extra per-cell vertex pass at emit measurably slowed the
+    // primary build kernel (+7.6% CELLS on the 2-node 360^3 KH run), while storing the
+    // already-computed value costs one global write. Clamped to the extended-domain diameter
+    // as a defensive bound: a degenerate homogeneous vertex (w ~ 0) would otherwise store
+    // inf/nan and poison the repair's search-radius max.
+    HD inline void store_security_d2(VMesh* mesh, hsize_t k, double r2_num, double r2_denom) {
+        const double s      = 1.0 + 2.0 * mesh->buff;
+        const double d2_cap = 12.0 * s * s; // (2 * box diagonal)^2 >= any real (2R)^2
+        double       d2     = (r2_denom > 0.0) ? 4.0 * r2_num / r2_denom : d2_cap;
+        if (!(d2 <= d2_cap)) d2 = d2_cap; // also catches nan
+        mesh->security_d2[k] = d2;
+    }
+#endif
+
     // build the Voronoi cell for seed `k` by clipping the bounding box against the K nearest
     // neighbours; on success atomically reserves face storage and emits geometry into mesh.
     template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT>
@@ -78,6 +97,35 @@ namespace voronoi {
             stat[k] = security_radius_not_reached;
         }
 
+
+#ifdef USE_MPI
+        // Data-extent certification. Reaching the security radius only proves the cell is closed
+        // against the seeds THIS RANK HOLDS; under multi-rank decomposition a seed outside
+        // [data_lo, data_hi] (own brick + halo W) could still clip it. Verify that here, at the
+        // single point where a cell's security radius is known to be reached, and flag the cells
+        // that cannot be certified with a status of their own so the widen-W loop can iterate on
+        // exactly those and nothing else.
+        //
+        // Both tiers, deliberately. An earlier version restricted this to the fast tier (K <= 50)
+        // because the slow tier in sparse regions legitimately reaches far and re-flagging it fed
+        // the CPU fallback twice. But a cell that fails the fast tier and then succeeds in the slow
+        // one was left uncertified entirely -- precisely the halo-limited case this is meant to
+        // catch. The status split is what makes covering both tiers affordable now: a
+        // security_radius_beyond_data cell no longer drags every other failure through a full
+        // widen iteration with it.
+        if (stat[k] == success) {
+            double r2_num, r2_denom;
+            cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
+            // the same pair feeds the stored per-cell security diameter — the emit is gated
+            // on success below, so a cell this block re-flags never publishes a stale value
+            store_security_d2(mesh, (hsize_t)k, r2_num, r2_denom);
+            if (!cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi)) {
+                stat[k] = security_radius_beyond_data;
+            }
+        }
+        (void)early_break;
+        (void)v_terminate;
+#endif
 
         // on success, reserve face slots atomically and emit the cell geometry.
         // count_cell_faces is only an UPPER BOUND on what extract_cell_all writes, so it sizes
@@ -242,6 +290,37 @@ namespace voronoi {
         mesh->volumes[cell_index] = fabs(total_volume);
         return fi - mesh->face_ptr[cell_index];
 #endif
+    }
+
+    // Is this cell provably unaffected by every seed the rank does NOT hold?
+    //
+    // The rank holds all seeds inside [data_lo, data_hi], so any seed it is missing lies at
+    // distance > safe from voro_seed, where safe is the seed's distance to the nearest face of
+    // that box. A seed at distance d contributes a bisector plane at d/2, which clips a cell of
+    // bounding radius R only when d < 2R. Every missing seed is therefore harmless exactly when
+    //
+    //     2 R <= safe        <=>      4 R^2 <= safe^2
+    //
+    // Note this is a factor of 2 stricter than comparing safe against the deciding neighbour's
+    // half-distance: is_security_radius_reached only establishes R < d/2, so requiring safe >=
+    // d/2 leaves seeds in (safe, 2R] able to clip the cell. R is used directly here instead, which
+    // is both exact and usually tighter, since a closed cell's R is well below d/2.
+    //
+    // data_hi == data_lo marks "extent checking disabled" (single rank: the periodic ghost band
+    // already covers every direction, so nothing is missing).
+    HD bool cell_certified_within_data(double4 seed, double r2_num, double r2_denom, const double* data_lo,
+                                       const double* data_hi) {
+        if (!(data_hi[0] > data_lo[0])) return true;
+
+        double safe = fmin(seed.x - data_lo[0], data_hi[0] - seed.x);
+        safe        = fmin(safe, fmin(seed.y - data_lo[1], data_hi[1] - seed.y));
+#ifdef dim_3D
+        safe = fmin(safe, fmin(seed.z - data_lo[2], data_hi[2] - seed.z));
+#endif
+        if (safe <= 0.0) return false; // seed sits outside its own data extent
+
+        // 4 * (r2_num / r2_denom) <= safe^2, kept division-free
+        return (4.0 * r2_num <= safe * safe * r2_denom);
     }
 
     // abort if `needed` exceeds the pre-allocated face buffer capacity

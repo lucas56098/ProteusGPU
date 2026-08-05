@@ -137,7 +137,6 @@ namespace voronoi {
         const hsize_t n_hydro = mesh->n_hydro;
         gpu_memset(mesh->face_counts, 0, n_hydro * sizeof(hsize_t));
         gpu_memset(mesh->face_ptr, 0, n_hydro * sizeof(hsize_t));
-        gpu_memset(mesh->outer_halo_hit, 0, sizeof(int));
 #ifndef CPU_DEBUG
         const int tpb    = _MESH_BLOCK_SIZE_;
         const int blocks = (int)((n_hydro + tpb - 1) / tpb);

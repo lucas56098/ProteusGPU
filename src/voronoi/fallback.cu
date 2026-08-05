@@ -118,7 +118,7 @@ namespace voronoi {
             // unreachable. Anything genuinely unknown still aborts.
             if (original != security_radius_not_reached && original != needs_exact_predicates
                 && original != inconsistent_boundary && original != vertex_overflow
-                && original != triangle_overflow) {
+                && original != triangle_overflow && original != security_radius_beyond_data) {
                 proteus_mpi::exit_failure(
                     "VORONOI: cell %d failed with unrecoverable status: %d\n", (int)k, (int)original);
             }

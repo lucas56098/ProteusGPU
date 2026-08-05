@@ -13,7 +13,13 @@ namespace voronoi {
         inconsistent_boundary       = 2,
         security_radius_not_reached = 3, // to fix increase _K_
         success                     = 4,
-        needs_exact_predicates      = 5 // to fix perturb seedpoints
+        needs_exact_predicates      = 5, // to fix perturb seedpoints
+        // The cell IS closed against every seed this rank holds, but its bounding sphere
+        // reaches far enough that a seed outside the rank's data extent could still clip it.
+        // Distinct from security_radius_not_reached on purpose: this is the ONE failure a
+        // wider MPI halo can repair, and it is the only status the widen-W loop iterates on.
+        // Meaningless on a single rank, where the periodic ghost band covers everything.
+        security_radius_beyond_data = 6
     };
 
 } // namespace voronoi

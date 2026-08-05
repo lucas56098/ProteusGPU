@@ -43,6 +43,16 @@ struct VMesh {
     double*     old_volumes;
 #endif
 
+    // per-cell squared security diameter (2R)^2, R = distance from seed to the farthest cell
+    // vertex, stored by store_security_d2 (cell.cu) from the pair every successful build
+    // already computes for data-extent certification. A seed can influence cell k only if it
+    // lies within distance 2R of seed k, so
+    //     |s - seeds[k]|^2 > security_d2[k]  =>  cell k provably unaffected by seed s.
+    // Valid for cells with cell_status == success; failed cells carry the previous build's
+    // value until the CPU fallback rebuilds them. nullptr on non-MPI builds: nothing reads it
+    // there, and the array would cost HBM the single-rank runs do not have to spare.
+    double* security_d2;
+
     // MPI ghost SoA storage (size proteus_mpi::n_mpi_capacity). seeds_g[slot] is the
     // ghost cell's seed position; v_mesh_g[slot] its mesh velocity. Populated by
     // halo_exchange_seeds and halo_exchange_v_mesh. nullptr on single-rank.
@@ -85,25 +95,17 @@ struct VMesh {
     // periodic-buffer width: bounding box covers [-buff, 1+buff]^d; reals stay in [0, 1]^d
     double buff;
 
-    // single-int flag: set during the cell build (atomic OR/exchange to 1) if any cell's
-    // deciding K-th neighbour landed in the outermost MPI halo layer. Reset to 0 by
-    // clear_cell_arrays before each build pass. Replaces an old per-cell flag array that
-    // SENTINEL_OUTER used to reduce; now SENTINEL_OUTER is just a single read.
-    int* outer_halo_hit;
-    int  pts_mpi_base;
-    // halo metadata snapshotted from proteus_mpi::halo before each cell-build kernel so the
-    // device piggyback in compute_single_voronoi_cell can read them — the host-side global
-    // proteus_mpi::halo isn't visible to device code. is_outer_layer is the halo's managed
-    // pointer (writable by halo_exchange_seeds, readable by everything), so we just alias it.
-    int                  n_mpi_ghosts;
-    const unsigned char* is_outer_layer;
+    int n_mpi_ghosts;
 
-    // soundness guard: physical extent of valid neighbour data this rank can see —
-    // own brick plus W buckets of MPI halo, clamped to the extended [-buff, 1+buff]^d
-    // domain. The fast-tier cell build forces cells whose security sphere reaches past
-    // these faces to security_radius_not_reached, so the widen-W loop iterates rather
-    // than silently tessellating with an incomplete neighbour set.
-    // data_hi[a] == data_lo[a] disables the check on axis a (single rank, or 2D z-axis).
+    // Soundness guard: physical extent of valid neighbour data this rank can see — own brick
+    // plus W buckets of MPI halo, clamped to the extended [-buff, 1+buff]^d domain. Every cell
+    // that reaches its security radius is checked against this in both build tiers
+    // (cell_certified_within_data): if 2R exceeds the seed's distance to the nearest face, a
+    // seed the rank does not hold could still clip the cell, and it is flagged
+    // security_radius_beyond_data so the widen-W loop grows the halo rather than silently
+    // tessellating against an incomplete neighbour set.
+    // data_hi[a] == data_lo[a] disables the check (single rank, where the periodic ghost band
+    // already covers every direction; also the 2D z-axis).
     double data_lo[3];
     double data_hi[3];
 

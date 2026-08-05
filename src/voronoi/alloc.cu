@@ -29,11 +29,15 @@ namespace voronoi {
         mesh->volumes        = gpu_calloc<double>(ext);
         mesh->face_counts    = gpu_calloc<hsize_t>(ext);
         mesh->face_ptr       = gpu_calloc<hsize_t>(ext);
-        mesh->cell_status    = gpu_alloc<Status>(ext);
-        mesh->outer_halo_hit = gpu_calloc<int>(1);
-        mesh->pts_mpi_base   = 0;
-        mesh->n_mpi_ghosts   = 0;
-        mesh->is_outer_layer = nullptr;
+        mesh->cell_status = gpu_alloc<Status>(ext);
+#ifdef USE_MPI
+        // only the MPI perturb repair reads this; on single-rank builds the array would be
+        // ext * 8 B of never-read memory
+        mesh->security_d2 = gpu_calloc<double>(ext);
+#else
+        mesh->security_d2 = nullptr;
+#endif
+        mesh->n_mpi_ghosts = 0;
         for (int a = 0; a < 3; a++) {
             mesh->data_lo[a] = 0.0;
             mesh->data_hi[a] = 0.0;
@@ -103,6 +107,9 @@ namespace voronoi {
         gpu_advise_gpu_preferred(mesh->face_counts, n_hydro * sizeof(hsize_t));
         gpu_advise_gpu_preferred(mesh->face_ptr, n_hydro * sizeof(hsize_t));
         gpu_advise_gpu_preferred(mesh->cell_status, n_hydro * sizeof(Status));
+#ifdef USE_MPI
+        gpu_advise_gpu_preferred(mesh->security_d2, n_hydro * sizeof(double));
+#endif
         gpu_advise_gpu_preferred(mesh->neighbor_cell, max_faces * sizeof(int));
         gpu_advise_gpu_preferred(mesh->face_area, max_faces * sizeof(double));
         gpu_advise_gpu_preferred(mesh->real_sorted_ids, n_hydro * sizeof(unsigned int));
@@ -121,6 +128,9 @@ namespace voronoi {
         gpu_free(mesh->face_counts);
         gpu_free(mesh->face_ptr);
         gpu_free(mesh->cell_status);
+#ifdef USE_MPI
+        gpu_free(mesh->security_d2);
+#endif
 #ifdef MOVING_MESH
         gpu_free(mesh->v_mesh);
         gpu_free(mesh->old_volumes);

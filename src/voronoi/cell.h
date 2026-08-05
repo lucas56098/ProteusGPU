@@ -150,6 +150,12 @@ namespace voronoi {
     // face_counts[cell_index] -- see the definition in cell.cu for why.
     HD hsize_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell, VMesh* mesh, hsize_t cell_index);
 
+    // True iff no seed outside [data_lo, data_hi] can clip a cell centred on `seed` whose
+    // bounding-sphere radius squared is r2_num / r2_denom. See the definition in cell.cu for
+    // the 2R <= safe argument. data_hi == data_lo disables the check (single rank).
+    HD bool cell_certified_within_data(
+        double4 seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi);
+
     // build the Voronoi cell for seed `k` by clipping the bounding box against its K nearest
     // neighbours; on success atomically reserves face storage and emits geometry into mesh
     template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT>
