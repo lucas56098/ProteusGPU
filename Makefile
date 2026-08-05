@@ -347,7 +347,7 @@ $(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cu $(PROFILER_DIR)/profiler.h 
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # MPI: init, domain decomposition, halo exchange, particle migration
-$(BUILD_DIR)/mpi_compat.o: $(MPI_DIR)/mpi_compat.cu $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
+$(BUILD_DIR)/mpi_compat.o: $(MPI_DIR)/mpi_compat.cu $(MPI_DIR)/mpi_compat.h $(PROFILER_DIR)/profiler.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/decomp.o: $(MPI_DIR)/decomp.cu $(MPI_DIR)/decomp.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
