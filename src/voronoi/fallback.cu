@@ -53,15 +53,17 @@ namespace voronoi {
 #ifdef MOVING_MESH
     static void apply_vmesh_perturbation_correction(VMesh* mesh, int k, double3 delta, double dt);
 #endif
-    static void             append_cell_to_mesh(VMesh* mesh, int k, const ConvexCell& cell);
+    static void             retire_face_range(VMesh* mesh, hsize_t first, hsize_t count);
+    static void             write_cell_to_mesh(VMesh* mesh, int k, const ConvexCell& cell);
+    static void             reclaim_appended_slice(
+                    VMesh* mesh, int k, hsize_t fp_old, hsize_t fc_old, unsigned long long* face_offset,
+                    unsigned long long off_before);
     static std::vector<int> collect_unique_neighbors(const VMesh* mesh, const std::vector<int>& sources);
     static void             run_symmetry_pass(VMesh*                  mesh,
                                               double*                 d_stored_points,
                                               CellSids&               cell_sids,
                                               const std::vector<int>& initial_perturbed,
-                                              double                  dt,
-                                              int&                    min_touched_k);
-    static void             compact_face_arrays(VMesh* mesh, int min_touched_k);
+                                              double                  dt);
 
 #ifndef CPU_DEBUG
     GLOBAL void kernel_count_failures(int n, const Status* stat, int* fail_count);
@@ -99,6 +101,11 @@ namespace voronoi {
                     "VORONOI: cell %d failed with unrecoverable status: %d\n", (int)k, (int)original);
             }
             failed_ks.push_back(k);
+            // a failed cell owns no live face slice this step: the build tiers write
+            // face_ptr/face_counts only on success, so both still hold the PREVIOUS build's
+            // layout and point into data now owned by other cells. face_counts == 0 tells
+            // write_cell_to_mesh "no slot to reuse or retire — append".
+            mesh->face_counts[k] = 0;
         }
 
         // sparse cell_sids targeted at the failed set; run_symmetry_pass extends it lazily
@@ -106,10 +113,8 @@ namespace voronoi {
         // calling rebuild_cell_with_perturb_retry for it.
         CellSids cell_sids = build_cell_sids_for(mesh, failed_ks);
 
-        // perturb-retry each failed cell; track which got permanently perturbed and the
-        // lowest-index k touched (needed by compact_face_arrays to bound its work).
+        // perturb-retry each failed cell; track which got permanently perturbed
         std::vector<int> perturbed_ks;
-        int              min_touched_k = n_hydro; // sentinel: nothing touched yet
         for (int k : failed_ks) {
             switch (rebuild_cell_with_perturb_retry(mesh, k, d_stored_points, cell_sids, dt)) {
             case FallbackOutcome::ok_unchanged:
@@ -120,19 +125,14 @@ namespace voronoi {
             case FallbackOutcome::failed:
                 proteus_mpi::exit_failure("VORONOI: cell %d all fallback attempts FAILED, aborting.\n", (int)k);
             }
-            // every failed-cell rebuild calls append_cell_to_mesh and rewrites face_ptr[k]
-            if (k < min_touched_k) min_touched_k = k;
         }
 
         // every failed cell was recovered on this rank (otherwise exit_failure fired).
         // The caller does a single sum_global on num_failed and logs the global total
         // via logging::root() — see cpu_perturb_and_rebuild.
 
-        // if any cell stuck at a perturbation, rebuild neighbours + compact face data
-        if (!perturbed_ks.empty()) {
-            run_symmetry_pass(mesh, d_stored_points, cell_sids, perturbed_ks, dt, min_touched_k);
-            compact_face_arrays(mesh, min_touched_k);
-        }
+        // if any cell stuck at a perturbation, rebuild its neighbours
+        if (!perturbed_ks.empty()) { run_symmetry_pass(mesh, d_stored_points, cell_sids, perturbed_ks, dt); }
         return (int)perturbed_ks.size();
     }
 
@@ -388,7 +388,7 @@ namespace voronoi {
         if (status != success) return false;
         if (require_security && !security_reached) return false;
 
-        append_cell_to_mesh(mesh, k, cell);
+        write_cell_to_mesh(mesh, k, cell);
         mesh->cell_status[k] = success;
         return true;
     }
@@ -452,16 +452,92 @@ namespace voronoi {
         }
     }
 
-    // write a successfully built ConvexCell into mesh's face arrays + reserve capacity
-    static void append_cell_to_mesh(VMesh* mesh, int k, const ConvexCell& cell) {
-        // count_cell_faces sizes the reservation; extract_cell_all reports what it actually
-        // wrote, which can be fewer. num_faces still advances by the reservation, so the
-        // unwritten tail stays slack that face_counts keeps anyone from reading.
-        const int fc = count_cell_faces(cell);
-        ensure_face_capacity(mesh, mesh->num_faces + fc);
-        mesh->face_ptr[k]    = mesh->num_faces;
-        mesh->face_counts[k] = extract_cell_all(cell, mesh, (hsize_t)k);
-        mesh->num_faces += (hsize_t)fc;
+    // ---- face-slot management ----
+    //
+    // The parallel build hands out face_ptr[k] via an atomic counter, so face storage order is
+    // a random permutation of cells and a rebuilt cell can never shift its neighbours' slices.
+    // The fallback therefore manages the face array as a slot store: a rebuilt cell reuses its
+    // own slot when the new face count fits (the common case — a perturb rebuild rarely changes
+    // the face count), otherwise it appends at num_faces and retires its old slice. Retired
+    // entries stay inside [0, num_faces) marked inert (neighbor_cell = -1, zero area/f_mid):
+    // every physics consumer walks face_ptr[k]/face_counts[k] slices and never sees them, and
+    // the one flat iteration over [0, num_faces) (halo_build's mark_used_bitmap) skips negative
+    // neighbour ids. This keeps the whole recovery path O(faces of rebuilt cells).
+    //
+    // An earlier design appended and then compacted the ENTIRE face array — an O(num_faces)
+    // serial host rewrite every time a single cell was perturbed. Do not reintroduce it:
+    // partial compaction is unsound (face_ptr is not k-ordered, see above) and full compaction
+    // buys nothing the inert-entry invariant doesn't already provide.
+
+    // mark [first, first + count) as retired/inert
+    static void retire_face_range(VMesh* mesh, hsize_t first, hsize_t count) {
+        for (hsize_t i = first; i < first + count; i++) {
+            mesh->neighbor_cell[i] = -1;
+            mesh->face_area[i]     = 0.0;
+#ifdef MOVING_MESH
+            for (int c = 0; c < DIMENSION - 1; c++)
+                mesh->f_mid_local[i * (DIMENSION - 1) + c] = 0.0;
+#endif
+        }
+    }
+
+    // write a successfully built cell into mesh's face arrays: in place when it fits the
+    // cell's existing slot, appended otherwise. face_counts[k] == 0 marks "no live slot".
+    //
+    // fc_max (count_cell_faces) only bounds the slot-fit decision and the capacity check;
+    // face_counts[k] and num_faces advance by what extract_cell_all actually wrote, so a
+    // degenerate cell that closes fewer faces than planes leaves no unwritten entry inside
+    // its live slice. This path is serial, so unlike the atomic build there is no reservation
+    // to give back — the append advances by the true count.
+    static void write_cell_to_mesh(VMesh* mesh, int k, const ConvexCell& cell) {
+        const hsize_t fc_max = (hsize_t)count_cell_faces(cell);
+        const hsize_t fp_old = mesh->face_ptr[k];
+        const hsize_t fc_old = mesh->face_counts[k];
+        if (fc_max <= fc_old) {
+            const hsize_t written = extract_cell_all(cell, mesh, (hsize_t)k);
+            mesh->face_counts[k]  = written;
+            retire_face_range(mesh, fp_old + written, fc_old - written);
+        } else {
+            retire_face_range(mesh, fp_old, fc_old);
+            ensure_face_capacity(mesh, mesh->num_faces + fc_max);
+            mesh->face_ptr[k]     = mesh->num_faces;
+            const hsize_t written = extract_cell_all(cell, mesh, (hsize_t)k);
+            mesh->face_counts[k]  = written;
+            mesh->num_faces += written;
+        }
+    }
+
+    // compute_single_voronoi_cell (shared with the GPU kernels, so left untouched) always
+    // appends the rebuilt slice at *face_offset and repoints face_ptr[k] there. Relocate the
+    // slice back into the cell's original slot when it fits and roll the append back — the
+    // cascade is serial and owns the counter, so the rollback is safe. Otherwise keep the
+    // appended location and retire the original slice.
+    //
+    // `off_before` is the counter value from before the rebuild. The rollback restores it
+    // exactly rather than subtracting face_counts[k]: the cell reserved count_cell_faces
+    // slots but face_counts[k] now holds the (possibly smaller) number extract_cell_all
+    // wrote, so subtracting the latter would leave the reservation's slack behind forever.
+    static void reclaim_appended_slice(
+        VMesh* mesh, int k, hsize_t fp_old, hsize_t fc_old, unsigned long long* face_offset,
+        unsigned long long off_before) {
+        const hsize_t fp_new = mesh->face_ptr[k];
+        const hsize_t fc_new = mesh->face_counts[k];
+        if (fc_new <= fc_old) {
+            for (hsize_t i = 0; i < fc_new; i++) {
+                mesh->neighbor_cell[fp_old + i] = mesh->neighbor_cell[fp_new + i];
+                mesh->face_area[fp_old + i]     = mesh->face_area[fp_new + i];
+#ifdef MOVING_MESH
+                for (int c = 0; c < DIMENSION - 1; c++)
+                    mesh->f_mid_local[(fp_old + i) * (DIMENSION - 1) + c] =
+                        mesh->f_mid_local[(fp_new + i) * (DIMENSION - 1) + c];
+#endif
+            }
+            mesh->face_ptr[k] = fp_old;
+            retire_face_range(mesh, fp_old + fc_new, fc_old - fc_new);
+            *face_offset = off_before;
+        } else {
+            retire_face_range(mesh, fp_old, fc_old);
+        }
     }
 
     // collect unique neighbour-k indices touched by any source cell
@@ -484,15 +560,14 @@ namespace voronoi {
     }
 
     // after perturbation, neighbours of perturbed cells were built against the OLD seed positions
-    // and need rebuilding. Cascade until no more neighbours change (or MAX_ROUNDS). Every
-    // affected cell's face_ptr is rewritten by append_cell_to_mesh, so we feed the lowest
-    // touched k back to compact_face_arrays via min_touched_k.
+    // and need rebuilding. Cascade until no more neighbours change (or MAX_ROUNDS). Rebuilt
+    // slices are folded back into each cell's own slot by reclaim_appended_slice, so the face
+    // array needs no compaction.
     static void run_symmetry_pass(VMesh*                  mesh,
                                   double*                 d_stored_points,
                                   CellSids&               cell_sids,
                                   const std::vector<int>& initial_perturbed,
-                                  double                  dt,
-                                  int&                    min_touched_k) {
+                                  double                  dt) {
         // each round only rebuilds the cells that actually changed in the previous round,
         // so cost is bounded by the propagation neighbourhood and ramping this up is cheap.
         constexpr int MAX_ROUNDS = 12;
@@ -517,9 +592,14 @@ namespace voronoi {
             // rebuild each affected cell; track which ones get perturbed for the next round
             std::vector<int> next_work;
             for (int kn : affected) {
-                if (kn < min_touched_k) min_touched_k = kn;
                 mesh->cell_status[kn] = security_radius_not_reached;
                 const int seed_id     = (int)mesh->real_sorted_ids[kn];
+                // snapshot the cell's live slot; on success the appended rebuild is folded
+                // back into it (affected cells were built successfully this step, so the
+                // slot is valid — unlike the initial failed set)
+                const hsize_t            fp_old     = mesh->face_ptr[kn];
+                const hsize_t            fc_old     = mesh->face_counts[kn];
+                const unsigned long long off_before = face_offset;
                 compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_>(
                     kn, seed_id, d_stored_points, mesh->knn, mesh->cell_status, mesh, &face_offset, &overflow);
                 if (overflow) {
@@ -527,6 +607,9 @@ namespace voronoi {
                                  "increase _FACE_CAPACITY_MULT_ in Config.sh."
                               << std::endl;
                     exit(EXIT_FAILURE);
+                }
+                if (mesh->cell_status[kn] == success) {
+                    reclaim_appended_slice(mesh, kn, fp_old, fc_old, &face_offset, off_before);
                 }
 
                 // KNN rebuild failed for this neighbour: fall through to the perturb path
@@ -548,66 +631,6 @@ namespace voronoi {
 
         std::cout << "VORONOI: " << initial_perturbed.size() << " cell(s) permanently perturbed; " << rebuilt
                   << " neighbour rebuild(s) over " << rounds << " round(s)." << std::endl;
-    }
-
-    // append-then-compact: symmetry-pass rebuilds push new face data past the original num_faces,
-    // leaving gaps. Compact only from k = min_touched_k onward — every cell with smaller k
-    // already lives at its correct compact offset (no gaps before it), so we copy nothing
-    // and reallocate no scratch for the unchanged prefix. Saves ~(min_touched_k / n_hydro)
-    // of the scratch and copy traffic; near-total saving when the perturbations cluster
-    // at high k, vs the old version that always rewrote the whole face array.
-    static void compact_face_arrays(VMesh* mesh, int min_touched_k) {
-        const int n_hydro = (int)mesh->n_hydro;
-        if (min_touched_k >= n_hydro) return; // nothing touched (defensive)
-        if (min_touched_k < 0) min_touched_k = 0;
-
-        // For k < min_touched_k: face_ptr[k] is already at the correct compact offset.
-        // Compute the starting offset = sum of face_counts[0..min_touched_k-1].
-        hsize_t starting_offset = 0;
-        for (int k = 0; k < min_touched_k; k++)
-            starting_offset += mesh->face_counts[k];
-
-        // Total faces that need to be moved (cells k >= min_touched_k).
-        hsize_t total_remaining = 0;
-        for (int k = min_touched_k; k < n_hydro; k++)
-            total_remaining += mesh->face_counts[k];
-
-        // scratch sized to the moving region only (not the whole face array)
-        std::vector<int>    neighbor_tmp(total_remaining);
-        std::vector<double> area_tmp(total_remaining);
-#ifdef MOVING_MESH
-        std::vector<double> fmid_tmp(total_remaining * (DIMENSION - 1));
-#endif
-
-        // pass 1: walk cells [min_touched_k, n_hydro), copy faces into scratch in compact order,
-        // rewrite face_ptr[k] to the new compact location
-        hsize_t out_local = 0;
-        for (int k = min_touched_k; k < n_hydro; k++) {
-            const hsize_t fp = mesh->face_ptr[k];
-            const hsize_t fc = mesh->face_counts[k];
-            for (hsize_t i = 0; i < fc; i++) {
-                neighbor_tmp[out_local + i] = mesh->neighbor_cell[fp + i];
-                area_tmp[out_local + i]     = mesh->face_area[fp + i];
-            }
-#ifdef MOVING_MESH
-            for (hsize_t i = 0; i < fc * (DIMENSION - 1); i++)
-                fmid_tmp[out_local * (DIMENSION - 1) + i] = mesh->f_mid_local[fp * (DIMENSION - 1) + i];
-#endif
-            mesh->face_ptr[k] = starting_offset + out_local;
-            out_local += fc;
-        }
-
-        // pass 2: write scratch back into mesh arrays starting at starting_offset
-        for (hsize_t i = 0; i < out_local; i++) {
-            mesh->neighbor_cell[starting_offset + i] = neighbor_tmp[i];
-            mesh->face_area[starting_offset + i]     = area_tmp[i];
-        }
-#ifdef MOVING_MESH
-        for (hsize_t i = 0; i < out_local * (DIMENSION - 1); i++)
-            mesh->f_mid_local[starting_offset * (DIMENSION - 1) + i] = fmid_tmp[i];
-#endif
-
-        mesh->num_faces = starting_offset + out_local;
     }
 
     // ============================================================
