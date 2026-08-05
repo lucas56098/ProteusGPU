@@ -71,6 +71,10 @@ std::string InputHandler::getParameter(const std::string& key) const {
     throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
 }
 
+bool InputHandler::hasParameter(const std::string& key) const {
+    return parameters.find(key) != parameters.end();
+}
+
 // access parameter converted to double
 double InputHandler::getParameterDouble(const std::string& key) const {
     std::string value = getParameter(key);

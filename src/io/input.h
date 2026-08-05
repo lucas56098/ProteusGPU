@@ -50,6 +50,7 @@ class InputHandler {
 
     std::string getParameter(const std::string& key) const;
     double      getParameterDouble(const std::string& key) const;
+    bool        hasParameter(const std::string& key) const; // for optional params (the getters throw)
 
     // load ic
     bool readICFile(const std::string& filename, ICData& icData);
