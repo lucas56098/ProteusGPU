@@ -127,7 +127,10 @@ void OutputHandler::write_snapshot() {
     H5Fclose(file_id);
 
     sim.snap_num += 1;
-    if (sim.snap_num != 0) { sim.t_nextoutput += sim.output_dt; }
+    // Skip the advance for the initial t=0 snapshot: begrun already set
+    // t_nextoutput = t_sim + output_dt, so advancing here too would put the first
+    // cadenced snapshot at 2*output_dt. The test runs post-increment, so snap_0 is 1.
+    if (sim.snap_num != 1) { sim.t_nextoutput += sim.output_dt; }
 }
 
 // ============================================================
