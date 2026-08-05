@@ -29,6 +29,10 @@ namespace voronoi {
         mesh->volumes        = gpu_calloc<double>(ext);
         mesh->face_counts    = gpu_calloc<hsize_t>(ext);
         mesh->face_ptr       = gpu_calloc<hsize_t>(ext);
+        // device-side mirror of the hydro floor; sources_init() runs before this, so a
+        // cooling-derived floor is already in sim by now
+        mesh->min_egy_spec = sim.min_egy_spec;
+
         // reference cell for the size-equalizing drift. Default: the mean cell (V_ref = 1/N_global,
         // unit box). If the IC declares `vol_ref_cell_size` (the finest designed cell size, code
         // units), use that instead so a statically-refined IC isn't de-refined by the drift — it then

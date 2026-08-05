@@ -29,7 +29,7 @@ namespace hydro {
                                         POINT_TYPE                    dx,
                                         prim*                         st_extrap);
     HD void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap);
-    HD void keep_state_physical(prim* state);
+    HD void keep_state_physical(prim* state, double min_egy_spec);
     HD void rotate_to_face(prim* state, geom* g);
     HD void rotate_from_face(prim* state, geom* g);
 #ifdef MOVING_MESH

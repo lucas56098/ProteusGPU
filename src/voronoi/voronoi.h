@@ -96,6 +96,10 @@ struct VMesh {
 
     int* d_real_counter; // build_index_maps atomic counter, size 1
 
+    // minimum specific internal energy for the hydro positivity/temperature floor (0 disables).
+    // Mirror of sim.min_egy_spec, copied here so the flux kernel can read it device-side.
+    double min_egy_spec;
+
     // effective radius of the mean-volume cell (V_ref = 1/N_global, unit box); reference
     // for the size-equalizing mesh drift. Set once in allocate_mesh.
     double Ri_ref;

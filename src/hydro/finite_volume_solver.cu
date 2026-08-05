@@ -441,8 +441,8 @@ namespace hydro {
 #endif
 
             // floor density and pressure
-            keep_state_physical(&state_l);
-            keep_state_physical(&state_r);
+            keep_state_physical(&state_l, mesh->min_egy_spec);
+            keep_state_physical(&state_r, mesh->min_egy_spec);
 
             // rotate into face frame
             rotate_to_face(&state_l, &g);
@@ -470,18 +470,49 @@ namespace hydro {
         }
 
         // conservative update: state_new = state_old - (dt/V) * sum(F * A)
-        double frac    = dt_update / mesh->volumes[i];
-        double rho_old = prim_new->rho[i];
-        double rho_new = rho_old - frac * total_flux.rho;
-        double rho_inv = 1.0 / rho_new;
+        double           frac           = dt_update / mesh->volumes[i];
+        double           rho_old        = prim_new->rho[i];
+        double           rho_new        = rho_old - frac * total_flux.rho;
+        constexpr double RHO_FLOOR_CELL = 1e-13;
 
-        prim_new->rho[i] = rho_new;
-        prim_new->v[i].x = (rho_old * prim_new->v[i].x - frac * total_flux.v.x) * rho_inv;
-        prim_new->v[i].y = (rho_old * prim_new->v[i].y - frac * total_flux.v.y) * rho_inv;
+        if (mesh->min_egy_spec > 0.0 && rho_new < RHO_FLOOR_CELL) {
+            // Density-floor "soft landing". The cell would go negative-mass under a normal
+            // momentum-conserving update, and conserving momentum against the floored rho
+            // amplifies v by ~1/floor_ratio, producing cells that NaN the flux calc
+            // downstream. Instead floor rho, freeze v at its pre-flux value (drop the
+            // momentum flux this step), and reset E onto the temperature wall for the new
+            // rho. Locally non-conservative, but the mass was already essentially gone.
+            // The floor is absolute, not relative: rho_new = 1e-10 * rho_old would ratchet
+            // 10x smaller on every firing and make 1/rho in time_gradient explode.
+            rho_new          = RHO_FLOOR_CELL;
+            prim_new->rho[i] = rho_new;
+            // prim_new->v[i] already holds the pre-flux value; leave it untouched
+            double v2 = prim_new->v[i].x * prim_new->v[i].x + prim_new->v[i].y * prim_new->v[i].y;
 #ifdef dim_3D
-        prim_new->v[i].z = (rho_old * prim_new->v[i].z - frac * total_flux.v.z) * rho_inv;
+            v2 += prim_new->v[i].z * prim_new->v[i].z;
 #endif
-        prim_new->E[i] -= frac * total_flux.E;
+            prim_new->E[i] = 0.5 * rho_new * v2 + rho_new * mesh->min_egy_spec;
+        } else {
+            double rho_inv = 1.0 / rho_new;
+
+            prim_new->rho[i] = rho_new;
+            prim_new->v[i].x = (rho_old * prim_new->v[i].x - frac * total_flux.v.x) * rho_inv;
+            prim_new->v[i].y = (rho_old * prim_new->v[i].y - frac * total_flux.v.y) * rho_inv;
+#ifdef dim_3D
+            prim_new->v[i].z = (rho_old * prim_new->v[i].z - frac * total_flux.v.z) * rho_inv;
+#endif
+            prim_new->E[i] -= frac * total_flux.E;
+
+            // temperature floor: keep E above kinetic + e_int(T_floor) = rho * min_egy_spec
+            if (mesh->min_egy_spec > 0.0) {
+                double v2 = prim_new->v[i].x * prim_new->v[i].x + prim_new->v[i].y * prim_new->v[i].y;
+#ifdef dim_3D
+                v2 += prim_new->v[i].z * prim_new->v[i].z;
+#endif
+                double e_wall = 0.5 * rho_new * v2 + rho_new * mesh->min_egy_spec;
+                if (prim_new->E[i] < e_wall) { prim_new->E[i] = e_wall; }
+            }
+        }
     }
 
     // CFL timestep for cell i
@@ -533,7 +564,7 @@ namespace hydro {
     // ============================================================
 
     // floor density and pressure to small positive values
-    HD void keep_state_physical(prim* state) {
+    HD void keep_state_physical(prim* state, double min_egy_spec) {
         const double rho_floor = 1e-12;
         const double p_floor   = 1e-12;
 
@@ -543,8 +574,11 @@ namespace hydro {
 #ifdef dim_3D
         v2 += state->v.z * state->v.z;
 #endif
-        double ekin = 0.5 * state->rho * v2;
-        double emin = ekin + p_floor / (gamma_eos - 1.0);
+        // keep ekin a separate temporary: folding it into the sum below lets the compiler
+        // contract it to an FMA, which changes the rounding of every floor-free run
+        double ekin      = 0.5 * state->rho * v2;
+        double e_int_min = (min_egy_spec > 0.0) ? state->rho * min_egy_spec : p_floor / (gamma_eos - 1.0);
+        double emin      = ekin + e_int_min;
         if (state->E < emin) { state->E = emin; }
     }
 
@@ -593,17 +627,78 @@ namespace hydro {
     }
 
     // st_extrap += dt * dW/dt
+    // st_extrap += beta * dt * dW/dt, where beta in [0, 1] is the largest scale that keeps
+    // the reconstructed face state above the rho and pressure floors. Analogous to
+    // gradients::pressure_safe_scale for the spatial term (per-cell), but applied here
+    // per-face on top of the already spatially-limited state. Without it, dt * dWdt is
+    // unbounded and can drive face states to arbitrary rho/E, producing pathological
+    // Riemann inputs at sharp interfaces (e.g. cells adjacent to a floored neighbour, or
+    // cells whose neighbour topology just changed after a symmetry-cascade rebuild).
     HD void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap) {
         prim dWdt;
         gradients::time_gradient(state_i, grad_i, &dWdt);
 
-        st_extrap->rho += dt_extrap * dWdt.rho;
-        st_extrap->v.x += dt_extrap * dWdt.v.x;
-        st_extrap->v.y += dt_extrap * dWdt.v.y;
+        constexpr double RHO_FLOOR_FACE = 1e-12;
+        constexpr double P_FLOOR_FACE   = 1e-12;
+        double           beta           = 1.0;
+
+        // rho constraint: linear in beta. Only binds when dWdt.rho < 0.
+        if (dWdt.rho < 0.0) {
+            const double denom = -dt_extrap * dWdt.rho;
+            if (denom > 0.0) {
+                const double beta_rho = (st_extrap->rho - RHO_FLOOR_FACE) / denom;
+                if (beta_rho < beta) beta = fmax(0.0, beta_rho);
+            }
+        }
+
+        // pressure constraint: P = (gamma-1)*(E - 0.5*rho*v^2) is cubic in beta. Bisect on
+        // [0, beta] if the current beta already violates P >= P_FLOOR_FACE. Reuses the
+        // same 16-iteration bisection depth as gradients::pressure_safe_scale.
+        {
+            const double rho_b = st_extrap->rho + beta * dt_extrap * dWdt.rho;
+            const double vx_b  = st_extrap->v.x + beta * dt_extrap * dWdt.v.x;
+            const double vy_b  = st_extrap->v.y + beta * dt_extrap * dWdt.v.y;
 #ifdef dim_3D
-        st_extrap->v.z += dt_extrap * dWdt.v.z;
+            const double vz_b = st_extrap->v.z + beta * dt_extrap * dWdt.v.z;
+            const double v2_b = vx_b * vx_b + vy_b * vy_b + vz_b * vz_b;
+#else
+            const double v2_b = vx_b * vx_b + vy_b * vy_b;
 #endif
-        st_extrap->E += dt_extrap * dWdt.E;
+            const double E_b = st_extrap->E + beta * dt_extrap * dWdt.E;
+            const double P_b = (gamma_eos - 1.0) * (E_b - 0.5 * rho_b * v2_b);
+
+            if (P_b < P_FLOOR_FACE) {
+                double lo = 0.0, hi = beta;
+                for (int it = 0; it < 16; ++it) {
+                    const double mid   = 0.5 * (lo + hi);
+                    const double rho_m = st_extrap->rho + mid * dt_extrap * dWdt.rho;
+                    const double vx_m  = st_extrap->v.x + mid * dt_extrap * dWdt.v.x;
+                    const double vy_m  = st_extrap->v.y + mid * dt_extrap * dWdt.v.y;
+#ifdef dim_3D
+                    const double vz_m = st_extrap->v.z + mid * dt_extrap * dWdt.v.z;
+                    const double v2_m = vx_m * vx_m + vy_m * vy_m + vz_m * vz_m;
+#else
+                    const double v2_m = vx_m * vx_m + vy_m * vy_m;
+#endif
+                    const double E_m = st_extrap->E + mid * dt_extrap * dWdt.E;
+                    const double P_m = (gamma_eos - 1.0) * (E_m - 0.5 * rho_m * v2_m);
+                    if (P_m >= P_FLOOR_FACE)
+                        lo = mid;
+                    else
+                        hi = mid;
+                }
+                beta = lo;
+            }
+        }
+
+        const double bdt = beta * dt_extrap;
+        st_extrap->rho += bdt * dWdt.rho;
+        st_extrap->v.x += bdt * dWdt.v.x;
+        st_extrap->v.y += bdt * dWdt.v.y;
+#ifdef dim_3D
+        st_extrap->v.z += bdt * dWdt.v.z;
+#endif
+        st_extrap->E += bdt * dWdt.E;
     }
 
 #ifdef MOVING_MESH

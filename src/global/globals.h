@@ -150,6 +150,10 @@ struct SimState {
     int    imbalance_log_interval;
     double imbalance_threshold;
 
+    // minimum specific internal energy (code units) enforced on the hydro update. 0 disables it.
+    // Set from the cooling temperature floor (T_floor / C_T) when COOLING is compiled in.
+    double min_egy_spec = 0.0;
+
     // wall-clock start; per-step profile log lives in profile.hdf5 (see Profiler::OpenProfileLog)
     std::chrono::steady_clock::time_point wall_start;
 };

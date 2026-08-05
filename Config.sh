@@ -65,3 +65,9 @@ USE_OPENMP                          # enable multithreading on CPU (uses all ava
 
 #VOL_REGULARIZE=1                    # size-equalizing drift: threshold in Ri_ref/Ri before it engages
 #_VOL_SHAPING_SPEED_=0.7             # drift speed as a fraction of max(c_s, |v_gas|) (default 0.7)
+
+################################################################
+# diagnostics
+################################################################
+
+#OUTPUT_MESH                         # dump full Voronoi geometry (CSR faces + volumes) in snapshots
