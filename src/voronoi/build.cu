@@ -386,7 +386,7 @@ namespace voronoi {
         for (int k = 0; k < n_hydro; k++) {
             if (s_cpu_overflow_flag) continue;
             const int seed_id = (int)mesh->real_sorted_ids[k];
-            compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_>(k,
+            compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_, uchar, VERT_TYPE>(k,
                                                                               seed_id,
                                                                               (double*)mesh->knn->d_stored_points,
                                                                               mesh->knn,
@@ -453,7 +453,7 @@ namespace voronoi {
             if (s_cpu_overflow_flag) continue;
             if (mesh->cell_status[k] == success) continue;
             const int seed_id = (int)mesh->real_sorted_ids[k];
-            compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_>(k,
+            compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(k,
                                                                seed_id,
                                                                (double*)mesh->knn->d_stored_points,
                                                                mesh->knn,
@@ -574,7 +574,7 @@ namespace voronoi {
         const int k = blockIdx.x * blockDim.x + threadIdx.x;
         if (k >= n_hydro) return;
         const int seed_id = (int)mesh->real_sorted_ids[k];
-        compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_>(
+        compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_, uchar, VERT_TYPE>(
             k, seed_id, d_stored_points, knn, stat, mesh, (unsigned long long*)face_offset, overflow_flag);
     }
 
@@ -591,7 +591,7 @@ namespace voronoi {
         if (i >= n_failed) return;
         const int k       = failed_ks[i];
         const int seed_id = (int)mesh->real_sorted_ids[k];
-        compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_>(
+        compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(
             k, seed_id, d_stored_points, knn, stat, mesh, (unsigned long long*)face_offset, overflow_flag);
     }
 

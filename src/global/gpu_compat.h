@@ -74,6 +74,24 @@ inline uchar3 make_uchar3(uchar x, uchar y, uchar z) {
     return {x, y, z};
 }
 
+// int vector types: the wide-index counterparts of uchar2/uchar3, used by the CPU
+// fallback's BigConvexCell tier (see BIG_VERT_TYPE below). CUDA supplies these itself.
+typedef struct {
+    int x, y;
+} int2;
+
+inline int2 make_int2(int x, int y) {
+    return {x, y};
+}
+
+typedef struct {
+    int x, y, z;
+} int3;
+
+inline int3 make_int3(int x, int y, int z) {
+    return {x, y, z};
+}
+
 #else // CUDA mode
 #define RUN_MODE "GPU"
 
@@ -193,14 +211,21 @@ HD inline int imax(int a, int b) {
 
 // typedefs
 // point and vertex types
+// VERT_TYPE holds the DIMENSION plane indices meeting at one dual-graph vertex, one
+// component per plane. Its component width caps how many clipping planes a cell may use:
+// uchar components mean plane ids must fit in a byte. BIG_VERT_TYPE is the same thing with
+// 32-bit components, used only by the CPU fallback's wide tier so a pathological cell can
+// exceed that ceiling (see BasicConvexCell in voronoi/cell.h).
 #ifdef dim_2D
 #define DIMENSION 2
 typedef double2 POINT_TYPE;
 typedef uchar2  VERT_TYPE;
+typedef int2    BIG_VERT_TYPE;
 #else
 #define DIMENSION 3
 typedef double3 POINT_TYPE;
 typedef uchar3  VERT_TYPE;
+typedef int3    BIG_VERT_TYPE;
 #endif
 
 // atomics that work on host and device

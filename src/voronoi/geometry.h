@@ -7,14 +7,14 @@
 namespace voronoi {
 
     // forward declaration (defined in cell.h)
-    template <int MAX_P, int MAX_T> struct BasicConvexCell;
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT> struct BasicConvexCell;
 
     // 2D: walk the cell's polygon boundary and accumulate area + centroid via shoelace
-    template <int MAX_P, int MAX_T>
-    HD double compute_cell_area_centroid_2d(const BasicConvexCell<MAX_P, MAX_T>& cell,
-                                            const double4*                       vertices,
-                                            double&                              cx,
-                                            double&                              cy);
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD double compute_cell_area_centroid_2d(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
+                                            const double4*                                  vertices,
+                                            double&                                         cx,
+                                            double&                                         cy);
 
     // reverse face_verts[] in place if its winding faces inward (toward the seed)
     HD void orient_face_outward(double4* face_verts, int n_fv, double4 seed);

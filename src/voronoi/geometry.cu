@@ -7,11 +7,11 @@ namespace voronoi {
 #ifdef dim_2D
     // 2D: walk the cell's polygon boundary (adjacency via shared plane index) and accumulate
     // area + centroid via shoelace
-    template <int MAX_P, int MAX_T>
-    HD double compute_cell_area_centroid_2d(const BasicConvexCell<MAX_P, MAX_T>& cell,
-                                            const double4*                       vertices,
-                                            double&                              cx,
-                                            double&                              cy) {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD double compute_cell_area_centroid_2d(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
+                                            const double4*                                  vertices,
+                                            double&                                         cx,
+                                            double&                                         cy) {
         const int nb_t = cell.nb_t;
 
         // degenerate cell: return seed as centroid, zero area
@@ -21,8 +21,12 @@ namespace voronoi {
             return 0.0;
         }
 
-        // walk the polygon boundary: two vertices (uchar2) are adjacent if they share a plane index
-        bool visited[MAX_T]; // indexed by triangle index, so bounded by MAX_T (not MAX_P)
+        // walk the polygon boundary: two vertices are adjacent if they share a plane index.
+        // Sized MAX_T, not MAX_P: every index into this array is a TRIANGLE index bounded by
+        // nb_t <= MAX_T. The old MAX_P extent rested on an unenforced nb_t <= nb_v invariant
+        // and already overran whenever MAX_T > MAX_P, which the shipped 2D defaults (30 / 60)
+        // satisfy.
+        bool visited[MAX_T];
         for (int i = 0; i < nb_t; i++)
             visited[i] = false;
         visited[0] = true;
@@ -36,11 +40,11 @@ namespace voronoi {
 
         for (int step = 1; step < nb_t; step++) {
             // find the next unvisited vertex that shares a plane with cur
-            const VERT_TYPE t_cur = cell.triangle[cur];
-            int             next  = -1;
+            const VERT t_cur = cell.triangle[cur];
+            int        next  = -1;
             for (int j = 0; j < nb_t; j++) {
                 if (visited[j]) continue;
-                const VERT_TYPE t_j = cell.triangle[j];
+                const VERT t_j = cell.triangle[j];
                 if (t_cur.x == t_j.x || t_cur.x == t_j.y || t_cur.y == t_j.x || t_cur.y == t_j.y) {
                     next = j;
                     break;

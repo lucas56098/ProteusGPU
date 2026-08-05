@@ -55,6 +55,27 @@
 #endif
 #endif
 
+// Wide "big" tier for the CPU fallback only (see BigConvexCell in voronoi/cell.h).
+//
+// _MAX_P_/_MAX_T_ above are bounded by the 8-bit index types the GPU tiers use: plane ids
+// live in VERT_TYPE's uchar components and 255 is reserved as the "no such plane" sentinel,
+// so _MAX_P_ <= 255, and Euler (V = 2F - 4) then caps a cell at ~129 faces. That is not a
+// limit on how many faces a cell HAS -- it is a limit on how many plane slots the
+// incremental construction burns, because a plane that clips the intermediate polytope
+// keeps its slot even after a later, closer plane erases every face it contributed.
+// A seed stranded in an evacuated cavity produces a long spike whose security radius is
+// only reached after ~1e4 neighbours, burning far more slots than its 47 real faces.
+//
+// The big tier uses 32-bit indices so the CPU fallback can build such a cell exactly.
+// Keep the pair Euler-consistent: _BIG_MAX_T_ >= 2 * _BIG_MAX_P_ - 4, or triangle overflow
+// fires before plane overflow and the extra plane capacity is unreachable.
+#ifndef _BIG_MAX_P_
+#define _BIG_MAX_P_ 1024
+#endif
+#ifndef _BIG_MAX_T_
+#define _BIG_MAX_T_ 2048
+#endif
+
 // GPU kernel block sizes
 #ifndef _VORO_BLOCK_SIZE_
 #define _VORO_BLOCK_SIZE_ 64

@@ -7,11 +7,18 @@
 namespace voronoi {
 
     // ---- forward declarations ----
-    static const uchar END_OF_LIST = 255;
-
-    HD static inline uchar& ith_plane(VERT_TYPE* triangles, uchar t, int i);
-    HD static inline uchar  ith_plane(const VERT_TYPE* triangles, uchar t, int i);
-    HD static inline bool   vert_references_plane(const VERT_TYPE* triangles, int t_idx, uchar p);
+    // The "no such plane" sentinel is now BasicConvexCell::END_OF_LIST (cell.h): it has to
+    // track the index width, since a hardcoded 255 would be a legal plane index once the
+    // wide tier allows MAX_P > 255. It is still 255 for the uchar tiers.
+    //
+    // ith_plane deduces its return type from VERT's component type, so callers need no
+    // explicit template arguments. The former `uchar&` mutable overload was dead -- every
+    // call site uses the result as an index or a value, never as an assignment target --
+    // and is gone.
+    template <typename VERT>
+    HD static inline auto ith_plane(const VERT* triangles, int t, int i) -> decltype(triangles[0].x);
+    template <typename VERT, typename IDXP>
+    HD static inline bool vert_references_plane(const VERT* triangles, int t_idx, IDXP p);
     HD static void          write_face(VMesh*         mesh,
                                        hsize_t        fi,
                                        int            neighbor_id,
@@ -25,9 +32,10 @@ namespace voronoi {
     // Main routines
     // ============================================================
 
+
     // build the Voronoi cell for seed `k` by clipping the bounding box against the K nearest
     // neighbours; on success atomically reserves face storage and emits geometry into mesh.
-    template <int K, int MAX_P, int MAX_T>
+    template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD void compute_single_voronoi_cell(int                 k,
                                         int                 seed_id,
                                         double*             d_stored_points,
@@ -42,7 +50,7 @@ namespace voronoi {
         knn::knn_for_point<K>(seed_id, knn, local_knn);
 
         // start from the bounding-box cell, then clip plane-by-plane
-        BasicConvexCell<MAX_P, MAX_T> cell(seed_id, d_stored_points, &(stat[k]), mesh->buff);
+        BasicConvexCell<MAX_P, MAX_T, IDX, VERT> cell(seed_id, d_stored_points, &(stat[k]), mesh->buff);
 
         // v_terminate / early_break are only read by the MPI completeness piggyback below;
         // attributes silence unused-warnings when built without USE_MPI or on the device side
@@ -70,69 +78,12 @@ namespace voronoi {
             stat[k] = security_radius_not_reached;
         }
 
-#ifdef USE_MPI
-        // Data-extent soundness guard. is_security_radius_reached only proves the cell fits
-        // inside the local K-th's circumscribed sphere; under multi-rank decomposition that
-        // sphere can poke past the edge of the data we actually have (own brick + halo W),
-        // meaning a true global K-nearest could be sitting outside, unseen. The safe radius
-        // for this seed is its smallest distance to any face of [data_lo, data_hi]; if the
-        // Voronoi cell's bounding sphere (radius = sqrt(d2)/2 from the deciding K-th) reaches
-        // past that, flip to security_radius_not_reached so the widen-W loop iterates.
-        // A cell deep inside the brick keeps a large safe radius — no false widens.
-        // Fast-tier only (K <= 50): the slow tier in sparse regions routinely needs farther
-        // K-nearest by design, and re-flagging it just feeds the perturb / CPU-fallback twice.
-        if (stat[k] == success && K <= 50 && mesh->data_hi[0] > mesh->data_lo[0]) {
-            const double4 last = point_from_ptr(d_stored_points + DIMENSION * local_knn[v_terminate]);
-            const double  dx   = last.x - cell.voro_seed.x;
-            const double  dy   = last.y - cell.voro_seed.y;
-#ifdef dim_3D
-            const double dz = last.z - cell.voro_seed.z;
-            const double d2 = dx * dx + dy * dy + dz * dz;
-#else
-            const double d2 = dx * dx + dy * dy;
-#endif
-            const double sx   = cell.voro_seed.x;
-            const double sy   = cell.voro_seed.y;
-            double       safe = sx - mesh->data_lo[0];
-            safe              = fmin(safe, mesh->data_hi[0] - sx);
-            safe              = fmin(safe, sy - mesh->data_lo[1]);
-            safe              = fmin(safe, mesh->data_hi[1] - sy);
-#ifdef dim_3D
-            const double sz = cell.voro_seed.z;
-            safe            = fmin(safe, sz - mesh->data_lo[2]);
-            safe            = fmin(safe, mesh->data_hi[2] - sz);
-#endif
-            if (safe < 0.0 || d2 > 4.0 * safe * safe) { stat[k] = security_radius_not_reached; }
-        }
-#endif
 
-#ifdef USE_MPI
-        // MPI halo-completeness piggyback. Fires only when (a) the cell succeeded via an
-        // early break before v=K-1, (b) the deciding clip plane was an outermost-layer MPI ghost,
-        // and (c) this is a fast-tier build (K small). The slow tier with K=190 routinely touches
-        // the outer halo on geometrically-correct cells, so flagging it triggers spurious widening.
-        // The single shared mesh->outer_halo_hit flag is what SENTINEL_OUTER reads — no separate
-        // KNN-walk kernel needed. portable_atomicExch is idempotent: many threads writing 1 is fine.
-        // Reads halo metadata from mesh->{n_mpi_ghosts,is_outer_layer,pts_mpi_base} (snapshotted
-        // host-side from proteus_mpi::halo before the kernel launch) — the proteus_mpi::halo
-        // global is host-only and isn't visible to device code.
-        if (stat[k] == success && early_break && v_terminate < K - 1 && K <= 50) {
-            const int                  n_mpi_ghosts = mesh->n_mpi_ghosts;
-            const unsigned char* const is_outer     = mesh->is_outer_layer;
-            const int                  pts_mpi_base = mesh->pts_mpi_base;
-            if (n_mpi_ghosts > 0 && is_outer != nullptr) {
-                const unsigned int orig = knn->d_permutation[local_knn[v_terminate]];
-                if ((int)orig >= pts_mpi_base) {
-                    const int slot = (int)orig - pts_mpi_base;
-                    if (slot >= 0 && slot < n_mpi_ghosts && is_outer[slot]) {
-                        portable_atomicExch(mesh->outer_halo_hit, 1);
-                    }
-                }
-            }
-        }
-#endif
-
-        // on success, reserve face slots atomically and emit the cell geometry
+        // on success, reserve face slots atomically and emit the cell geometry.
+        // count_cell_faces is only an UPPER BOUND on what extract_cell_all writes, so it sizes
+        // the atomic reservation (which cannot be given back once taken), while face_counts[k]
+        // gets the number actually written. Any difference is slack that sits between cells'
+        // slices and is never read as a face by the slice-based consumers.
         if (stat[k] == success) {
             const int     fc        = count_cell_faces(cell);
             const hsize_t my_offset = (hsize_t)portable_atomicAdd(face_offset, (unsigned long long)fc);
@@ -147,12 +98,13 @@ namespace voronoi {
 
     // count how many of the cell's planes contribute a real face
     // (a plane contributes iff at least DIMENSION triangles reference it)
-    template <int MAX_P, int MAX_T> HD int count_cell_faces(const BasicConvexCell<MAX_P, MAX_T>& cell) {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD int count_cell_faces(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell) {
         int count = 0;
         for (int p = 0; p < cell.nb_v; p++) {
             int refs = 0;
             for (int i = 0; i < cell.nb_t; i++) {
-                if (vert_references_plane(cell.triangle, i, (uchar)p)) {
+                if (vert_references_plane(cell.triangle, i, (IDX)p)) {
                     refs++;
                     if (refs >= DIMENSION) {
                         count++;
@@ -164,17 +116,26 @@ namespace voronoi {
         return count;
     }
 
-    // emit cell volume + centroid + per-face data into the global mesh arrays
-    template <int MAX_P, int MAX_T>
-    HD hsize_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T>& cell, VMesh* mesh, hsize_t cell_index) {
+    // emit cell volume + centroid + per-face data into the global mesh arrays.
+    //
+    // RETURNS the number of faces actually written, which can be LESS than
+    // count_cell_faces(cell): that function accepts a plane as soon as DIMENSION triangles
+    // reference it, while the loops below additionally require the vertex-ordering walk to
+    // close the face (`n_ordered < DIMENSION` / collect_face_vertices failing). Degenerate
+    // cells -- exactly what the CPU fallback deals with -- can satisfy the first test and
+    // fail the second. Callers MUST use this return value for face_counts[k]; using the
+    // count_cell_faces estimate instead leaves unwritten entries inside the cell's live
+    // face slice, which the flux loop then reads as real faces.
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD hsize_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell, VMesh* mesh, hsize_t cell_index) {
         const double3 seed      = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
         mesh->seeds[cell_index] = seed;
 
 #ifdef dim_2D
-        // resolve dual triangles -> primal polygon vertices
-        // sized by MAX_T, not MAX_P: the fill loop below runs to nb_t, which is bounded
-        // by MAX_T. The old MAX_P extent overran whenever MAX_T > MAX_P (the shipped 2D
-        // defaults, 30 vs 60), resting on an unenforced nb_t <= nb_v invariant.
+        // resolve dual triangles -> primal polygon vertices.
+        // Sized MAX_T, not MAX_P: the fill loop below runs to nb_t, which new_vertex bounds
+        // by MAX_T. The old MAX_P extent relied on an unenforced nb_t <= nb_v invariant and
+        // already overflowed whenever MAX_T > MAX_P (the shipped 2D defaults are 30 / 60).
         double4 vertices_2d[MAX_T];
         for (int vi = 0; vi < cell.nb_t; vi++)
             vertices_2d[vi] = cell.compute_vertex_point(cell.triangle[vi], true);
@@ -211,7 +172,7 @@ namespace voronoi {
             int face_vert_indices[MAX_T];
             int n_fvi = 0;
             for (int i = 0; i < cell.nb_t; i++) {
-                if (vert_references_plane(cell.triangle, i, (uchar)p)) { face_vert_indices[n_fvi++] = i; }
+                if (vert_references_plane(cell.triangle, i, (IDX)p)) { face_vert_indices[n_fvi++] = i; }
             }
             if (n_fvi < DIMENSION) continue;
 
@@ -226,11 +187,11 @@ namespace voronoi {
 
             for (int step = 1; step < n_fvi; step++) {
                 const int last = ordered[n_ordered - 1];
-                uchar     others_last[DIMENSION - 1];
+                IDX       others_last[DIMENSION - 1];
                 int       cnt = 0;
                 for (int d = 0; d < DIMENSION; d++) {
-                    const uchar pl = ith_plane(cell.triangle, (uchar)last, d);
-                    if (pl != (uchar)p) others_last[cnt++] = pl;
+                    const IDX pl = ith_plane(cell.triangle, last, d);
+                    if (pl != (IDX)p) others_last[cnt++] = pl;
                 }
                 bool found = false;
                 for (int j = 0; j < n_fvi; j++) {
@@ -298,8 +259,11 @@ namespace voronoi {
     // initialise the convex cell to the unit-box bounding cell (eps margin against degeneracies).
     // Bounding-box plane equations are not stored — plane_for() returns them on demand for the
     // first 2*DIMENSION slots.
-    template <int MAX_P, int MAX_T>
-    HD BasicConvexCell<MAX_P, MAX_T>::BasicConvexCell(int p_seed, double* p_pts, Status* p_status, double p_buff) {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::BasicConvexCell(int     p_seed,
+                                                                 double* p_pts,
+                                                                 Status* p_status,
+                                                                 double  p_buff) {
         pts       = p_pts;
         buff      = p_buff;
         status    = p_status;
@@ -315,28 +279,29 @@ namespace voronoi {
 
         // dual-graph vertices: each "triangle" is a corner of the box (intersection of D planes)
 #ifdef dim_2D
-        triangle[0] = make_uchar2(2, 0);
-        triangle[1] = make_uchar2(1, 2);
-        triangle[2] = make_uchar2(3, 1);
-        triangle[3] = make_uchar2(0, 3);
+        triangle[0] = make_vert<VERT>(2, 0);
+        triangle[1] = make_vert<VERT>(1, 2);
+        triangle[2] = make_vert<VERT>(3, 1);
+        triangle[3] = make_vert<VERT>(0, 3);
         nb_v        = 4;
         nb_t        = 4;
 #else
-        triangle[0] = make_uchar3(2, 5, 0);
-        triangle[1] = make_uchar3(5, 3, 0);
-        triangle[2] = make_uchar3(1, 5, 2);
-        triangle[3] = make_uchar3(5, 1, 3);
-        triangle[4] = make_uchar3(4, 2, 0);
-        triangle[5] = make_uchar3(4, 0, 3);
-        triangle[6] = make_uchar3(2, 4, 1);
-        triangle[7] = make_uchar3(4, 3, 1);
+        triangle[0] = make_vert<VERT>(2, 5, 0);
+        triangle[1] = make_vert<VERT>(5, 3, 0);
+        triangle[2] = make_vert<VERT>(1, 5, 2);
+        triangle[3] = make_vert<VERT>(5, 1, 3);
+        triangle[4] = make_vert<VERT>(4, 2, 0);
+        triangle[5] = make_vert<VERT>(4, 0, 3);
+        triangle[6] = make_vert<VERT>(2, 4, 1);
+        triangle[7] = make_vert<VERT>(4, 3, 1);
         nb_v        = 6;
         nb_t        = 8;
 #endif
     }
 
     // clip the cell by the perpendicular bisector of (voro_seed, pts[vid])
-    template <int MAX_P, int MAX_T> HD void BasicConvexCell<MAX_P, MAX_T>::clip_by_plane(int vid) {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD void BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::clip_by_plane(int vid) {
 
         // append the new bisector plane; bail if we are out of plane slots
         const int cur_v = new_halfplane(vid);
@@ -349,7 +314,7 @@ namespace voronoi {
         while (i < nb_t) {
             if (vert_is_in_conflict(triangle[i], eqn)) {
                 nb_t--;
-                VERT_TYPE tmp  = triangle[i];
+                VERT tmp       = triangle[i];
                 triangle[i]    = triangle[nb_t];
                 triangle[nb_t] = tmp;
                 nb_r++;
@@ -370,25 +335,53 @@ namespace voronoi {
         if (*status != success) { return; }
         if (first_boundary == END_OF_LIST) { return; }
 
-        // sew new triangles along the boundary loop, anchored on the new plane
-        uchar cir = first_boundary;
+        // sew new triangles along the boundary loop, anchored on the new plane.
+        //
+        // The successor is read once and checked: a malformed boundary can leave a node whose
+        // successor was cleared without first_boundary being repaired (compute_boundary only
+        // repairs the head), and the sentinel would then be stored as a triangle's plane index
+        // and later fed to plane_for. That is out-of-bounds at every index width, but it is
+        // strictly worse once IDX is signed -- the sentinel is -1, so plane_for's
+        // `p < 2 * DIMENSION` test passes, no switch case matches, and control falls through
+        // to plane_vid[-1]. Failing the cell here routes it to the perturb ladder instead,
+        // which is a recoverable status the fallback already handles.
+        IDX cir = first_boundary;
         do {
+            const IDX nxt = boundary_next[cir];
+            if (nxt == END_OF_LIST) {
+                *status = inconsistent_boundary;
+                return;
+            }
 #ifdef dim_2D
-            new_vertex(cur_v, cir);
+            new_vertex((IDX)cur_v, cir);
 #else
-            new_vertex(cur_v, cir, boundary_next[cir]);
+            new_vertex((IDX)cur_v, cir, nxt);
 #endif
             if (*status != success) return;
-            cir = boundary_next[cir];
+            cir = nxt;
         } while (cir != first_boundary);
     }
 
     // returns true iff every cell vertex fits inside the sphere of radius ||last_neig - voro_seed||/2
     // (kept in projective num/denom form to avoid divisions in the inner loop)
-    template <int MAX_P, int MAX_T>
-    HD bool BasicConvexCell<MAX_P, MAX_T>::is_security_radius_reached(double4 last_neig) const {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::is_security_radius_reached(double4 last_neig) const {
+        // squared radius of the cell's bounding sphere, as a num/denom pair so the comparison
+        // below stays division-free in this per-clip hot path
+        double max_num, max_denom;
+        max_vertex_r2_ratio(&max_num, &max_denom);
 
-        // scan for the vertex with the largest squared distance from voro_seed
+        // check d^2/4 > max_vertex_d2 (rearranged to avoid a division)
+        const double4 diff = minus4(last_neig, voro_seed);
+        const double  d2   = dot3(diff, diff);
+        return (d2 * max_denom > 4.0 * max_num);
+    }
+
+    // Squared distance from voro_seed to the farthest cell vertex, returned as num/denom.
+    // Vertices come out of compute_vertex_point in homogeneous form, so comparing candidates
+    // needs the cross-multiplied form and callers that want a plain value divide once.
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD void BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::max_vertex_r2_ratio(double* out_num, double* out_denom) const {
         double max_num   = 0.0;
         double max_denom = 1.0;
         for (int i = 0; i < nb_t; i++) {
@@ -407,16 +400,14 @@ namespace voronoi {
                 max_denom = denom;
             }
         }
-
-        // check d^2/4 > max_vertex_d2 (rearranged to avoid a division)
-        const double4 diff = minus4(last_neig, voro_seed);
-        const double  d2   = dot3(diff, diff);
-        return (d2 * max_denom > 4.0 * max_num);
+        *out_num   = max_num;
+        *out_denom = max_denom;
     }
 
     // rebuild plane equation for slot p — bounding-box constants for p < 2*DIMENSION,
     // otherwise the perpendicular bisector of (voro_seed, pts[plane_vid[p]])
-    template <int MAX_P, int MAX_T> HD double4 BasicConvexCell<MAX_P, MAX_T>::plane_for(int p) const {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD double4 BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::plane_for(int p) const {
 
         // bounding box [-buff, 1+buff]^d (periodic ghost copies extend out to those limits,
         // so the bounding planes have to enclose them). plane form n.(x,y,z) + w >= 0:
@@ -453,7 +444,8 @@ namespace voronoi {
     }
 
     // append a new plane slot for vid; returns the new slot index (or -1 on overflow)
-    template <int MAX_P, int MAX_T> HD int BasicConvexCell<MAX_P, MAX_T>::new_halfplane(int vid) {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD int BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::new_halfplane(int vid) {
         if (nb_v >= MAX_P) {
             *status = vertex_overflow;
             return -1;
@@ -465,8 +457,8 @@ namespace voronoi {
 
     // is this triangle on the side of eqn that should be removed by the clip?
     // Uses interval-arithmetic guards to flag near-degenerate determinants as needs_exact_predicates.
-    template <int MAX_P, int MAX_T>
-    HD bool BasicConvexCell<MAX_P, MAX_T>::vert_is_in_conflict(VERT_TYPE v, double4 eqn) const {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::vert_is_in_conflict(VERT v, double4 eqn) const {
 
         // gather the DIMENSION planes that define this triangle
         const double4 pi1 = plane_for(v.x);
@@ -519,7 +511,8 @@ namespace voronoi {
     }
 
     // build the boundary loop separating removed from kept triangles (linked list in boundary_next[])
-    template <int MAX_P, int MAX_T> HD void BasicConvexCell<MAX_P, MAX_T>::compute_boundary() {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD void BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::compute_boundary() {
 
 #ifdef dim_2D
         // reset boundary linked list
@@ -528,23 +521,26 @@ namespace voronoi {
         }
         first_boundary = END_OF_LIST;
 
-        // count how many removed edges reference each plane
-        uchar line_count[MAX_P];
+        // count how many removed edges reference each plane. This is a COUNT, not an index,
+        // so it is deliberately not IDX -- but it is bounded by nb_r (<= MAX_T), so a byte
+        // would wrap once MAX_T exceeds 255 and a plane referenced 257 times would read as 1,
+        // faking a boundary endpoint. int costs nothing here and removes that coupling.
+        int line_count[MAX_P];
         for (int i = 0; i < MAX_P; i++) {
             line_count[i] = 0;
         }
         for (int r = 0; r < nb_r; r++) {
-            const uchar2 e = triangle[nb_t + r];
+            const VERT e = triangle[nb_t + r];
             line_count[e.x]++;
             line_count[e.y]++;
         }
 
         // boundary endpoints = the two planes referenced by exactly one removed edge (parity)
-        uchar boundary_lines[2];
-        int   nb_boundary = 0;
+        IDX boundary_lines[2];
+        int nb_boundary = 0;
         for (int p = 0; p < nb_v; p++) {
             if (line_count[p] == 1) {
-                if (nb_boundary < 2) { boundary_lines[nb_boundary++] = (uchar)p; }
+                if (nb_boundary < 2) { boundary_lines[nb_boundary++] = (IDX)p; }
             }
         }
         if (nb_boundary != 2) {
@@ -564,12 +560,21 @@ namespace voronoi {
         first_boundary = END_OF_LIST;
 
         // absorb removed triangles into the boundary loop one at a time, skipping any that would
-        // make the loop non-simple; bail out if we loop forever
-        int   nb_iter = 0;
-        uchar t       = nb_t;
+        // make the loop non-simple; bail out if we loop forever.
+        // `t` is a TRIANGLE index into [nb_t, nb_t + nb_r), so it must be IDX-wide: as a uchar
+        // it wrapped silently once MAX_T passed 255, and the 10000-iteration bail-out below was
+        // what turned that into an inconsistent_boundary instead of a hang.
+        int nb_iter = 0;
+        IDX t       = nb_t;
+
+        // Livelock guard, not a capacity limit. Each pass may cycle through all nb_r candidates
+        // before one can be absorbed, so the legitimate worst case grows with nb_r (<= MAX_T).
+        // 10000 is retained exactly for the 8-bit tiers so their behaviour is untouched; the
+        // wide tier gets a proportionally larger budget or it would abort on cells it can build.
+        constexpr int max_iter = (MAX_T > 255) ? (100 * MAX_T) : 10000;
 
         while (nb_r > 0) {
-            if (nb_iter++ > 10000) {
+            if (nb_iter++ > max_iter) {
                 *status = inconsistent_boundary;
                 return;
             }
@@ -627,7 +632,7 @@ namespace voronoi {
             }
 
             // swap the processed triangle to the tail and shrink the removed range
-            VERT_TYPE tmp             = triangle[t];
+            VERT tmp                  = triangle[t];
             triangle[t]               = triangle[nb_t + nb_r - 1];
             triangle[nb_t + nb_r - 1] = tmp;
             t                         = nb_t;
@@ -637,7 +642,8 @@ namespace voronoi {
     }
 
     // create a new triangle from planes i, j (and k in 3D); writes into triangle[nb_t]
-    template <int MAX_P, int MAX_T> HD void BasicConvexCell<MAX_P, MAX_T>::new_vertex(uchar i, uchar j, uchar k) {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD void BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::new_vertex(IDX i, IDX j, IDX k) {
         if (nb_t + 1 >= MAX_T) {
             *status = triangle_overflow;
             return;
@@ -649,20 +655,20 @@ namespace voronoi {
         const double4 hj = plane_for(j);
         const double  rw = det2x2(hi.x, hi.y, hj.x, hj.y);
         if (rw > 0) {
-            triangle[nb_t] = make_uchar2(j, i);
+            triangle[nb_t] = make_vert<VERT>(j, i);
         } else {
-            triangle[nb_t] = make_uchar2(i, j);
+            triangle[nb_t] = make_vert<VERT>(i, j);
         }
 #else
-        triangle[nb_t] = make_uchar3(i, j, k);
+        triangle[nb_t] = make_vert<VERT>(i, j, k);
 #endif
         nb_t++;
     }
 
     // primal coordinates of a dual-graph vertex (intersection of DIMENSION planes); set
     // persp_divide=false to return the projective representation (used by security-radius check)
-    template <int MAX_P, int MAX_T>
-    HD double4 BasicConvexCell<MAX_P, MAX_T>::compute_vertex_point(VERT_TYPE v, bool persp_divide) const {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD double4 BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::compute_vertex_point(VERT v, bool persp_divide) const {
         const double4 pi1 = plane_for(v.x);
         const double4 pi2 = plane_for(v.y);
         double4       result;
@@ -690,17 +696,17 @@ namespace voronoi {
 
     // walk the boundary of face p in dual-graph order, writing primal vertices into face_verts[].
     // Returns false if the face has fewer than DIMENSION vertices (= not a real face).
-    template <int MAX_P, int MAX_T>
-    HD bool collect_face_vertices(const BasicConvexCell<MAX_P, MAX_T>& cell,
-                                  int                                  p,
-                                  const double4*                       vertices,
-                                  double4*                             face_verts,
-                                  int*                                 n_face_verts) {
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD bool collect_face_vertices(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
+                                  int                                             p,
+                                  const double4*                                  vertices,
+                                  double4*                                        face_verts,
+                                  int*                                            n_face_verts) {
 #ifdef dim_2D
         // 2D: a face has exactly 2 vertices (an edge); grab them from the dual-graph triangles
         int n_fvi = 0;
         for (int i = 0; i < cell.nb_t; i++) {
-            if (vert_references_plane(cell.triangle, i, (uchar)p)) {
+            if (vert_references_plane(cell.triangle, i, (IDX)p)) {
                 face_verts[n_fvi] = vertices[i];
                 n_fvi++;
                 if (n_fvi == 2) break;
@@ -713,7 +719,7 @@ namespace voronoi {
         int face_vert_indices[MAX_T];
         int n_fvi = 0;
         for (int i = 0; i < cell.nb_t; i++) {
-            if (vert_references_plane(cell.triangle, i, (uchar)p)) { face_vert_indices[n_fvi++] = i; }
+            if (vert_references_plane(cell.triangle, i, (IDX)p)) { face_vert_indices[n_fvi++] = i; }
         }
         if (n_fvi < DIMENSION) return false;
 
@@ -730,11 +736,11 @@ namespace voronoi {
             const int last = ordered[n_ordered - 1];
 
             // collect the non-p planes of the current triangle
-            uchar others_last[DIMENSION - 1];
-            int   cnt = 0;
+            IDX others_last[DIMENSION - 1];
+            int cnt = 0;
             for (int d = 0; d < DIMENSION; d++) {
-                const uchar pl = ith_plane(cell.triangle, (uchar)last, d);
-                if (pl != (uchar)p) others_last[cnt++] = pl;
+                const IDX pl = ith_plane(cell.triangle, last, d);
+                if (pl != (IDX)p) others_last[cnt++] = pl;
             }
 
             // find an unused candidate that shares one of those planes
@@ -816,19 +822,28 @@ namespace voronoi {
 
     // ---- utility predicates (file-local) ----
 
-    // index into a triangle's plane indices as bytes (VERT_TYPE is uchar2 or uchar3)
-    HD static inline uchar& ith_plane(VERT_TYPE* triangles, uchar t, int i) {
-        return reinterpret_cast<uchar*>(&(triangles[t]))[i];
-    }
-
-    HD static inline uchar ith_plane(const VERT_TYPE* triangles, uchar t, int i) {
-        return reinterpret_cast<const uchar*>(&(triangles[t]))[i];
+    // the i-th plane index of triangle t.
+    //
+    // This used to reinterpret_cast the vertex to uchar* and index it as raw bytes, which
+    // only worked because VERT_TYPE's components were exactly one byte and tightly packed.
+    // Selecting the member instead is layout-independent, so it serves uchar3 and int3
+    // alike -- and it drops a strict-aliasing violation. `i` is a compile-time-unrollable
+    // loop counter at every call site, so the select folds away.
+    template <typename VERT>
+    HD static inline auto ith_plane(const VERT* triangles, int t, int i) -> decltype(triangles[0].x) {
+        const VERT& v = triangles[t];
+#ifdef dim_2D
+        return (i == 0) ? v.x : v.y;
+#else
+        return (i == 0) ? v.x : ((i == 1) ? v.y : v.z);
+#endif
     }
 
     // does triangle t_idx have plane p as one of its DIMENSION planes?
-    HD static inline bool vert_references_plane(const VERT_TYPE* triangles, int t_idx, uchar p) {
+    template <typename VERT, typename IDXP>
+    HD static inline bool vert_references_plane(const VERT* triangles, int t_idx, IDXP p) {
         for (int d = 0; d < DIMENSION; d++) {
-            if (ith_plane(triangles, (uchar)t_idx, d) == p) return true;
+            if (ith_plane(triangles, t_idx, d) == p) return true;
         }
         return false;
     }

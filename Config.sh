@@ -54,3 +54,7 @@ USE_OPENMP                          # enable multithreading on CPU (uses all ava
 #_FAST_MAX_T_=60                     # max triangles per cell, fast         (default 2D/3D ~20/60)
 
 #_FACE_CAPACITY_MULT_=17             # max face array entries allocated per cell (default 2D/3D ~8/17)
+
+# wide CPU-fallback tier: 32-bit indices, used when a cell overflows the 8-bit limits above
+#_BIG_MAX_P_=1024                    # max clipping planes per cell, wide tier (default 1024)
+#_BIG_MAX_T_=2048                    # max triangles per cell, wide tier (default 2048)
