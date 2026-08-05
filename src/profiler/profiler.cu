@@ -13,14 +13,15 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-// Per-rank profile log written as a single HDF5 file shared across all ranks.
-// Layout:
+// Per-rank profile log written as a single HDF5 file. Layout:
 //   /rank_<N>/per_step/<FULL_PATH>     1D extensible double, index i = step i, value = diff seconds
 //   /rank_<N>/cumulative/<FULL_PATH>   1D extensible double, index i = step i, value = cum seconds
 // Each dataset carries a string attribute @kind = "cpu" | "mpi" | "gpu" so the
-// analyzer can color/filter without reparsing names. Parallel-HDF5 (MPI-IO file
-// driver) lets every rank write its own subtree without gathering through rank 0.
-// Dataset metadata creation is collective; data writes are independent.
+// analyzer can color/filter without reparsing names. Every rank gathers its rows to rank 0,
+// which writes the file with the serial HDF5 driver. Parallel-HDF5 was used here before but
+// a shared file with per-rank datasets and per-step extends desyncs HDF5's collective
+// metadata cache -> "H5Dset_extent ... MPI_Bcast ... Message truncated". The data is tiny,
+// so serializing through rank 0 costs less than the collective metadata traffic it replaces.
 namespace {
 
     // ---------- Path stack + per-timer state ----------------------------------
@@ -39,8 +40,10 @@ namespace {
     // same path don't downgrade an already-tagged timer.
     std::unordered_map<std::string, char> s_kind;
 
-    // Last-cumulative-at-LogTimestep cache (for the diff-per-step column).
-    std::unordered_map<std::string, long long> s_prev_step_cum;
+    // Last-cumulative-at-LogTimestep cache (for the diff-per-step column). Keyed by
+    // (rank, full_path): rank 0 holds the prev value for every rank's timers, since it
+    // computes the per-step diff for all ranks from the gathered cumulative values.
+    std::map<std::pair<int, std::string>, long long> s_prev_step_cum;
 
     // Live start times for currently-open scopes. CollectCurrent uses these to
     // extend long-running timers (TOTAL, HYDRO) to "now" each step.
@@ -77,15 +80,13 @@ namespace {
 
     // ---------- HDF5 state ----------------------------------------------------
 
-    hid_t s_file       = -1;
-    hid_t s_indep_dxpl = -1; // H5Pset_dxpl_mpio independent
+    hid_t s_file       = -1;    // valid only on rank 0 (serial-driver HDF5 file)
+    bool  s_log_active = false; // true on every rank while profiling is open
     int   s_my_rank    = 0;
     int   s_nranks     = 1;
 
-    // Handles to every (rank, full_path) dataset — parallel HDF5 requires every
-    // collective structural call (H5Dset_extent in particular) to be made by
-    // every rank with matching arguments, so each rank holds the full table even
-    // though it only writes data into its own (s_my_rank, *) rows.
+    // Handles to every (rank, full_path) dataset. Only rank 0 holds these -- it writes
+    // every /rank_<N>/... dataset from the rows the other ranks ship it.
     struct DSetPair {
         hid_t per_step = -1;
         hid_t cum      = -1;
@@ -324,7 +325,7 @@ void Profiler::SeedFromCumulative(const std::unordered_map<std::string, double>&
         // For TOTAL we rewind its live start time below rather than seeding the
         // cumulative — otherwise we'd double-count once the live offset kicks in.
         if (kv.first != "TOTAL") s_cum_us[kv.first] = us;
-        s_prev_step_cum[kv.first] = us;
+        s_prev_step_cum[{s_my_rank, kv.first}] = us;
     }
     auto it_cum = cum_sec.find("TOTAL");
     auto it_st  = s_live_start.find("TOTAL");
@@ -390,34 +391,65 @@ namespace {
         return result;
     }
 
-    // Same shape as allgather_timer_names but for the per-name kind bytes.
-    // Lets every rank build a canonical name -> kind map so the per-dataset
-    // @kind attribute lands consistently regardless of which rank wrote it.
-    std::vector<std::vector<char>> allgather_timer_kinds(const std::vector<char>& my_kinds, int nranks) {
-        std::vector<std::vector<char>> result(nranks);
+    // Per-rank (name, kind, cum_us) lists, valid only on rank 0 after gather_rows_to_root.
+    struct GatheredRows {
+        std::vector<std::vector<std::string>> names; // [rank][i]
+        std::vector<std::vector<char>>        kinds; // [rank][i]
+        std::vector<std::vector<long long>>   vals;  // [rank][i]  cumulative microseconds
+    };
+
 #ifdef USE_MPI
-        if (nranks > 1) {
-            int              my_len = (int)my_kinds.size();
-            std::vector<int> lens(nranks, 0);
-            MPI_Allgather(&my_len, 1, MPI_INT, lens.data(), 1, MPI_INT, MPI_COMM_WORLD);
-            std::vector<int> displs(nranks, 0);
-            int              total = 0;
-            for (int r = 0; r < nranks; r++) {
-                displs[r] = total;
-                total += lens[r];
-            }
-            std::vector<char> all(total);
-            MPI_Allgatherv(
-                my_kinds.data(), my_len, MPI_BYTE, all.data(), lens.data(), displs.data(), MPI_BYTE, MPI_COMM_WORLD);
-            for (int r = 0; r < nranks; r++) {
-                result[r].assign(all.begin() + displs[r], all.begin() + displs[r] + lens[r]);
-            }
-            return result;
+    // Gather every rank's rows to rank 0, the only writer. Non-root ranks get an empty result.
+    GatheredRows gather_rows_to_root(const std::vector<std::string>& my_names,
+                                     const std::vector<char>&        my_kinds,
+                                     const std::vector<long long>&   my_vals,
+                                     int                             nranks,
+                                     int                             my_rank) {
+        GatheredRows g;
+        const int    my_count = (int)my_names.size();
+
+        // per-rank timer counts (also the kind/val gatherv counts)
+        std::vector<int> counts(nranks, 0);
+        MPI_Gather(&my_count, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        // names: null-separated byte blob, variable length per rank
+        std::vector<char> name_buf = pack_names(my_names);
+        const int         nlen     = (int)name_buf.size();
+        std::vector<int>  nlens(nranks, 0);
+        MPI_Gather(&nlen, 1, MPI_INT, nlens.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        std::vector<int> ndispls(nranks, 0), kdispls(nranks, 0);
+        int              ntotal = 0, ktotal = 0;
+        for (int r = 0; r < nranks; r++) {
+            ndispls[r] = ntotal;
+            ntotal += nlens[r];
+            kdispls[r] = ktotal;
+            ktotal += counts[r];
         }
-#endif
-        result[0] = my_kinds;
-        return result;
+
+        std::vector<char>      name_all(my_rank == 0 ? ntotal : 0);
+        std::vector<char>      kind_all(my_rank == 0 ? ktotal : 0);
+        std::vector<long long> val_all(my_rank == 0 ? ktotal : 0);
+        MPI_Gatherv(name_buf.data(), nlen, MPI_BYTE, name_all.data(), nlens.data(), ndispls.data(), MPI_BYTE, 0,
+                    MPI_COMM_WORLD);
+        MPI_Gatherv(my_kinds.data(), my_count, MPI_BYTE, kind_all.data(), counts.data(), kdispls.data(), MPI_BYTE, 0,
+                    MPI_COMM_WORLD);
+        MPI_Gatherv(my_vals.data(), my_count, MPI_LONG_LONG, val_all.data(), counts.data(), kdispls.data(),
+                    MPI_LONG_LONG, 0, MPI_COMM_WORLD);
+
+        if (my_rank != 0) return g;
+
+        g.names.resize(nranks);
+        g.kinds.resize(nranks);
+        g.vals.resize(nranks);
+        for (int r = 0; r < nranks; r++) {
+            g.names[r] = unpack_names(name_all.data() + ndispls[r], nlens[r]);
+            g.kinds[r].assign(kind_all.begin() + kdispls[r], kind_all.begin() + kdispls[r] + counts[r]);
+            g.vals[r].assign(val_all.begin() + kdispls[r], val_all.begin() + kdispls[r] + counts[r]);
+        }
+        return g;
     }
+#endif
 
     // Tree node for the printable output.
     struct TreeNode {
@@ -663,7 +695,7 @@ namespace {
         hsize_t count[1] = {1};
         H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
         hid_t mspace = H5Screate_simple(1, count, NULL);
-        H5Dwrite(dset, H5T_NATIVE_DOUBLE, mspace, fspace, s_indep_dxpl, &value);
+        H5Dwrite(dset, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, &value);
         H5Sclose(mspace);
         H5Sclose(fspace);
     }
@@ -671,13 +703,14 @@ namespace {
 } // namespace
 
 void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
-    s_my_rank = proteus_mpi::rank();
-    s_nranks  = proteus_mpi::nranks();
+    s_my_rank    = proteus_mpi::rank();
+    s_nranks     = proteus_mpi::nranks();
+    s_log_active = true;
+
+    // Only rank 0 owns the file; every other rank ships rows to it and never touches HDF5.
+    if (s_my_rank != 0) return;
 
     hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
-#ifdef USE_MPI
-    if (s_nranks > 1) H5Pset_fapl_mpio(fapl, MPI_COMM_WORLD, MPI_INFO_NULL);
-#endif
 
     if (restart_step < 0) {
         s_file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
@@ -689,11 +722,6 @@ void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
         }
     }
     H5Pclose(fapl);
-
-    s_indep_dxpl = H5Pcreate(H5P_DATASET_XFER);
-#ifdef USE_MPI
-    if (s_nranks > 1) H5Pset_dxpl_mpio(s_indep_dxpl, H5FD_MPIO_INDEPENDENT);
-#endif
 
     const auto rg_path = [](int r) { return "/rank_" + std::to_string(r); };
     for (int r = 0; r < s_nranks; r++) {
@@ -765,17 +793,16 @@ void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
         if (restart_step > 0) {
             const hsize_t prev_idx = (hsize_t)(restart_step - 1);
             for (auto& kv : s_dsets) {
-                if (kv.first.first != s_my_rank) continue;
                 hid_t   fs     = H5Dget_space(kv.second.cum);
                 hsize_t sel[1] = {prev_idx};
                 hsize_t cnt[1] = {1};
                 H5Sselect_hyperslab(fs, H5S_SELECT_SET, sel, NULL, cnt, NULL);
                 hid_t  mspace = H5Screate_simple(1, cnt, NULL);
                 double v      = 0.0;
-                H5Dread(kv.second.cum, H5T_NATIVE_DOUBLE, mspace, fs, s_indep_dxpl, &v);
+                H5Dread(kv.second.cum, H5T_NATIVE_DOUBLE, mspace, fs, H5P_DEFAULT, &v);
                 H5Sclose(mspace);
                 H5Sclose(fs);
-                s_prev_step_cum[kv.first.second] = (long long)(v * 1e6 + 0.5);
+                s_prev_step_cum[kv.first] = (long long)(v * 1e6 + 0.5);
             }
         } else {
             // restart from t=0 snapshot: no kept rows. Diffs are computed from 0.
@@ -786,61 +813,66 @@ void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
 }
 
 void Profiler::CloseProfileLog() {
-    if (s_file < 0) return;
+    if (!s_log_active) return;
+    s_log_active = false;
+    if (s_my_rank != 0 || s_file < 0) return;
     for (auto& kv : s_dsets) {
         if (kv.second.per_step >= 0) H5Dclose(kv.second.per_step);
         if (kv.second.cum >= 0) H5Dclose(kv.second.cum);
     }
     s_dsets.clear();
-    if (s_indep_dxpl >= 0) {
-        H5Pclose(s_indep_dxpl);
-        s_indep_dxpl = -1;
-    }
     H5Fclose(s_file);
     s_file        = -1;
     s_current_len = 0;
 }
 
 void Profiler::LogTimestep(int step) {
-    if (s_file < 0) return;
+    if (!s_log_active) return;
 
     auto                     rows = CollectCurrent();
     std::vector<std::string> my_names;
     std::vector<char>        my_kinds;
+    std::vector<long long>   my_vals;
     my_names.reserve(rows.size());
     my_kinds.reserve(rows.size());
+    my_vals.reserve(rows.size());
     for (const auto& r : rows) {
         my_names.push_back(r.first);
         auto it = s_kind.find(r.first);
         my_kinds.push_back(it != s_kind.end() ? it->second : 'c');
+        my_vals.push_back(r.second);
     }
 
-    auto                                  all_names = allgather_timer_names(my_names, s_nranks);
-    auto                                  all_kinds = allgather_timer_kinds(my_kinds, s_nranks);
+    // Every rank reaches this each step, so the gather stays in lockstep.
+    GatheredRows g;
+#ifdef USE_MPI
+    if (s_nranks > 1) {
+        g = gather_rows_to_root(my_names, my_kinds, my_vals, s_nranks, s_my_rank);
+    } else
+#endif
+    {
+        g.names = {my_names};
+        g.kinds = {my_kinds};
+        g.vals  = {my_vals};
+    }
+
+    if (s_my_rank != 0 || s_file < 0) return; // only rank 0 writes the file
+
+    // Prefer any non-'c' tag: a rank that actually fired the scope (e.g. PROFILE_MPI("WAIT"))
+    // overrides ranks that defaulted to 'c', so @kind is identical across ranks.
     std::set<std::pair<int, std::string>> needed;
-    for (int r = 0; r < s_nranks; r++) {
-        for (const auto& n : all_names[r])
-            needed.insert({r, n});
-    }
-
-    // Build a canonical name -> kind map by walking every rank's (name, kind) view.
-    // Prefer any non-'c' tag — a rank that has actually fired the scope (e.g. an
-    // MPI-side rank that hit PROFILE_MPI("WAIT")) overrides ranks that defaulted
-    // to 'c'. This makes the @kind attribute the same on /rank_0/.../<n> and
-    // /rank_1/.../<n>, which it has to be — kind is intrinsic to the timer.
     std::unordered_map<std::string, char> canonical_kind;
     for (int r = 0; r < s_nranks; r++) {
-        const auto& names = all_names[r];
-        const auto& kinds = all_kinds[r];
+        const auto& names = g.names[r];
+        const auto& kinds = g.kinds[r];
         for (size_t i = 0; i < names.size(); i++) {
-            const std::string& n  = names[i];
-            const char         k  = (i < kinds.size()) ? kinds[i] : 'c';
-            auto               it = canonical_kind.find(n);
-            if (it == canonical_kind.end() || it->second == 'c') canonical_kind[n] = k;
+            needed.insert({r, names[i]});
+            const char k  = (i < kinds.size()) ? kinds[i] : 'c';
+            auto       it = canonical_kind.find(names[i]);
+            if (it == canonical_kind.end() || it->second == 'c') canonical_kind[names[i]] = k;
         }
     }
 
-    // collectively create any new (rank, full_path) datasets
     for (const auto& key : needed) {
         if (s_dsets.count(key)) continue;
         const int          r  = key.first;
@@ -850,14 +882,10 @@ void Profiler::LogTimestep(int step) {
         DSetPair           dp;
         dp.per_step = create_dataset(gp, n);
         dp.cum      = create_dataset(gc, n);
-
-        // Every rank writes the same canonical kind for this timer, so the
-        // collective attribute create is consistent across ranks.
-        auto kit  = canonical_kind.find(n);
-        char kind = (kit != canonical_kind.end()) ? kit->second : 'c';
+        auto kit    = canonical_kind.find(n);
+        char kind   = (kit != canonical_kind.end()) ? kit->second : 'c';
         write_kind_attr(dp.per_step, kind);
         write_kind_attr(dp.cum, kind);
-
         if (s_current_len > 0) {
             H5Dset_extent(dp.per_step, &s_current_len);
             H5Dset_extent(dp.cum, &s_current_len);
@@ -877,17 +905,25 @@ void Profiler::LogTimestep(int step) {
     }
 
     const hsize_t row_idx = (hsize_t)step;
-    for (const auto& r : rows) {
-        const long long cumUs    = r.second;
-        const long long prev     = s_prev_step_cum[r.first];
-        const double    cumSec   = cumUs / 1e6;
-        const double    diffSec  = (cumUs - prev) / 1e6;
-        s_prev_step_cum[r.first] = cumUs;
-        auto it                  = s_dsets.find({s_my_rank, r.first});
-        if (it == s_dsets.end()) continue;
-        write_row(it->second.per_step, row_idx, diffSec);
-        write_row(it->second.cum, row_idx, cumSec);
+    for (int r = 0; r < s_nranks; r++) {
+        const auto& names = g.names[r];
+        const auto& vals  = g.vals[r];
+        for (size_t i = 0; i < names.size(); i++) {
+            const auto      key    = std::make_pair(r, names[i]);
+            const long long cumUs  = (i < vals.size()) ? vals[i] : 0;
+            const long long prev   = s_prev_step_cum[key];
+            const double    cumSec = cumUs / 1e6;
+            const double    diff   = (cumUs - prev) / 1e6;
+            s_prev_step_cum[key]   = cumUs;
+            auto it                = s_dsets.find(key);
+            if (it == s_dsets.end()) continue;
+            write_row(it->second.per_step, row_idx, diff);
+            write_row(it->second.cum, row_idx, cumSec);
+        }
     }
+
+    // flush each step so an MPI_Abort on any rank still leaves a readable file
+    H5Fflush(s_file, H5F_SCOPE_GLOBAL);
 }
 
 // ============================================================
