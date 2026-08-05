@@ -113,6 +113,15 @@
 #define _CELL_SHAPING_FACTOR_ 0.2
 #endif
 
+// ASTRO_PHYSICS is an explicit master switch set in Config.sh. It gates the code-unit
+// parameters (see global/units.h) that every astro module reads at init, so a sub-flag on
+// its own would silently run with units left at their cgs-identity defaults.
+#if !defined(ASTRO_PHYSICS)                                                                                            \
+    && (defined(NFW) || defined(HERNQUIST) || defined(SMBH) || defined(COOLING) || defined(SF_FEEDBACK)                 \
+        || defined(AGN_THERMAL) || defined(AGN_KINETIC) || defined(LIMITERS))
+#error "Config.sh: an astro sub-flag is set without ASTRO_PHYSICS."
+#endif
+
 // forward declarations
 class InputHandler;
 struct ICData;

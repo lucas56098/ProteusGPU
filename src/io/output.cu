@@ -89,6 +89,13 @@ void OutputHandler::write_snapshot() {
     write_attr_int(header_group, "nranks", nranks);
     write_attr_int(header_group, "rank", rank);
 
+#ifdef ASTRO_PHYSICS
+    // code-unit base factors, so analysis can convert snapshots back to cgs
+    write_attr_double(header_group, "UnitLength_in_cm", units.UnitLength_in_cm);
+    write_attr_double(header_group, "UnitMass_in_g", units.UnitMass_in_g);
+    write_attr_double(header_group, "UnitVelocity_in_cm_per_s", units.UnitVelocity_in_cm_per_s);
+#endif
+
     // /header/profiler: one double attr per timer with this rank's cum seconds.
     // Restart reads these to seed Profiler::m_Timings directly — no more reliance
     // on a text profile log for restart state.

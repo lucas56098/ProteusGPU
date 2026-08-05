@@ -99,6 +99,7 @@ HYDRO_DIR = $(SRC_DIR)/hydro
 GRADIENTS_DIR = $(SRC_DIR)/gradients
 PROFILER_DIR = $(SRC_DIR)/profiler
 MPI_DIR = $(SRC_DIR)/mpi
+ASTRO_DIR = $(SRC_DIR)/astro
 
 MAIN_OBJ = $(BUILD_DIR)/main.o
 GLOBAL_OBJ = $(BUILD_DIR)/globals.o $(BUILD_DIR)/log.o
@@ -110,7 +111,8 @@ HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o
 GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
 PROFILER_OBJ = $(BUILD_DIR)/profiler.o
 MPI_OBJ = $(BUILD_DIR)/mpi_compat.o $(BUILD_DIR)/decomp.o $(BUILD_DIR)/halo.o $(BUILD_DIR)/migrate.o $(BUILD_DIR)/rebalance.o
-OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(GRADIENTS_OBJ) $(PROFILER_OBJ) $(MPI_OBJ)
+ASTRO_OBJ = $(BUILD_DIR)/sources.o $(BUILD_DIR)/gravity.o $(BUILD_DIR)/cooling.o $(BUILD_DIR)/stars.o $(BUILD_DIR)/agn.o $(BUILD_DIR)/limiters.o
+OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(GRADIENTS_OBJ) $(PROFILER_OBJ) $(MPI_OBJ) $(ASTRO_OBJ)
 
 # name of executable
 TARGET = $(EXEC)
@@ -313,7 +315,7 @@ $(BUILD_DIR)/main.o: $(SRC_DIR)/main.cu | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # global state and logging
-$(BUILD_DIR)/globals.o: $(GLOBAL_DIR)/globals.cu $(GLOBAL_DIR)/globals.h | $(BUILD_DIR)
+$(BUILD_DIR)/globals.o: $(GLOBAL_DIR)/globals.cu $(GLOBAL_DIR)/globals.h $(GLOBAL_DIR)/units.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/log.o: $(GLOBAL_DIR)/log.cu $(GLOBAL_DIR)/log.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
@@ -355,6 +357,24 @@ $(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cu $(PROFILER_DIR)/profiler.h 
 
 # MPI: init, domain decomposition, halo exchange, particle migration
 $(BUILD_DIR)/mpi_compat.o: $(MPI_DIR)/mpi_compat.cu $(MPI_DIR)/mpi_compat.h $(PROFILER_DIR)/profiler.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/sources.o: $(ASTRO_DIR)/sources.cu $(ASTRO_DIR)/sources.h $(ASTRO_DIR)/gravity.h $(ASTRO_DIR)/cooling.h $(ASTRO_DIR)/stars.h $(ASTRO_DIR)/agn.h $(ASTRO_DIR)/limiters.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/stars.o: $(ASTRO_DIR)/stars.cu $(ASTRO_DIR)/stars.h $(ASTRO_DIR)/astro_constants.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/agn.o: $(ASTRO_DIR)/agn.cu $(ASTRO_DIR)/agn.h $(ASTRO_DIR)/astro_constants.h $(MPI_DIR)/halo.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/gravity.o: $(ASTRO_DIR)/gravity.cu $(ASTRO_DIR)/gravity.h $(ASTRO_DIR)/astro_constants.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/cooling.o: $(ASTRO_DIR)/cooling.cu $(ASTRO_DIR)/cooling.h $(ASTRO_DIR)/astro_constants.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/limiters.o: $(ASTRO_DIR)/limiters.cu $(ASTRO_DIR)/limiters.h $(ASTRO_DIR)/astro_constants.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/decomp.o: $(MPI_DIR)/decomp.cu $(MPI_DIR)/decomp.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)

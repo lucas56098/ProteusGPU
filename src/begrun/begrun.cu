@@ -9,6 +9,7 @@
 #include "../mpi/mpi_compat.h"
 #include "../mpi/rebalance.h"
 #include "../profiler/profiler.h"
+#include "../astro/sources.h"
 #include "../voronoi/voronoi.h"
 #include "begrun.h"
 #include <cmath>
@@ -21,6 +22,7 @@ namespace begrun {
     static void initial_printouts();
     static void restart_from_snapshot(const int latest_snap_n, std::string out_dir);
     static void prepare_sim_struct();
+    static void init_units();
     static void load_IC_fields();
     static void init_exch_buffers();
     static void init_hydro_and_mesh();
@@ -75,6 +77,10 @@ namespace begrun {
 
         // write parameters into sim struct
         prepare_sim_struct();
+
+        // set up the code-unit system + astro source terms (only when astro physics is compiled in)
+        init_units();
+        astro::sources_init();
 
         // create profile log
         const std::string profile_path = input.getParameter("output_directory") + "/profile.hdf5";
@@ -184,6 +190,19 @@ namespace begrun {
 #ifdef DRY_RUN
         out << "Dry run for CI test successful, exiting." << std::endl;
         exit(EXIT_SUCCESS);
+#endif
+    }
+
+    // read the code-unit base factors from param.txt. Without ASTRO_PHYSICS nothing converts
+    // against them, so the parameters are not required and units keeps its cgs-identity default.
+    static void init_units() {
+#ifdef ASTRO_PHYSICS
+        units.set_base(input.getParameterDouble("UnitLength_in_cm"),
+                       input.getParameterDouble("UnitMass_in_g"),
+                       input.getParameterDouble("UnitVelocity_in_cm_per_s"));
+
+        logging::root() << "UNITS: 1 code unit = " << units.UnitLength_in_cm << " cm, " << units.UnitMass_in_g
+                        << " g, " << units.UnitVelocity_in_cm_per_s << " cm/s" << std::endl;
 #endif
     }
 

@@ -1,4 +1,5 @@
 /* main simulation routine */
+#include "astro/sources.h"
 #include "begrun/begrun.h"
 #include "global/allvars.h"
 #include "hydro/finite_volume_solver.h"
@@ -44,7 +45,11 @@ int main(int argc, char* argv[]) {
             print_log();
 
             // hydro step
+            // Strang split: half a step of source terms on either side of the hydro update.
+            // No-ops unless an astro module is compiled in.
+            astro::apply_sources_first_half(0.5 * dt);
             hydro::hydro_step(dt, sim.mesh, sim.primvar);
+            astro::apply_sources_second_half(0.5 * dt);
             sim.t_sim += dt;
 
             // write snapshot

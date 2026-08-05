@@ -71,3 +71,18 @@ USE_OPENMP                          # enable multithreading on CPU (uses all ava
 ################################################################
 
 #OUTPUT_MESH                         # dump full Voronoi geometry (CSR faces + volumes) in snapshots
+
+################################################################
+# astrophysics source terms
+################################################################
+
+#ASTRO_PHYSICS                       # master switch: required by every sub-flag below
+
+#NFW                                 # static NFW halo potential
+#HERNQUIST                           # static Hernquist (BCG stellar) potential
+#SMBH                                # softened central point mass
+#COOLING                             # tabulated radiative cooling (Townsend 2009)
+#SF_FEEDBACK                         # SNIa injection + particle-free SF thermostat
+#AGN_THERMAL                         # AGN thermal energy deposition
+#AGN_KINETIC                         # AGN bipolar kinetic jet
+#LIMITERS                            # central-region hard clamps on T and |v|
