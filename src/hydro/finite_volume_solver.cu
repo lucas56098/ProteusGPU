@@ -5,6 +5,7 @@
 #include "../mpi/halo.h"
 #include "../mpi/mpi_compat.h"
 #include "../profiler/profiler.h"
+#include "../astro/agn.h"
 #include "finite_volume_solver.h"
 #include "riemann.cu"
 #include <utility>
@@ -14,7 +15,11 @@ namespace hydro {
     // forward declarations
     HD void flux_update_for_cell(
         hsize_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
+#ifdef AGN_ENABLED
+    HD double dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*, bool, const astro::AgnParams&);
+#else
     HD double   dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*);
+#endif
     static void check_unphysical_state(VMesh*, const primvars*);
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new);
     static void swap_primvars(primvars* primvar, primvars* prim_new);
@@ -25,7 +30,11 @@ namespace hydro {
     kernel_flux_update(double, int, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
     GLOBAL void
     kernel_copy_primvars(hsize_t, const double*, const POINT_TYPE*, const double*, double*, POINT_TYPE*, double*);
+#ifdef AGN_ENABLED
+    GLOBAL void kernel_dt_CFL(double, hsize_t, const VMesh*, const primvars*, double*, bool, astro::AgnParams);
+#else
     GLOBAL void kernel_dt_CFL(double, hsize_t, const VMesh*, const primvars*, double*);
+#endif
     GLOBAL void kernel_check_unphysical(hsize_t, const primvars*, int*);
 #endif
 
@@ -175,13 +184,23 @@ namespace hydro {
 
             double* min_dt = sim.dt;
             *min_dt        = 1e100;
+#ifdef AGN_ENABLED
+            // hoisted out of the per-cell loop: these read agn.cu statics on the host, and
+            // calling them per cell inside the OpenMP loop is a silent per-cell cost
+            const bool             agn_firing = astro::agn_is_firing();
+            const astro::AgnParams p_agn      = astro::agn_params();
+#endif
 
 #ifndef CPU_DEBUG
             int tpb    = _HYDRO_BLOCK_SIZE_;
             int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
             {
                 PROFILE_KERNEL("DT_CFL");
+#ifdef AGN_ENABLED
+                kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, min_dt, agn_firing, p_agn);
+#else
                 kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, min_dt);
+#endif
             }
             GPU_SYNC();
 #else
@@ -189,7 +208,11 @@ namespace hydro {
 #pragma omp parallel for reduction(min : min_dt[0])
 #endif
             for (hsize_t i = 0; i < mesh->n_hydro; i++) {
+#ifdef AGN_ENABLED
+                double dt_i = dt_CFL_for_cell(i, CFL, mesh, primvar, agn_firing, p_agn);
+#else
                 double dt_i = dt_CFL_for_cell(i, CFL, mesh, primvar);
+#endif
                 if (dt_i < *min_dt) { *min_dt = dt_i; }
             }
 #endif
@@ -325,11 +348,20 @@ namespace hydro {
 
     // for each cell calc CFL and then do warp-level reduction and lane 0 atomicMin
     GLOBAL void
+#ifdef AGN_ENABLED
+    kernel_dt_CFL(double CFL, hsize_t n_hydro, const VMesh* mesh, const primvars* primvar, double* d_min_dt,
+                  bool agn_firing, astro::AgnParams p_agn) {
+#else
     kernel_dt_CFL(double CFL, hsize_t n_hydro, const VMesh* mesh, const primvars* primvar, double* d_min_dt) {
+#endif
         hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
         double dt_local = 1e100;
+#ifdef AGN_ENABLED
+        if (i < n_hydro) { dt_local = dt_CFL_for_cell(i, CFL, mesh, primvar, agn_firing, p_agn); }
+#else
         if (i < n_hydro) { dt_local = dt_CFL_for_cell(i, CFL, mesh, primvar); }
+#endif
 
         // warp-level reduction
         for (int offset = 16; offset > 0; offset >>= 1) {
@@ -516,7 +548,12 @@ namespace hydro {
     }
 
     // CFL timestep for cell i
+#ifdef AGN_ENABLED
+    HD double dt_CFL_for_cell(hsize_t i, double CFL, const VMesh* mesh, const primvars* primvar, bool agn_firing,
+                              const astro::AgnParams& p_agn) {
+#else
     HD double dt_CFL_for_cell(hsize_t i, double CFL, const VMesh* mesh, const primvars* primvar) {
+#endif
 
         // get state
         prim state_i;
@@ -530,7 +567,27 @@ namespace hydro {
 
         // sound speed
         double P   = get_P_ideal_gas(&state_i);
-        double c_i = sqrt(gamma_eos * P / state_i.rho);
+        // guard the sqrt: a negative P (unphysical cell) would make c_i NaN, and NaN survives the
+        // atomicMin/fmin reduction to poison the GLOBAL dt
+        double c_i = (state_i.rho > 0.0 && P > 0.0) ? sqrt(gamma_eos * P / state_i.rho) : 0.0;
+#ifdef AGN_ENABLED
+        // cells inside the thermal deposit sphere can be pushed to T_max by the next injection,
+        // so bound dt by that sound speed rather than the current one
+        if (agn_firing) {
+            const double3 sd = mesh->seeds[i];
+            const double  dx = sd.x - p_agn.cx, dy = sd.y - p_agn.cy;
+#ifdef dim_3D
+            const double dz = sd.z - p_agn.cz;
+            const double r2 = dx * dx + dy * dy + dz * dz;
+#else
+            const double r2 = dx * dx + dy * dy;
+#endif
+            if (r2 < p_agn.r_T2) {
+                const double c_ceiling = sqrt(p_agn.cs2_max);
+                if (c_ceiling > c_i) c_i = c_ceiling;
+            }
+        }
+#endif
 
         // radius
 #ifdef dim_2D
@@ -555,6 +612,24 @@ namespace hydro {
         double v_sig = sqrt(state_i.v.x * state_i.v.x + state_i.v.y * state_i.v.y + state_i.v.z * state_i.v.z);
 #endif
 #endif
+#if defined(AGN_ENABLED) && defined(AGN_KINETIC)
+        // jet launch zones can push |v| up to v_cap in one step
+        if (agn_firing) {
+            const double3 sd  = mesh->seeds[i];
+            const double  dx  = sd.x - p_agn.cx;
+            const double  ady = fabs(sd.y - p_agn.cy);
+#ifdef dim_3D
+            const double dz    = sd.z - p_agn.cz;
+            const double perp2 = dx * dx + dz * dz;
+#else
+            const double perp2 = dx * dx;
+#endif
+            if (perp2 < p_agn.r_jet2 && ady > p_agn.L_jet && ady < p_agn.L_jet + p_agn.h_jet) {
+                if (p_agn.v_cap > v_sig) v_sig = p_agn.v_cap;
+            }
+        }
+#endif
+
         // calc CFL dt
         return CFL * (R_i / (c_i + v_sig));
     }

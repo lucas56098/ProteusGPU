@@ -599,3 +599,15 @@ void halo_exchange_volumes(VMesh* mesh) {
 #endif
 }
 #endif // VOL_REGULARIZE
+
+// global SUM of one double across ranks (e.g. AGN cold-accretion mass). Same lightweight
+// pattern as halo_dt_allreduce — no-op on single-rank builds.
+void halo_sum_allreduce(double* v) {
+#ifdef USE_MPI
+    PROFILE_MPI("SUM_ALLREDUCE");
+    double local = *v;
+    MPI_Allreduce(&local, v, 1, MPI_DOUBLE, MPI_SUM, decomp.cart_comm);
+#else
+    (void)v;
+#endif
+}

@@ -174,6 +174,7 @@ namespace proteus_mpi {
     void halo_exchange_v_mesh(VMesh* mesh);
 
     void halo_dt_allreduce(double* dt);
+    void halo_sum_allreduce(double* v); // global SUM of one double (AGN accretion mass)
 
     // runtime ghost-capacity growth. Called when halo_build_exports observes an overflow
     // of total_send or total_recv past the current n_mpi_capacity. Reallocates:
