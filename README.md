@@ -65,8 +65,8 @@ Roofline plot for the major Kernels. Fast and slow-tier are part of the two-tier
 
 ### Multi-node scaling
 
-Weak scaling on JUWELS booster for an acoustic wave test with up to $1920^3$ and $512$ A$100$ GPUs.<br>
-<img src="./docs/figures/weak_scaling_final.png" alt="Image" width="100%">
+Weak scaling on JUPITER booster for an acoustic wave test with up to $3600^3$ and $1000$ GH200 GPUs retains 75\% efficiency.<br>
+<img src="./docs/figures/weak_scaling_jupiter.png" alt="Image" width="100%">
 
 ---
 ## Getting started
