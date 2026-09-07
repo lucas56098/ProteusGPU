@@ -19,11 +19,14 @@ else
         -include Makefile.systype
 endif
 
+# exact-match test for a Config.sh flag
+flag = $(patsubst -D%,%,$(filter -D$(1),$(CONFIG_DEFINES)))
+
 # check CUDA / PROFILING / MPI
-CUDA_ENABLED := $(findstring CUDA,$(CONFIG_DEFINES))
-PROFILING_ENABLED := $(findstring ENABLE_PROFILING,$(CONFIG_DEFINES))
-MPI_ENABLED := $(findstring USE_MPI,$(CONFIG_DEFINES))
-GPU_AWARE_MPI_ENABLED := $(findstring GPU_AWARE_MPI,$(CONFIG_DEFINES))
+CUDA_ENABLED := $(call flag,CUDA)
+PROFILING_ENABLED := $(call flag,ENABLE_PROFILING)
+MPI_ENABLED := $(call flag,USE_MPI)
+GPU_AWARE_MPI_ENABLED := $(call flag,GPU_AWARE_MPI)
 
 # GPU_AWARE_MPI requires both CUDA and USE_MPI — fail fast at the head node, not at runtime.
 ifeq ($(GPU_AWARE_MPI_ENABLED),GPU_AWARE_MPI)
@@ -47,7 +50,7 @@ LDFLAGS =
 BUILD_MODE_MESSAGE = CUDA RELEASE
 
 # optionally enable openmp
-ifneq (,$(findstring USE_OPENMP,$(CONFIG_DEFINES)))
+ifneq (,$(call flag,USE_OPENMP))
 	CXXFLAGS += --compiler-options -fopenmp
 	LDFLAGS += --compiler-options -fopenmp
 	OPENMP_MESSAGE = OpenMP enabled
@@ -71,7 +74,7 @@ BUILD_MODE_MESSAGE = RELEASE
 CXXFLAGS += -x c++
 
 # optionally enable openmp
-ifneq (,$(findstring USE_OPENMP,$(CONFIG_DEFINES)))
+ifneq (,$(call flag,USE_OPENMP))
 	CXXFLAGS += -fopenmp
 	LDFLAGS += -fopenmp
 	OPENMP_MESSAGE = OpenMP enabled
