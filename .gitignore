@@ -29,3 +29,5 @@ ProteusGPU
 !ics/*.py
 !ics/param.txt
 !ics/cooling_table_*.txt
+!tests/*.sh
+!tests/*.txt

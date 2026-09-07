@@ -1,0 +1,105 @@
+# Proteus compile-matrix configurations.
+#
+# One build per line:
+#
+#     <tier>   <name>   <Config.sh flags...>
+#
+# tier
+#   basic      always built
+#   full       built with --full
+#   cuda       built with --cuda    (needs nvcc)
+#   mustfail   a Makefile guard MUST reject this config; building it is the failure
+#
+# TO ADD A CONFIGURATION: simply add a line with your compile config
+
+################################################################
+# Core compile options dim x mesh x openmp x mpi
+################################################################
+
+basic    2D_static_noomp                dim_2D CPU_DEBUG
+full     2D_static_noomp_mpi            dim_2D CPU_DEBUG USE_MPI
+basic    2D_static_omp                  dim_2D CPU_DEBUG USE_OPENMP
+full     2D_static_omp_mpi              dim_2D CPU_DEBUG USE_OPENMP USE_MPI
+full     2D_moving_noomp                dim_2D CPU_DEBUG MOVING_MESH
+full     2D_moving_noomp_mpi            dim_2D CPU_DEBUG MOVING_MESH USE_MPI
+basic    2D_moving_omp                  dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP
+basic    2D_moving_omp_mpi              dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI
+
+full     3D_static_noomp                dim_3D CPU_DEBUG
+full     3D_static_noomp_mpi            dim_3D CPU_DEBUG USE_MPI
+basic    3D_static_omp                  dim_3D CPU_DEBUG USE_OPENMP
+full     3D_static_omp_mpi              dim_3D CPU_DEBUG USE_OPENMP USE_MPI
+basic    3D_moving_noomp                dim_3D CPU_DEBUG MOVING_MESH
+full     3D_moving_noomp_mpi            dim_3D CPU_DEBUG MOVING_MESH USE_MPI
+basic    3D_moving_omp                  dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP
+basic    3D_moving_omp_mpi              dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI
+
+################################################################
+# GPU builds (--cuda)
+################################################################
+
+cuda     cuda_3D_moving                 dim_3D CUDA MOVING_MESH USE_OPENMP
+cuda     cuda_3D_moving_fast            dim_3D CUDA CUDA_FAST_MATH MOVING_MESH USE_OPENMP
+cuda     cuda_2D_moving                 dim_2D CUDA MOVING_MESH USE_OPENMP
+cuda     cuda_3D_astro_all              dim_3D CUDA MOVING_MESH USE_OPENMP ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+cuda     cuda_3D_moving_mpi             dim_3D CUDA MOVING_MESH USE_OPENMP USE_MPI
+cuda     cuda_3D_gpu_aware_mpi          dim_3D CUDA MOVING_MESH USE_OPENMP USE_MPI GPU_AWARE_MPI
+cuda     cuda_3D_profiling              dim_3D CUDA MOVING_MESH USE_OPENMP ENABLE_PROFILING CUDA_PROFILING
+cuda     cuda_3D_blocksizes             dim_3D CUDA MOVING_MESH USE_OPENMP _VORO_BLOCK_SIZE_=32 _KNN_BLOCK_SIZE_=128 _GRAD_BLOCK_SIZE_=128 _HYDRO_BLOCK_SIZE_=128 _MESH_BLOCK_SIZE_=128 _MPI_PACK_BLOCK_SIZE_=128
+
+
+################################################################
+# Astro modules
+################################################################
+
+full     2D_astro_nfw                   dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS NFW
+full     2D_astro_hernquist             dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS HERNQUIST
+full     2D_astro_smbh                  dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS SMBH
+full     2D_astro_cooling               dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS COOLING
+full     2D_astro_sf_feedback           dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS SF_FEEDBACK
+full     2D_astro_agn_thermal           dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS AGN_THERMAL
+full     2D_astro_agn_kinetic           dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS AGN_KINETIC
+full     2D_astro_limiters              dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS LIMITERS
+basic    2D_astro_all                   dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+full     2D_astro_all_noomp             dim_2D CPU_DEBUG MOVING_MESH ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+full     2D_astro_all_mpi               dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+
+full     3D_astro_nfw                   dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS NFW
+full     3D_astro_hernquist             dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS HERNQUIST
+full     3D_astro_smbh                  dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS SMBH
+full     3D_astro_cooling               dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS COOLING
+full     3D_astro_sf_feedback           dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS SF_FEEDBACK
+full     3D_astro_agn_thermal           dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS AGN_THERMAL
+full     3D_astro_agn_kinetic           dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS AGN_KINETIC
+full     3D_astro_limiters              dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS LIMITERS
+basic    3D_astro_all                   dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+full     3D_astro_all_noomp             dim_3D CPU_DEBUG MOVING_MESH ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+full     3D_astro_all_mpi               dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+
+################################################################
+# other features
+################################################################
+
+full     2D_volreg                      dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP VOL_REGULARIZE=1
+full     2D_volreg_mpi                  dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI VOL_REGULARIZE=1
+basic    3D_volreg                      dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP VOL_REGULARIZE=1
+full     3D_volreg_mpi                  dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI VOL_REGULARIZE=1
+
+full     3D_output_mesh                 dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP OUTPUT_MESH
+full     3D_output_mesh_mpi             dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI OUTPUT_MESH
+
+basic    3D_profiling                   dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ENABLE_PROFILING
+full     3D_profiling_mpi               dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI ENABLE_PROFILING
+
+full     3D_custom_constants            dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP _K_=150 _MAX_P_=48 _MAX_T_=92 _FAST_K_=30 _FAST_MAX_P_=28 _FAST_MAX_T_=56 _FACE_CAPACITY_MULT_=15 _BIG_MAX_P_=512 _BIG_MAX_T_=1024 _GAMMA_EOS_=1.4 _CELL_SHAPING_SPEED_=0.5 _CELL_SHAPING_FACTOR_=0.3 _VOL_SHAPING_SPEED_=0.6
+
+################################################################
+# Guards that must fire to prove an invalid config is rejected
+################################################################
+
+mustfail neg_fastmath_without_cuda      dim_3D CPU_DEBUG CUDA_FAST_MATH
+mustfail neg_gpuaware_without_cuda      dim_3D CPU_DEBUG USE_MPI GPU_AWARE_MPI
+mustfail neg_gpuaware_without_mpi       dim_3D CUDA GPU_AWARE_MPI
+mustfail neg_astro_sub_without_master   dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP COOLING
+mustfail neg_2D_3D_together             dim_3D dim_2D CPU_DEBUG
+mustfail neg_CPU_GPU_together           dim_3D CPU_DEBUG CUDA
