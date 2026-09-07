@@ -8,81 +8,82 @@
 #dim_2D                             # run in 2D mode
 dim_3D                              # run in 3D mode
 
-#CUDA                                # run in GPU mode
-CPU_DEBUG                          # run in CPU mode
+#CUDA                               # run in GPU mode
+CPU_DEBUG                           # run in CPU mode
 
-#ENABLE_PROFILING                    # enable the hierarchical timers and profile.hdf5 (off = compiled away)
-#CUDA_PROFILING                      # enable profiling of GPU kernels (needs ENABLE_PROFILING)
+#OUTPUT_MESH                        # dump full Voronoi geometry (CSR faces + volumes) in snapshots
+
+#ENABLE_PROFILING                   # hierarchical timers and profile.hdf5
+#CUDA_PROFILING                     # profiling of GPU kernels (needs ENABLE_PROFILING)
+
+################################################################
+# parallelization
+################################################################
+
+USE_OPENMP                          # enable multithreading on CPU
+#USE_MPI                            # enable MPI (1 GPU per rank when CUDA is enabled)
+#GPU_AWARE_MPI                      # requires CUDA + USE_MPI + CUDA-aware MPI lib
 
 ################################################################
 # hydro
 ################################################################
 
 MOVING_MESH                         # enable moving mesh hydrodynamics
-#_CELL_SHAPING_SPEED_=0.7            # mesh regularization speed fraction (default 0.7)
-#_CELL_SHAPING_FACTOR_=0.2           # regularization threshold in cell radii (default 0.2)
+#_CELL_SHAPING_SPEED_=0.7           # mesh regularization speed
+#_CELL_SHAPING_FACTOR_=0.2          # regularization threshold in cell radii
+#VOL_REGULARIZE=1                   # volume regularization: threshold in Ri_ref/Ri
+#_VOL_SHAPING_SPEED_=0.7            # drift speed as a fraction of max(c_s, |v_gas|)
 
-#_GAMMA_EOS_=1.6666666666666667      # adiabatic index (default 5/3)
-
-################################################################
-# parallelization
-################################################################
-
-USE_OPENMP                          # enable multithreading on CPU (uses all available cores)
-#USE_MPI                             # enable MPI / multi-node parallelization (1 GPU per rank when CUDA is enabled)
-#GPU_AWARE_MPI                       # pass device pointers directly to MPI (requires CUDA + USE_MPI + CUDA-aware MPI lib)
-
-# GPU kernel block sizes
-#_VORO_BLOCK_SIZE_=64                # voronoi cell computation (register-heavy, default 64)
-#_KNN_BLOCK_SIZE_=256                # KNN grid sort kernels (default 256)
-#_GRAD_BLOCK_SIZE_=256               # gradient computation kernel (default 256)
-#_HYDRO_BLOCK_SIZE_=256              # hydro flux / CFL / copy / volume kernels (default 256)
-#_MESH_BLOCK_SIZE_=256               # periodic mesh / ghost / scaling kernels (default 256)
-#_MPI_PACK_BLOCK_SIZE_=256           # kernels preparing the MPI comm
-
-################################################################
-# compile time memory constraints
-################################################################
-
-#_K_=190                             # KNN candidates, slow tier            (default 2D/3D ~35/190)
-#_MAX_P_=50                          # max clipping planes per cell, slow   (default 2D/3D ~30/50)
-#_MAX_T_=96                          # max triangles per cell, slow         (default 2D/3D ~60/96)
-
-# fast-tier limits: cells that overflow these fall back to slow tier (above)
-#_FAST_K_=35                         # KNN candidates, fast tier            (default 2D/3D ~15/35)
-#_FAST_MAX_P_=30                     # max clipping planes per cell, fast   (default 2D/3D ~20/30)
-#_FAST_MAX_T_=60                     # max triangles per cell, fast         (default 2D/3D ~20/60)
-
-#_FACE_CAPACITY_MULT_=17             # max face array entries allocated per cell (default 2D/3D ~8/17)
-
-# wide CPU-fallback tier: 32-bit indices, used when a cell overflows the 8-bit limits above
-#_BIG_MAX_P_=1024                    # max clipping planes per cell, wide tier (default 1024)
-#_BIG_MAX_T_=2048                    # max triangles per cell, wide tier (default 2048)
-
-################################################################
-# mesh regularization
-################################################################
-
-#VOL_REGULARIZE=1                    # size-equalizing drift: threshold in Ri_ref/Ri before it engages
-#_VOL_SHAPING_SPEED_=0.7             # drift speed as a fraction of max(c_s, |v_gas|) (default 0.7)
-
-################################################################
-# diagnostics
-################################################################
-
-#OUTPUT_MESH                         # dump full Voronoi geometry (CSR faces + volumes) in snapshots
+#_GAMMA_EOS_=1.6666666666666667     # adiabatic index
 
 ################################################################
 # astrophysics source terms
 ################################################################
 
-#ASTRO_PHYSICS                       # master switch: required by every sub-flag below
+#ASTRO_PHYSICS                       # main switch
 
-#NFW                                 # static NFW halo potential
-#HERNQUIST                           # static Hernquist (BCG stellar) potential
-#SMBH                                # softened central point mass
-#COOLING                             # tabulated radiative cooling (Townsend 2009)
-#SF_FEEDBACK                         # SNIa injection + particle-free SF thermostat
-#AGN_THERMAL                         # AGN thermal energy deposition
-#AGN_KINETIC                         # AGN bipolar kinetic jet
-#LIMITERS                            # central-region hard clamps on T and |v|
+#NFW                                 # static NFW potential
+#HERNQUIST                           # static Hernquist potential
+#SMBH                                # softened central point mass potential
+
+#COOLING                             # radiative cooling (Townsend 2009)
+
+#SF_FEEDBACK                         # SNIa injection + particle-free SF heating
+
+#AGN_THERMAL                         # AGN thermal mode
+#AGN_KINETIC                         # AGN kinetic mode
+#LIMITERS                            # central-region clamps on T and |v|
+
+################################################################
+# cell construction array sizes
+################################################################
+# K is the max number of KNN to be checked
+# P and T are the max clipping planes / triangles stored per cell
+
+# fast-tier (overflowing cells -> slow tier)
+#_FAST_K_=35                         # default 2D/3D ~15/35
+#_FAST_MAX_P_=30                     # default 2D/3D ~20/30
+#_FAST_MAX_T_=60                     # default 2D/3D ~20/60
+
+# slow tier (overflowing cells -> CPU-fallback)
+#_K_=190                             # default 2D/3D ~35/190
+#_MAX_P_=50                          # default 2D/3D ~30/50
+#_MAX_T_=96                          # default 2D/3D ~60/96
+
+# CPU-fallback using 32-bit indices
+#_BIG_MAX_P_=1024                    # default 1024
+#_BIG_MAX_T_=2048                    # default 2048
+
+#_FACE_CAPACITY_MULT_=17             # faces allocated per cell (default 2D/3D ~8/17)
+
+################################################################
+# GPU Kernel block sizes
+################################################################
+
+# GPU kernel block sizes
+#_VORO_BLOCK_SIZE_=64               # voronoi cell computation
+#_KNN_BLOCK_SIZE_=256               # KNN grid sort
+#_GRAD_BLOCK_SIZE_=256              # gradient computation
+#_HYDRO_BLOCK_SIZE_=256             # hydro kernels
+#_MESH_BLOCK_SIZE_=256              # periodic mesh / ghost / scaling
+#_MPI_PACK_BLOCK_SIZE_=256          # kernels preparing the MPI comm
