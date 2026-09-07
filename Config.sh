@@ -10,6 +10,7 @@ dim_3D                              # run in 3D mode
 
 #CUDA                               # run in GPU mode
 CPU_DEBUG                           # run in CPU mode
+#CUDA_FAST_MATH                     # use fast math for GPU (kernels are tuned for fast math)
 
 #OUTPUT_MESH                        # dump full Voronoi geometry (CSR faces + volumes) in snapshots
 

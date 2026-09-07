@@ -18,6 +18,7 @@ typedef unsigned char uchar;
 #define HD
 #define GLOBAL
 #define GPU_SYNC()
+#define LAUNCH_BOUNDS(threads, min_blocks)
 
 #define CUDA_CHECK(call) ((void)0)
 
@@ -98,6 +99,13 @@ inline int3 make_int3(int x, int y, int z) {
 // kernel/function macros
 #define HD __host__ __device__
 #define GLOBAL __global__
+
+// kernels are tuned for fast math only, thus relaxing launch bounds when its turned off
+#ifdef CUDA_FAST_MATH
+#define LAUNCH_BOUNDS(threads, min_blocks) __launch_bounds__(threads, min_blocks)
+#else
+#define LAUNCH_BOUNDS(threads, min_blocks) __launch_bounds__(threads)
+#endif
 
 // syncs and error checking
 #define GPU_SYNC()                                                                                                     \

@@ -96,7 +96,7 @@ namespace gradients {
     // ============================================================
 #ifndef CPU_DEBUG
 
-    GLOBAL void __launch_bounds__(_GRAD_BLOCK_SIZE_, 2) kernel_compute_gradients(hsize_t                n_hydro,
+    GLOBAL void LAUNCH_BOUNDS(_GRAD_BLOCK_SIZE_, 2) kernel_compute_gradients(hsize_t                n_hydro,
                                                                                  const VMesh*           mesh,
                                                                                  const hydro::primvars* primvar,
                                                                                  PrimGradients*         grads) {

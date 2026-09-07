@@ -27,6 +27,14 @@ CUDA_ENABLED := $(call flag,CUDA)
 PROFILING_ENABLED := $(call flag,ENABLE_PROFILING)
 MPI_ENABLED := $(call flag,USE_MPI)
 GPU_AWARE_MPI_ENABLED := $(call flag,GPU_AWARE_MPI)
+FAST_MATH_ENABLED := $(call flag,CUDA_FAST_MATH)
+
+# CUDA_FAST_MATH only affects nvcc flags
+ifeq ($(FAST_MATH_ENABLED),CUDA_FAST_MATH)
+ifneq ($(CUDA_ENABLED),CUDA)
+$(error CUDA_FAST_MATH requires CUDA in Config.sh)
+endif
+endif
 
 # GPU_AWARE_MPI requires both CUDA and USE_MPI — fail fast at the head node, not at runtime.
 ifeq ($(GPU_AWARE_MPI_ENABLED),GPU_AWARE_MPI)
@@ -45,7 +53,15 @@ ifeq ($(CUDA_ENABLED),CUDA)
 
 CXXFLAGS = --compiler-options -Wall,-Wextra,-Wno-unknown-pragmas -std=c++14
 CXXFLAGS += --expt-relaxed-constexpr
-CXXFLAGS += -dc -O3 --prec-div=false --prec-sqrt=false --ftz=true --fmad=true
+CXXFLAGS += -dc -O3
+
+# Floating-point strictness. CUDA_FAST_MATH trades IEEE calculations for speed
+ifeq ($(FAST_MATH_ENABLED),CUDA_FAST_MATH)
+	CXXFLAGS += --prec-div=false --prec-sqrt=false --ftz=true --fmad=true
+else
+	CXXFLAGS += --prec-div=true --prec-sqrt=true --ftz=false --fmad=false
+endif
+
 LDFLAGS =
 BUILD_MODE_MESSAGE = CUDA RELEASE
 

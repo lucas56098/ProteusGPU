@@ -566,7 +566,7 @@ namespace voronoi {
     }
 
     // fast-tier per-cell kernel: small K, small face capacity
-    GLOBAL __launch_bounds__(_VORO_BLOCK_SIZE_, 16) void kernel_compute_voronoi_cells_fast(int     n_hydro,
+    GLOBAL LAUNCH_BOUNDS(_VORO_BLOCK_SIZE_, 16) void kernel_compute_voronoi_cells_fast(int     n_hydro,
                                                                                            double* d_stored_points,
                                                                                            const knn_problem* knn,
                                                                                            Status*            stat,
@@ -581,7 +581,7 @@ namespace voronoi {
     }
 
     // slow-tier per-cell kernel: bigger K + larger face capacity, run only on cells that failed fast tier
-    GLOBAL __launch_bounds__(_VORO_BLOCK_SIZE_, 8) void kernel_compute_voronoi_cells_slow(int        n_failed,
+    GLOBAL LAUNCH_BOUNDS(_VORO_BLOCK_SIZE_, 8) void kernel_compute_voronoi_cells_slow(int        n_failed,
                                                                                           const int* failed_ks,
                                                                                           double*    d_stored_points,
                                                                                           const knn_problem* knn,

@@ -319,7 +319,7 @@ namespace hydro {
 #ifndef CPU_DEBUG
 
     // calls flux update for cell
-    GLOBAL void __launch_bounds__(_HYDRO_BLOCK_SIZE_, 2) kernel_flux_update(double          dt_update,
+    GLOBAL void LAUNCH_BOUNDS(_HYDRO_BLOCK_SIZE_, 2) kernel_flux_update(double          dt_update,
                                                                             int             do_time_extrap_int,
                                                                             double          dt_extrap,
                                                                             const VMesh*    mesh,
