@@ -416,6 +416,20 @@ $(BUILD_DIR)/rebalance.o: $(MPI_DIR)/rebalance.cu $(MPI_DIR)/rebalance.h $(MPI_D
 # Utility targets
 # ============================================================
 
+# rebuild everything when the compile configuration changes
+CONFIG_STAMP = $(BUILD_DIR)/config.stamp
+
+$(CONFIG_STAMP): $(CONFIG) | $(BUILD_DIR)
+	@printf '%s\n%s\n%s\n' '$(CONFIG_DEFINES)' '$(CXX)' '$(CUDA_ARCH)' > $@.tmp
+	@if [ -f $@ ] && cmp -s $@.tmp $@; then \
+	    rm -f $@.tmp; \
+	else \
+	    if [ -f $@ ]; then echo "Build configuration changed -> full rebuild"; fi; \
+	    mv -f $@.tmp $@; \
+	fi
+
+$(OBJECTS): $(CONFIG_STAMP)
+
 # create build directory if missing
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
@@ -433,3 +447,4 @@ clean:
 	@echo "Cleaning build files..."
 	@rm -f $(OBJECTS) $(BUILD_DIR)/dlink.o $(TARGET)
 	@rm -rf $(BUILD_DIR)/*.o $(BUILD_DIR)/*.d
+	@rm -f $(CONFIG_STAMP)
