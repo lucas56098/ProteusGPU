@@ -1,33 +1,31 @@
-# folders
-build/
-libs/
-output
-output*/
-run*/
-.vscode/
-.claude
-__pycache__/
-venv/
-.venv/
-src_*
-interactive/
-
-# files
-ProteusGPU
-.DS_Store
-ics/param_*
-ics/IC_*
-run_*.sh
-voronoi*.md
-*_*.md
-
 # file types
 *.hdf5
 *.log
 *.ncu-rep
 *.pdf
 *.txt
+*.md
+*.sh
 
+# folders
+build*/
+libs/
+output*/
+run*/
+.vscode
+.claude
+__pycache__/
+venv/
+src_*
+interactive/
+
+# files
+ProteusGPU
+.DS_Store
+
+# explicitly allowed
+!Config.sh
+!README.md
 !ics/*.py
 !ics/param.txt
 !ics/cooling_table_*.txt
