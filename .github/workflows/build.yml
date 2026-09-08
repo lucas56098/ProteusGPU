@@ -2,30 +2,27 @@ name: Build and dry run
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, cleanup ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, cleanup ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Update package list
-        run: sudo apt-get update
 
-      - name: Install HDF5
-        run: sudo apt-get install -y libhdf5-dev
-
-      - name: Build
+      - name: Install HDF5 and MPI
         run: |
-          cd ${{ github.workspace }}
-          make clean
-          make SYSTYPE=Ubuntu DEFINES="-DDRY_RUN"
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev libhdf5-openmpi-dev openmpi-bin
+
+      - name: Compile matrix
+        run: ./tests/build_matrix.sh
 
       - name: Run executable (dry-run mode)
         run: |
-          cd ${{ github.workspace }}
+          make SYSTYPE=Ubuntu DEFINES=-DDRY_RUN
           ./ProteusGPU

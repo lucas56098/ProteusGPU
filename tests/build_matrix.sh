@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Proteus compile matrix
 # The configurations themselves are set in tests/configs.txt, one per line
 #

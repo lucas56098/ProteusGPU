@@ -260,12 +260,12 @@ GIT_COMMIT := $(GIT_HASH)$(GIT_DIRTY)
 ifeq ($(GIT_COMMIT),)
 	GIT_COMMIT := unknown
 endif
-DEFINES += '-DGIT_COMMIT="$(GIT_COMMIT)"'
+override DEFINES += '-DGIT_COMMIT="$(GIT_COMMIT)"'
 
 # +adds/-dels diffstat over the same paths (untracked src/ files counted as adds)
 ifeq ($(GIT_DIRTY),-dirty)
 	GIT_DIFFSTAT := $(shell { git diff HEAD --numstat -- $(GIT_DIRTY_PATHS) 2>/dev/null; git ls-files --others --exclude-standard -- src 2>/dev/null | while IFS= read -r f; do printf "%d\t0\n" "$$(wc -l < "$$f")"; done; } | awk '{a+=$$1; d+=$$2} END {printf "+%d -%d", a+0, d+0}')
-	DEFINES += '-DGIT_DIFFSTAT="$(GIT_DIFFSTAT)"'
+	override DEFINES += '-DGIT_DIFFSTAT="$(GIT_DIFFSTAT)"'
 endif
 
 # add config defines to compilation flags
