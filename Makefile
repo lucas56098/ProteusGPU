@@ -291,6 +291,10 @@ ifeq ($(MPI_ENABLED),USE_MPI)
         export OMPI_CXX := $(CXX_RELEASE)
         export MPICH_CXX := $(CXX_RELEASE)
 
+        # the MPI C++ bindings were deprecated in MPI-2.2 and removed in MPI-3, and
+        # OpenMPI 4's copy does not survive -Wcast-function-type. We use the C API only.
+        CXXFLAGS += -DOMPI_SKIP_MPICXX -DMPICH_SKIP_MPICXX
+
         ifeq ($(CUDA_ENABLED),CUDA)
                 CXXFLAGS += -ccbin $(MPICXX)
                 LDFLAGS  += -ccbin $(MPICXX)
