@@ -14,6 +14,8 @@ legacy `seed_positions()` helper. They just won't scale past one process.
 """
 
 import argparse
+import os
+
 import h5py
 import numpy as np
 
@@ -78,8 +80,13 @@ def resolve_filename(args, name):
 # MPI runtime
 # ============================================================
 
+_LAUNCHER_VARS = ("OMPI_COMM_WORLD_SIZE", "MPI_LOCALNRANKS", "PMI_SIZE", "PMIX_RANK", "SLURM_PROCID")
+
+
 def mpi_runtime():
-    """Return (comm, rank, nranks). (None, 0, 1) if mpi4py isn't loaded."""
+    """Return (comm, rank, nranks). (None, 0, 1) unless launched under MPI."""
+    if not any(os.environ.get(v) for v in _LAUNCHER_VARS):
+        return None, 0, 1
     try:
         from mpi4py import MPI
     except ImportError:
