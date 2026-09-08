@@ -141,6 +141,16 @@ def per_particle_signed(rng_seed, particle_ids, axis):
     return 2.0 * per_particle_uniform(rng_seed, particle_ids, axis) - 1.0
 
 
+_NORMAL_AXIS_OFFSET = 64
+
+def per_particle_normal(rng_seed, particle_ids, axis):
+    """Stateless standard normal per (rng_seed, particle_id, axis)."""
+    # u1 is clamped off zero at the smallest value the hash can return.
+    u1 = np.maximum(per_particle_uniform(rng_seed, particle_ids, axis + _NORMAL_AXIS_OFFSET), 2.0 ** -53)
+    u2 = per_particle_uniform(rng_seed, particle_ids, axis + 2 * _NORMAL_AXIS_OFFSET)
+    return np.sqrt(-2.0 * np.log(u1)) * np.cos(2.0 * np.pi * u2)
+
+
 # ============================================================
 # Mesh construction
 # ============================================================
