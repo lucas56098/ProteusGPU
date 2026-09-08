@@ -21,10 +21,12 @@ import numpy as np
 
 
 _ALL_MESH_MODES = ("random", "cartesian", "polar_ring")
+_SHARED_FLAGS = ("filename", "n", "dimension", "mesh_mode", "perturbation",
+                 "rng_seed", "extent", "gamma")
 
 
 # ============================================================
-# CLI helpers (unchanged)
+# CLI helpers
 # ============================================================
 
 def build_arg_parser(
@@ -33,39 +35,42 @@ def build_arg_parser(
     description=None,
     default_n=64,
     default_dim=3,
-    allowed_dims=(2, 3),
     default_mesh_mode="cartesian",
-    allowed_mesh_modes=_ALL_MESH_MODES,
     default_perturbation=0.05,
     default_rng_seed=424242,
     default_extent=1.0,
     default_gamma=5.0 / 3.0,
+    fixed=None,
 ):
-    """Return an ArgumentParser with the shared IC-creation flags."""
+    """Return an ArgumentParser with the shared IC-creation flags.
+
+    `fixed` names shared flags this IC cannot vary, e.g. fixed={"dimension": 2}. They are
+    not offered on the command line, but their values still land on the parsed namespace.
+    """
+    fixed = dict(fixed or {})
+    unknown = sorted(set(fixed) - set(_SHARED_FLAGS))
+    if unknown:
+        raise ValueError(f"build_arg_parser: unknown fixed flag(s) {unknown}")
+
     parser = argparse.ArgumentParser(description=description or f"Create {name} IC.")
 
-    parser.add_argument(
-        "--filename", type=str, default=None,
-        help=f"output hdf5 path (default: IC_{name}_<D>D_N<n>.hdf5)",
-    )
-    parser.add_argument(
-        "--n", type=int, default=default_n,
-        help="cells per dimension (total seeds = n^dimension)",
-    )
-    parser.add_argument(
-        "--dimension", type=int, default=default_dim, choices=list(allowed_dims),
-    )
-    parser.add_argument(
-        "--mesh_mode", type=str, default=default_mesh_mode, choices=list(allowed_mesh_modes),
-    )
-    parser.add_argument(
-        "--perturbation", type=float, default=default_perturbation,
-        help="cartesian-grid jitter as fraction of cell size",
-    )
-    parser.add_argument("--rng_seed", type=int, default=default_rng_seed)
-    parser.add_argument("--extent", type=float, default=default_extent)
-    parser.add_argument("--gamma", type=float, default=default_gamma)
+    def add(flag, **kwargs):
+        if flag not in fixed:
+            parser.add_argument(f"--{flag}", **kwargs)
 
+    add("filename", type=str, default=None,
+        help=f"output hdf5 path (default: IC_{name}_<D>D_N<n>.hdf5)")
+    add("n", type=int, default=default_n,
+        help="cells per dimension (total seeds = n^dimension)")
+    add("dimension", type=int, default=default_dim, choices=[2, 3])
+    add("mesh_mode", type=str, default=default_mesh_mode, choices=list(_ALL_MESH_MODES))
+    add("perturbation", type=float, default=default_perturbation,
+        help="cartesian-grid jitter as fraction of cell size")
+    add("rng_seed", type=int, default=default_rng_seed)
+    add("extent", type=float, default=default_extent)
+    add("gamma", type=float, default=default_gamma)
+
+    parser.set_defaults(**fixed)
     return parser
 
 

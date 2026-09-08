@@ -369,11 +369,11 @@ def main():
     parser = build_arg_parser(
         "cluster",
         default_n=128,              # base resolution per axis
-        default_dim=3,
-        allowed_dims=(3,),
-        allowed_mesh_modes=("cartesian",),
         default_perturbation=0.25,  # grid jitter as a fraction of the local cell size
         default_rng_seed=20260709,
+        # the layered mesh replaces mesh_mode, and the box is [0,1] code units by
+        # construction -- physical size is set by --L_box_kpc
+        fixed={"dimension": 3, "mesh_mode": "cartesian", "extent": 1.0},
     )
     parser.add_argument("--param", default="param_cluster_3d.txt")
     # emulated static refinement: a denser central cube (n_side_center) inside refine_radius_kpc.
@@ -394,9 +394,6 @@ def main():
     parser.add_argument("--sigma_v_kms", type=float, default=75.0)
     parser.add_argument("--n_modes", type=int, default=40)
     args = parser.parse_args()
-
-    if args.extent != 1.0:
-        raise SystemExit("--extent must be 1.0; the cluster box is [0,1] code units (use --L_box_kpc)")
 
     comm, rank, _nranks = mpi_runtime()
     root = rank == 0
@@ -452,7 +449,7 @@ def main():
         return pos, vel, rho, energy
 
     filename = resolve_filename(args, "cluster")
-    write_ic(filename, mesh.n_global, 3, fill, args)
+    write_ic(filename, mesh.n_global, args.dimension, fill, args)
 
     if root:
         with open(args.param, "w") as f:

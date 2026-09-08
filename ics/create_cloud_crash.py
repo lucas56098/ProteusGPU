@@ -123,14 +123,12 @@ def fill_cloud_crash(row_lo, n_local, args):
 
 
 if __name__ == "__main__":
-    # cloud_crash is 3D-only.
     parser = build_arg_parser(
         "cloud_crash",
         default_n=200,
-        default_dim=3,
-        allowed_dims=(3,),
         default_mesh_mode="cartesian",
         default_rng_seed=20250429,
+        fixed={"dimension": 3},
     )
     parser.add_argument("--n_clouds", type=int, default=8)
     args = parser.parse_args()

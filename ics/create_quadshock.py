@@ -66,13 +66,11 @@ def fill_quadshock(row_lo, n_local, args):
 
 
 if __name__ == "__main__":
-    # quadshock is 2D-only.
     parser = build_arg_parser(
         "quadshock",
         default_n=200,
-        default_dim=2,
-        allowed_dims=(2,),
         default_mesh_mode="cartesian",
+        fixed={"dimension": 2},
     )
     parser.add_argument(
         "--conf", type=int, default=1, choices=[1, 2],

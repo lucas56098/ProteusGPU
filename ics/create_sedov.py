@@ -38,7 +38,7 @@ def fill_sedov(row_lo, n_local, args):
         dimension=args.dimension,
         extent=args.extent,
         rng_seed=args.rng_seed,
-        mesh_mode="cartesian",
+        mesh_mode=args.mesh_mode,
         perturbation=args.perturbation,
     )
 
@@ -74,9 +74,8 @@ if __name__ == "__main__":
         "sedov",
         default_n=45,
         default_dim=2,
-        default_mesh_mode="cartesian",
-        allowed_mesh_modes=("cartesian",),
         default_perturbation=0.01,
+        fixed={"mesh_mode": "cartesian"},
     )
     parser.add_argument("--E_blast", type=float, default=1.0)
     parser.add_argument(

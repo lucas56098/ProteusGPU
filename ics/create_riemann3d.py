@@ -69,13 +69,11 @@ def fill_riemann3d(row_lo, n_local, args):
 
 
 if __name__ == "__main__":
-    # riemann3d is 3D-only.
     parser = build_arg_parser(
         "riemann3d",
         default_n=50,
-        default_dim=3,
-        allowed_dims=(3,),
         default_mesh_mode="cartesian",
+        fixed={"dimension": 3},
     )
     args = parser.parse_args()
 

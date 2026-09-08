@@ -39,6 +39,7 @@ def fill_test(row_lo, n_local, args):
 if __name__ == "__main__":
     parser = build_arg_parser(
         "test", default_n=32, default_dim=2, default_mesh_mode="random",
+        fixed={"gamma": 5.0 / 3.0},   # uniform state: energy is 1 by definition
     )
     args = parser.parse_args()
 

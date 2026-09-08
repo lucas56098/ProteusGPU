@@ -59,13 +59,11 @@ def fill_gresho(row_lo, n_local, args):
 
 
 if __name__ == "__main__":
-    # Gresho is 2D-only.
     parser = build_arg_parser(
         "gresho",
         default_n=800,
-        default_dim=2,
-        allowed_dims=(2,),
         default_mesh_mode="polar_ring",
+        fixed={"dimension": 2},
     )
     args = parser.parse_args()
 
