@@ -1,53 +1,40 @@
 #!/usr/bin/env python3
 """
-Create test Initial Conditions (IC) HDF5 file for ProteusGPU
+Uniform medium at rest — the trivial test IC for ProteusGPU.
+
+rho = 1, v = 0, energy = 1 everywhere, so nothing should happen: any drift is
+mesh or scheme noise rather than physics.
+
+Runs in either mode:
+  python create.py --n 32 --dimension 2
+  mpirun -np 4 python create.py --n 64
 """
 
-import h5py
 import numpy as np
 
-from common import build_arg_parser, resolve_filename
+from common import (
+    build_arg_parser,
+    resolve_filename,
+    seed_positions_slice,
+    write_ic,
+)
 
-def create_test_ic(filename="IC.hdf5", num_seeds=100, extent=1.0, dimension=3):
-    """
-    Create a test IC file with random seedpoints in [0, extent]^dimension
-    """
-    
-    print(f"Creating test IC file: {filename}")
-    print(f"  Seeds: {num_seeds}")
-    print(f"  Dimension: {dimension}")
-    print(f"  Extent: {extent}")
-    
-    with h5py.File(filename, 'w') as f:
-        header_group = f.create_group("header")
-        header_group.attrs['dimension'] = dimension
 
-        # Seed positions (num_seeds x dimension)
-        rng = np.random.default_rng(424242)
-        pos = rng.uniform(0, extent, size=(num_seeds, dimension)).astype(np.float64)
+def fill_test(row_lo, n_local, args):
+    """Compute (pos, vel, rho, energy) for global rows [row_lo, row_lo + n_local)."""
+    pos = seed_positions_slice(
+        row_lo, n_local, args.n ** args.dimension,
+        dimension=args.dimension,
+        extent=args.extent,
+        rng_seed=args.rng_seed,
+        mesh_mode=args.mesh_mode,
+        perturbation=args.perturbation,
+    )
+    rho = np.ones(n_local, dtype=np.float64)
+    vel = np.zeros((n_local, args.dimension), dtype=np.float64)
+    energy = np.ones(n_local, dtype=np.float64)
+    return pos, vel, rho, energy
 
-        mesh_group = f.create_group("mesh")
-        mesh_group.create_dataset("pos", data=pos)
-
-        print(f"  Created mesh/pos dataset: {pos.shape}")
-        print(f"    Min values: {pos.min(axis=0)}")
-        print(f"    Max values: {pos.max(axis=0)}")
-
-        # Hydro quantities
-        rho    = np.ones(num_seeds, dtype=np.float64)                  # uniform density
-        vel    = np.zeros((num_seeds, dimension), dtype=np.float64)    # zero velocity
-        energy = np.ones(num_seeds, dtype=np.float64)                  # uniform energy
-
-        hydro_group = f.create_group("hydro")
-        hydro_group.create_dataset("rho", data=rho)
-        hydro_group.create_dataset("vel", data=vel)
-        hydro_group.create_dataset("energy", data=energy)
-
-        print(f"  Created hydro/rho dataset: {rho.shape}")
-        print(f"  Created hydro/vel dataset: {vel.shape}")
-        print(f"  Created hydro/energy dataset: {energy.shape}")
-    
-    print(f"Successfully created {filename}\n")
 
 if __name__ == "__main__":
     parser = build_arg_parser(
@@ -55,9 +42,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    create_test_ic(
+    write_ic(
         filename=resolve_filename(args, "test"),
-        num_seeds=args.n ** args.dimension,
-        extent=args.extent,
+        n_global=args.n ** args.dimension,
         dimension=args.dimension,
+        fill_fn=fill_test,
+        args=args,
     )

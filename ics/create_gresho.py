@@ -2,83 +2,60 @@
 Creates Gresho vortex Initial Conditions (IC) HDF5 file.
 
 supports: random mesh, perturbed cartesian, and polar ring
+
+Runs in either mode:
+  python create_gresho.py --n 800
+  mpirun -np 4 python create_gresho.py --n 800
 """
 
-import h5py
 import numpy as np
 
-from common import seed_positions, build_arg_parser, resolve_filename
+from common import (
+    build_arg_parser,
+    resolve_filename,
+    seed_positions_slice,
+    write_ic,
+)
 
 
-def create_gresho_vortex(filename, num_seeds, extent=1.0, gamma=5.0 / 3.0, mesh_mode="polar_ring"):
-    """Create initial conditions for the Gresho vortex test problem."""
-    dimension = 2
+def fill_gresho(row_lo, n_local, args):
+    """Compute (pos, vel, rho, energy) for global rows [row_lo, row_lo + n_local)."""
+    pos = seed_positions_slice(
+        row_lo, n_local, args.n ** args.dimension,
+        dimension=args.dimension,
+        extent=args.extent,
+        rng_seed=args.rng_seed,
+        mesh_mode=args.mesh_mode,
+        perturbation=args.perturbation,
+    )
 
-    print(f"Creating Gresho vortex IC file: {filename}")
-    print(f"  Total seeds: {num_seeds}")
-    print(f"  Dimension: {dimension}")
-    print(f"  Extent: {extent}")
-    print(f"  Gamma: {gamma}")
-    print(f"  Mesh mode: {mesh_mode}")
-
-    # Seedpoints
-    pos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
-
-    # set hydro states
-    x = pos[:, 0] - 0.5 * extent
-    y = pos[:, 1] - 0.5 * extent
-
+    x = pos[:, 0] - 0.5 * args.extent
+    y = pos[:, 1] - 0.5 * args.extent
     radius = np.sqrt(x**2 + y**2)
-    xi = radius / extent
+    xi = radius / args.extent
 
-    region_1 = np.where(xi < 0.2)
-    region_2 = np.where((xi >= 0.2) & (xi < 0.4))
-    region_3 = np.where(xi >= 0.4)
+    inner = xi < 0.2
+    mid = (xi >= 0.2) & (xi < 0.4)
+    outer = xi >= 0.4
 
-    # set density
-    rho = np.zeros(num_seeds, dtype="float32")
-    rho += 1.0  # constant
+    rho = np.ones(n_local, dtype=np.float64)
 
-    # set velocities
-    vel = np.zeros((num_seeds, dimension), dtype="float32")
-    vrot = np.zeros(num_seeds, dtype="float32")
+    vrot = np.zeros(n_local, dtype=np.float64)
+    vrot[inner] = 5.0 * xi[inner]
+    vrot[mid] = 2.0 - 5.0 * xi[mid]
 
-    vrot[region_1] = 5.0 * xi[region_1]
-    vrot[region_2] = 2.0 - 5.0 * xi[region_2]
-    vrot[region_3] = 0.0
-
+    vel = np.zeros((n_local, args.dimension), dtype=np.float64)
     nonzero_radius = radius > 0.0
     vel[nonzero_radius, 0] = vrot[nonzero_radius] * y[nonzero_radius] / radius[nonzero_radius]
     vel[nonzero_radius, 1] = -vrot[nonzero_radius] * x[nonzero_radius] / radius[nonzero_radius]
 
-    # set energy (energy per volume)
-    pressure = np.zeros(num_seeds, dtype="float64")
+    pressure = np.zeros(n_local, dtype=np.float64)
+    pressure[inner] = 5.0 + 12.5 * xi[inner] ** 2
+    pressure[mid] = 9.0 + 12.5 * xi[mid] ** 2 - 20 * xi[mid] + 4 * np.log(xi[mid] / 0.2)
+    pressure[outer] = 3.0 + 4.0 * np.log(2.0)
 
-    pressure[region_1] = 5.0 + 12.5 * xi[region_1] ** 2
-    pressure[region_2] = 9.0 + 12.5 * xi[region_2] ** 2 - 20 * xi[region_2] + 4 * np.log(xi[region_2] / 0.2)
-    pressure[region_3] = 3.0 + 4.0 * np.log(2.0)
-
-    energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
-
-    print("\n  Initial state summary:")
-    print(f"    rho range: [{rho.min():.6f}, {rho.max():.6f}]")
-    print(f"    pressure range: [{pressure.min():.6f}, {pressure.max():.6f}]")
-    print(f"    energy range: [{energy.min():.6f}, {energy.max():.6f}]")
-
-    # Write to HDF5
-    with h5py.File(filename, "w") as f:
-        header_group = f.create_group("header")
-        header_group.attrs["dimension"] = dimension
-
-        mesh_group = f.create_group("mesh")
-        mesh_group.create_dataset("pos", data=pos)
-
-        hydro_group = f.create_group("hydro")
-        hydro_group.create_dataset("rho", data=rho)
-        hydro_group.create_dataset("vel", data=vel)
-        hydro_group.create_dataset("energy", data=energy)
-
-    print(f"\nSuccessfully created {filename}\n")
+    energy = pressure / (args.gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
+    return pos, vel, rho, energy
 
 
 if __name__ == "__main__":
@@ -92,11 +69,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    create_gresho_vortex(
+    write_ic(
         filename=resolve_filename(args, "gresho"),
-        num_seeds=args.n ** args.dimension,
-        extent=args.extent,
-        gamma=args.gamma,
-        mesh_mode=args.mesh_mode,
+        n_global=args.n ** args.dimension,
+        dimension=args.dimension,
+        fill_fn=fill_gresho,
+        args=args,
     )
-

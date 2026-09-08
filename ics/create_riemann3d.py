@@ -3,102 +3,69 @@ Creates 3D Riemann Initial Conditions (IC) HDF5 file.
 
 From Hoppe et al. (2024), see https://gitlab.lrz.de/nanoshock/riemann_cubes
 supports: random mesh and perturbed cartesian
+
+Runs in either mode:
+  python create_riemann3d.py --n 50
+  mpirun -np 4 python create_riemann3d.py --n 100
 """
 
-import h5py
 import numpy as np
 
-from common import seed_positions, build_arg_parser, resolve_filename
+from common import (
+    build_arg_parser,
+    resolve_filename,
+    seed_positions_slice,
+    write_ic,
+)
 
-def create_riemann3d(
-    filename,
-    num_seeds,
-    extent=1.0,
-    gamma=5.0 / 3.0,
-    mesh_mode="random",  # ["random", "cartesian"]
-):
-    dimension = 3
+# (rho, vx, vy, vz) per octant: the four back octants (z >= mid) then the four front ones,
+# each running top-right, top-left, bottom-left, bottom-right. Pressure is uniform.
+OCTANTS = [
+    (1.0, 0.25, -0.25, -0.5),
+    (0.5, 0.25, 0.25, -0.25),
+    (2.0, -0.25, 0.25, 0.25),
+    (0.5, -0.25, -0.25, -0.25),
+    (0.5, -0.25, -0.5, 0.5),
+    (2.0, -0.25, 0.5, -0.25),
+    (0.5, 0.25, 0.5, 0.25),
+    (1.0, 0.25, -0.5, -0.25),
+]
+PRESSURE = 1.0
 
-    print(f"Creating Riemann3D IC file: {filename}")
-    print(f"  Total seeds: {num_seeds}")
-    print(f"  Dimension: {dimension}")
-    print(f"  Extent: {extent}")
-    print(f"  Gamma: {gamma}")
-    print(f"  Mesh mode: {mesh_mode}")
 
-    # Seedpoints
-    pos = seed_positions(num_seeds, dimension, extent=extent, mesh_mode=mesh_mode)
+def fill_riemann3d(row_lo, n_local, args):
+    """Compute (pos, vel, rho, energy) for global rows [row_lo, row_lo + n_local)."""
+    pos = seed_positions_slice(
+        row_lo, n_local, args.n ** args.dimension,
+        dimension=args.dimension,
+        extent=args.extent,
+        rng_seed=args.rng_seed,
+        mesh_mode=args.mesh_mode,
+        perturbation=args.perturbation,
+    )
 
-    # set hydro states based on octant
-    x = pos[:, 0]
-    y = pos[:, 1]
-    z = pos[:, 2]
+    x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
+    mid = 0.5 * args.extent
+    masks = []
+    for z_slab in (z >= mid, z < mid):
+        masks += [
+            (x >= mid) & (y >= mid) & z_slab,
+            (x < mid) & (y > mid) & z_slab,
+            (x < mid) & (y < mid) & z_slab,
+            (x > mid) & (y < mid) & z_slab,
+        ]
 
-    mid = 0.5 * extent
+    rho = np.zeros(n_local, dtype=np.float64)
+    vel = np.zeros((n_local, args.dimension), dtype=np.float64)
 
-    # octant masks
-    q1 = (x >= mid) & (y >= mid) & (z >= mid)  # top-right (back)
-    q2 = (x < mid) & (y > mid) & (z >= mid)   # top-left (back)
-    q3 = (x < mid) & (y < mid) & (z >= mid)   # bottom-left (back)
-    q4 = (x > mid) & (y < mid) & (z >= mid)   # bottom-right (back)
-    q5 = (x >= mid) & (y >= mid) & (z < mid)  # top-right (front)
-    q6 = (x < mid) & (y > mid) & (z < mid)   # top-left (front)
-    q7 = (x < mid) & (y < mid) & (z < mid)   # bottom-left (front)
-    q8 = (x > mid) & (y < mid) & (z < mid)   # bottom-right (front)
+    for q, (rho_q, vx_q, vy_q, vz_q) in zip(masks, OCTANTS, strict=True):
+        rho[q] = rho_q
+        vel[q, 0] = vx_q
+        vel[q, 1] = vy_q
+        vel[q, 2] = vz_q
 
-    # allocate
-    rho = np.zeros(num_seeds, dtype=np.float64)
-    vel = np.zeros((num_seeds, dimension), dtype=np.float64)
-    pressure = np.zeros(num_seeds, dtype=np.float64)
-
-    # density
-    rho[q1] = 1.0
-    rho[q2] = 0.5
-    rho[q3] = 2.0
-    rho[q4] = 0.5
-    rho[q5] = 0.5
-    rho[q6] = 2.0
-    rho[q7] = 0.5
-    rho[q8] = 1.0
-
-    # velocities
-    vel[q1, 0] = 0.25;   vel[q1, 1] = -0.25;  vel[q1, 2] = -0.5
-    vel[q2, 0] = 0.25;   vel[q2, 1] = 0.25;   vel[q2, 2] = -0.25
-    vel[q3, 0] = -0.25;  vel[q3, 1] = 0.25;   vel[q3, 2] = 0.25
-    vel[q4, 0] = -0.25;  vel[q4, 1] = -0.25;  vel[q4, 2] = -0.25
-    vel[q5, 0] = -0.25;  vel[q5, 1] = -0.5;   vel[q5, 2] = 0.5
-    vel[q6, 0] = -0.25;  vel[q6, 1] = 0.5;    vel[q6, 2] = -0.25
-    vel[q7, 0] = 0.25;   vel[q7, 1] = 0.5;    vel[q7, 2] = 0.25
-    vel[q8, 0] = 0.25;   vel[q8, 1] = -0.5;    vel[q8, 2] = -0.25
-
-    # pressure
-    pressure += 1.0 # uniform
-
-    # energy per volume: E = P/(gamma-1) + 0.5*rho*v^2
-    energy = pressure / (gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
-
-    print("\n  Initial state summary:")
-    print(f"    rho range: [{rho.min():.6f}, {rho.max():.6f}]")
-    print(f"    vel_x range: [{vel[:,0].min():.6f}, {vel[:,0].max():.6f}]")
-    print(f"    vel_y range: [{vel[:,1].min():.6f}, {vel[:,1].max():.6f}]")
-    print(f"    vel_z range: [{vel[:,2].min():.6f}, {vel[:,2].max():.6f}]")
-    print(f"    pressure range: [{pressure.min():.6f}, {pressure.max():.6f}]")
-    print(f"    energy range: [{energy.min():.6f}, {energy.max():.6f}]")
-
-    # Write to HDF5
-    with h5py.File(filename, "w") as f:
-        header_group = f.create_group("header")
-        header_group.attrs["dimension"] = dimension
-
-        mesh_group = f.create_group("mesh")
-        mesh_group.create_dataset("pos", data=pos)
-
-        hydro_group = f.create_group("hydro")
-        hydro_group.create_dataset("rho", data=rho)
-        hydro_group.create_dataset("vel", data=vel)
-        hydro_group.create_dataset("energy", data=energy)
-
-    print(f"\nSuccessfully created {filename}\n")
+    energy = PRESSURE / (args.gamma - 1.0) + 0.5 * rho * np.sum(vel**2, axis=1)
+    return pos, vel, rho, energy
 
 
 if __name__ == "__main__":
@@ -112,10 +79,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    create_riemann3d(
+    write_ic(
         filename=resolve_filename(args, "riemann3d"),
-        num_seeds=args.n ** args.dimension,
-        extent=args.extent,
-        gamma=args.gamma,
-        mesh_mode=args.mesh_mode,
+        n_global=args.n ** args.dimension,
+        dimension=args.dimension,
+        fill_fn=fill_riemann3d,
+        args=args,
     )

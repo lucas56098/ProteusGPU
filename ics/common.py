@@ -9,8 +9,8 @@ The framework supports two modes:
     via parallel HDF5. The Python script is the same — `write_ic()` auto-detects
     MPI at runtime and dispatches.
 
-Scripts that haven't been ported to `write_ic()` keep working in serial via
-`seed_positions()`. They just won't scale past one process.
+Every IC script defines a fill function over a row range and hands it to
+`write_ic()`, so both modes produce the same file.
 """
 
 import argparse
@@ -286,18 +286,6 @@ def seed_positions_slice(
 
     mesh = build_mesh(total_num_seeds, dimension, extent, rng_seed, mesh_mode, perturbation)
     return mesh.positions(row_lo, n_local)
-
-
-def seed_positions(
-    num_seeds,
-    dimension,
-    extent=1.0,
-    rng_seed=424242,
-    mesh_mode="random",
-    perturbation=0.05,
-):
-    return seed_positions_slice(0, num_seeds, num_seeds, dimension,
-                                extent, rng_seed, mesh_mode, perturbation)
 
 
 # ============================================================
