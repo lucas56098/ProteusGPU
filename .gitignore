@@ -31,3 +31,5 @@ ProteusGPU
 !ics/cooling_table_*.txt
 !tests/*.sh
 !tests/*.txt
+!tests/convergence/**/*.sh
+!tests/convergence/**/*.py
