@@ -9,8 +9,8 @@ The framework supports two modes:
     via parallel HDF5. The Python script is the same — `write_ic()` auto-detects
     MPI at runtime and dispatches.
 
-Existing IC scripts that haven't been ported keep working in serial via the
-legacy `seed_positions()` helper. They just won't scale past one process.
+Scripts that haven't been ported to `write_ic()` keep working in serial via
+`seed_positions()`. They just won't scale past one process.
 """
 
 import argparse
@@ -142,8 +142,126 @@ def per_particle_signed(rng_seed, particle_ids, axis):
 
 
 # ============================================================
-# Slice-aware position generation
+# Mesh construction
 # ============================================================
+
+_MESH_BLOCK = 1 << 20
+
+class Mesh:
+
+    def __init__(self, n_candidates, candidate_fn, accept_fn=None):
+        self._n_candidates = int(n_candidates)
+        self._candidate_fn = candidate_fn
+        self._accept_fn    = accept_fn
+        self._n_blocks     = max(1, -(-self._n_candidates // _MESH_BLOCK))
+
+        if accept_fn is None:
+            self._cum     = None
+            self.n_global = self._n_candidates
+        else:
+            counts = [int(np.count_nonzero(self._block(j)[1])) for j in range(self._n_blocks)]
+            self._cum     = np.concatenate(([0], np.cumsum(counts)))
+            self.n_global = int(self._cum[-1])
+
+    def _block(self, j):
+        lo  = j * _MESH_BLOCK
+        ids = np.arange(lo, min(lo + _MESH_BLOCK, self._n_candidates), dtype=np.int64)
+        pos = self._candidate_fn(ids)
+        return pos, self._accept_fn(ids, pos)
+
+    def positions(self, row_lo, n_local):
+        """Positions for global cell rows [row_lo, row_lo + n_local)."""
+        if row_lo < 0 or row_lo + n_local > self.n_global:
+            raise ValueError(f"rows [{row_lo}, {row_lo + n_local}) outside mesh of {self.n_global}")
+        if self._cum is None:
+            return self._candidate_fn(np.arange(row_lo, row_lo + n_local, dtype=np.int64))
+        if n_local == 0:
+            return self._candidate_fn(np.empty(0, dtype=np.int64))
+
+        j     = int(np.searchsorted(self._cum, row_lo, side="right")) - 1
+        skip  = row_lo - int(self._cum[j])
+        parts = []
+        need  = n_local
+        while need > 0:
+            pos, keep = self._block(j)
+            sel  = pos[keep][skip:]
+            skip = 0
+            parts.append(sel[:need])
+            need -= len(parts[-1])
+            j    += 1
+        return parts[0] if len(parts) == 1 else np.concatenate(parts)
+
+
+def _grid_candidates(total_num_seeds, dimension, extent, rng_seed, mesh_mode, perturbation):
+    if mesh_mode == "random":
+        def candidate(ids):
+            pos = np.empty((len(ids), dimension), dtype=np.float64)
+            for d in range(dimension):
+                pos[:, d] = per_particle_uniform(rng_seed, ids, axis=d) * extent
+            return pos
+        return candidate
+
+    n = int(round(total_num_seeds ** (1.0 / dimension)))
+    if n ** dimension != total_num_seeds:
+        raise ValueError(f"For a cartesian {dimension}D mesh, total_num_seeds must be a perfect "
+                         f"{'square' if dimension == 2 else 'cube'}.")
+    dx = extent / n
+
+    def candidate(ids):
+        if dimension == 2:
+            cols = (ids % n, ids // n)
+        else:
+            cols = ((ids // n) % n, ids // (n * n), ids % n)
+        pos = np.column_stack([(c.astype(np.float64) + 0.5) * dx for c in cols])
+        if perturbation != 0.0:
+            for d in range(dimension):
+                pos[:, d] += per_particle_signed(rng_seed, ids, axis=d) * (perturbation * dx)
+        pos %= extent
+        return pos
+
+    return candidate
+
+
+def _polar_ring_mesh(num_seeds, extent, rng_seed):
+    
+    n_rings  = int(round(np.sqrt(num_seeds)))
+    d_ring   = extent / n_rings
+    per_ring = np.maximum(1, np.round(2.0 * np.pi * np.arange(n_rings))).astype(np.int64)
+    offsets  = np.concatenate(([0], np.cumsum(per_ring)))
+
+    def candidate(ids):
+        r      = np.searchsorted(offsets, ids, side="right") - 1
+        i      = ids - offsets[r]
+        phi    = per_particle_uniform(rng_seed, r, axis=0) * (2.0 * np.pi) + i * (2.0 * np.pi / per_ring[r])
+        radius = d_ring * r
+        return np.column_stack((radius * np.sin(phi) + 0.5 * extent,
+                                radius * np.cos(phi) + 0.5 * extent))
+
+    def accept(ids, pos):
+        return ((pos[:, 0] >= 0.0) & (pos[:, 0] < extent) &
+                (pos[:, 1] >= 0.0) & (pos[:, 1] < extent))
+
+    return Mesh(int(offsets[-1]), candidate, accept)
+
+
+def build_mesh(total_num_seeds, dimension, extent=1.0, rng_seed=424242,
+               mesh_mode="cartesian", perturbation=0.05):
+
+    if mesh_mode not in _ALL_MESH_MODES:
+        raise ValueError(f"Unknown mesh_mode '{mesh_mode}'")
+
+    if mesh_mode == "polar_ring":
+        if dimension != 2:
+            raise ValueError("polar_ring mode is 2D only")
+        mesh = _polar_ring_mesh(total_num_seeds, extent, rng_seed)
+        if mesh.n_global < total_num_seeds:
+            raise ValueError(f"polar_ring fits only {mesh.n_global} cells in the box, "
+                             f"{total_num_seeds} requested")
+        return mesh
+
+    return Mesh(total_num_seeds,
+                _grid_candidates(total_num_seeds, dimension, extent, rng_seed, mesh_mode, perturbation))
+
 
 def seed_positions_slice(
     row_lo,
@@ -155,64 +273,9 @@ def seed_positions_slice(
     mesh_mode="cartesian",
     perturbation=0.05,
 ):
-    """Generate positions for global rows [row_lo, row_lo + n_local).
 
-    "cartesian" and "random" modes are slice-deterministic: rank R's slice is
-    a contiguous range of the global ordering, so the same (row_lo, n_local)
-    range always yields the same positions.
-
-    "polar_ring" mode is intentionally not slice-aware — its serial-only
-    ring-walking algorithm doesn't decompose cleanly. It's only invoked from
-    `seed_positions()` (serial fast path) below.
-    """
-    if mesh_mode not in _ALL_MESH_MODES:
-        raise ValueError(f"Unknown mesh_mode '{mesh_mode}'")
-    if mesh_mode == "polar_ring":
-        raise NotImplementedError("polar_ring mode is serial-only; use the legacy seed_positions().")
-
-    ids = np.arange(row_lo, row_lo + n_local, dtype=np.int64)
-
-    if mesh_mode == "random":
-        pos = np.empty((n_local, dimension), dtype=np.float64)
-        for d in range(dimension):
-            pos[:, d] = per_particle_uniform(rng_seed, ids, axis=d) * extent
-        return pos
-
-    # mesh_mode == "cartesian"
-    if dimension == 2:
-        nx = int(round(np.sqrt(total_num_seeds)))
-        if nx * nx != total_num_seeds:
-            raise ValueError("For cartesian 2D mesh, total_num_seeds must be a perfect square.")
-        dx = extent / nx
-        ix = ids % nx
-        iy = ids // nx
-        x = (ix.astype(np.float64) + 0.5) * dx
-        y = (iy.astype(np.float64) + 0.5) * dx
-        pos = np.column_stack((x, y))
-    else:
-        n = int(round(total_num_seeds ** (1.0 / 3.0)))
-        if n * n * n != total_num_seeds:
-            raise ValueError("For cartesian 3D mesh, total_num_seeds must be a perfect cube.")
-        dx = extent / n
-        # Ordering matches np.meshgrid(x1, y1, z1, indexing="xy") + column_stack(ravel())
-        # used by the legacy seed_positions: ravel-order is (y, x, z) for indexing="xy"
-        # in 3D meshgrid. Replicate that mapping from a flat index:
-        #   k = iy * (n * n) + ix * n + iz
-        iz = ids % n
-        ix = (ids // n) % n
-        iy = ids // (n * n)
-        x = (ix.astype(np.float64) + 0.5) * dx
-        y = (iy.astype(np.float64) + 0.5) * dx
-        z = (iz.astype(np.float64) + 0.5) * dx
-        pos = np.column_stack((x, y, z))
-
-    # perturb the cartesian grid via stateless per-particle hash. Slice-safe.
-    if perturbation != 0.0:
-        for d in range(dimension):
-            pos[:, d] += per_particle_signed(rng_seed, ids, axis=d) * (perturbation * dx)
-
-    pos %= extent
-    return pos
+    mesh = build_mesh(total_num_seeds, dimension, extent, rng_seed, mesh_mode, perturbation)
+    return mesh.positions(row_lo, n_local)
 
 
 def seed_positions(
@@ -223,49 +286,8 @@ def seed_positions(
     mesh_mode="random",
     perturbation=0.05,
 ):
-    """Serial fast path — generate all `num_seeds` positions at once.
-
-    Cartesian and random modes route through seed_positions_slice (so serial and
-    MPI agree bit-for-bit). polar_ring keeps its legacy serial-only algorithm.
-    """
-    if mesh_mode == "polar_ring":
-        return _polar_ring_positions(num_seeds, dimension, extent, rng_seed)
-    return seed_positions_slice(
-        row_lo=0,
-        n_local=num_seeds,
-        total_num_seeds=num_seeds,
-        dimension=dimension,
-        extent=extent,
-        rng_seed=rng_seed,
-        mesh_mode=mesh_mode,
-        perturbation=perturbation,
-    )
-
-
-# legacy polar_ring algorithm — preserved for the gresho-style 2D test ICs
-def _polar_ring_positions(num_seeds, dimension, extent, rng_seed):
-    rng = np.random.default_rng(rng_seed)
-    pos = np.zeros((num_seeds, dimension), dtype=np.float64)
-    seed_count = 0
-    n_per_dim = int(round(num_seeds ** (1.0 / dimension)))
-    d_ring = extent / n_per_dim
-    extent_half = 0.5 * extent
-    for ring_index in range(n_per_dim):
-        n_cells_this_ring = max([1, int(round(2.0 * np.pi * ring_index))])
-        phi = rng.uniform(0, 2.0 * np.pi)
-        dphi = (2.0 * np.pi) / n_cells_this_ring
-        for _i in range(n_cells_this_ring):
-            radius = d_ring * ring_index
-            x = radius * np.sin(phi)
-            y = radius * np.cos(phi)
-            if -extent_half <= x < extent_half and -extent_half <= y < extent_half:
-                pos[seed_count] = [x, y]
-                seed_count += 1
-            if seed_count == num_seeds:
-                break
-            phi += dphi
-    pos += 0.5 * extent
-    return pos
+    return seed_positions_slice(0, num_seeds, num_seeds, dimension,
+                                extent, rng_seed, mesh_mode, perturbation)
 
 
 # ============================================================
