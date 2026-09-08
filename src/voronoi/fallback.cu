@@ -56,9 +56,9 @@ namespace voronoi {
                                      Status&                                    last_status_out);
     static double3 compute_perturbation_delta(int seed_id, int attempt, double scale);
     static void    apply_perturbation(
-        double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4* orig_positions);
+        double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4_t* orig_positions);
     static void
-    rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4* orig_positions);
+    rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4_t* orig_positions);
 #ifdef MOVING_MESH
     static void apply_vmesh_perturbation_correction(VMesh* mesh, int k, double3 delta, double dt);
 #endif
@@ -269,7 +269,7 @@ namespace voronoi {
                                               const std::vector<std::pair<double, int>>& sorted,
                                               const int*                                 sids,
                                               size_t                                     n_sids,
-                                              const double4*                             orig_positions,
+                                              const double4_t*                             orig_positions,
                                               double                                     dt,
                                               bool                                       require_security,
                                               Status&                                    last_status_out) {
@@ -339,7 +339,7 @@ namespace voronoi {
         const size_t n_sids = (size_t)cell_sids.size_for(k);
 
         // snapshot original positions so a failed perturb attempt can be rewound
-        std::vector<double4> orig_positions(n_sids);
+        std::vector<double4_t> orig_positions(n_sids);
         for (size_t i = 0; i < n_sids; i++)
             orig_positions[i] = point_from_ptr(d_stored_points + DIMENSION * sids[i]);
 
@@ -395,7 +395,7 @@ namespace voronoi {
     // require_security flag to escalate to the full sort if the bounded set is too small.
     static std::vector<std::pair<double, int>>
     gather_nearby_seeds_sorted(double* d_stored_points, int seed_id, const knn_problem* knn, int max_candidates) {
-        const double4 seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
+        const double4_t seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
         const int     seed_cell =
             knn::cellFromPoint(knn->N_grid, knn->grid_lo, knn->inv_cell_size, knn->d_stored_points[seed_id]);
 
@@ -415,7 +415,7 @@ namespace voronoi {
             for (int i = 0; i < cell_count; i++) {
                 const int sid = cell_base + i;
                 if (sid == seed_id) continue;
-                const double4 other = point_from_ptr(d_stored_points + DIMENSION * sid);
+                const double4_t other = point_from_ptr(d_stored_points + DIMENSION * sid);
                 const double  dx    = other.x - seed_pos.x;
                 const double  dy    = other.y - seed_pos.y;
                 const double  dz    = other.z - seed_pos.z;
@@ -438,12 +438,12 @@ namespace voronoi {
     // clip list invoked only when the bounded gather couldn't yield a security-certified cell.
     static std::vector<std::pair<double, int>>
     sort_neighbours_by_distance(double* d_stored_points, int seed_id, int n_seeds) {
-        const double4                       seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
+        const double4_t                       seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
         std::vector<std::pair<double, int>> dists;
         dists.reserve(n_seeds - 1);
         for (int j = 0; j < n_seeds; j++) {
             if (j == seed_id) continue;
-            const double4 other = point_from_ptr(d_stored_points + DIMENSION * j);
+            const double4_t other = point_from_ptr(d_stored_points + DIMENSION * j);
             const double  dx    = other.x - seed_pos.x;
             const double  dy    = other.y - seed_pos.y;
             const double  dz    = other.z - seed_pos.z;
@@ -557,7 +557,7 @@ namespace voronoi {
 
     // shift each sid that touches this cell by the same (dx, dy, dz)
     static void apply_perturbation(
-        double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4* orig_positions) {
+        double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4_t* orig_positions) {
         for (size_t i = 0; i < n_sids; i++) {
             const int sid                        = sids[i];
             d_stored_points[DIMENSION * sid + 0] = orig_positions[i].x + delta.x;
@@ -613,7 +613,7 @@ namespace voronoi {
 
     // restore the pre-perturb positions if an attempt did not succeed
     static void
-    rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4* orig_positions) {
+    rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4_t* orig_positions) {
         for (size_t i = 0; i < n_sids; i++) {
             const int sid                        = sids[i];
             d_stored_points[DIMENSION * sid + 0] = orig_positions[i].x;
@@ -878,8 +878,8 @@ namespace voronoi {
     // must drop a stale face and the cell that must gain one — which makes this a strict
     // superset of any face-adjacency scan, at the cost of a purely local bucket walk.
     static void collect_affected_by_moved_ghost(const VMesh* mesh,
-                                                double4      g_old,
-                                                double4      g_new,
+                                                double4_t      g_old,
+                                                double4_t      g_new,
                                                 double       search_l2,
                                                 std::unordered_set<int>* affected) {
         const knn_problem* knn = mesh->knn;
@@ -972,11 +972,11 @@ namespace voronoi {
             }
             const int sid = it->second;
 
-            const double4 g_old = point_from_ptr(d_stored_points + DIMENSION * sid);
+            const double4_t g_old = point_from_ptr(d_stored_points + DIMENSION * sid);
 #ifdef dim_3D
-            const double4 g_new = make_double4(m.pos.x, m.pos.y, m.pos.z, 1.0);
+            const double4_t g_new = make_double4_t(m.pos.x, m.pos.y, m.pos.z, 1.0);
 #else
-            const double4 g_new = make_double4(m.pos.x, m.pos.y, 0.0, 1.0);
+            const double4_t g_new = make_double4_t(m.pos.x, m.pos.y, 0.0, 1.0);
 #endif
             const double ddx = g_new.x - g_old.x;
             const double ddy = g_new.y - g_old.y;

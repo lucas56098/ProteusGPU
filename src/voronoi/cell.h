@@ -57,7 +57,7 @@ namespace voronoi {
 
         // input arrays + per-cell context
         double* pts;
-        double4 voro_seed;
+        double4_t voro_seed;
         Status* status;
         double  buff; // bounding box covers [-buff, 1+buff]^d (set per-cell so plane_for can read it)
 
@@ -80,7 +80,7 @@ namespace voronoi {
         // plane equation for slot p, rebuilt on demand from plane_vid[p] (or fixed bounding-box
         // constants for p < 2*DIMENSION). Saves the 960 B/thread that used to live in a stored
         // half_plane[] array.
-        HD double4 plane_for(int p) const;
+        HD double4_t plane_for(int p) const;
 
         // clip the cell by the perpendicular bisector of (voro_seed, pts[vid])
         HD void clip_by_plane(int vid);
@@ -89,7 +89,7 @@ namespace voronoi {
         HD int new_halfplane(int vid);
 
         // is this triangle on the "wrong" side of eqn (and so should be removed by the clip)?
-        HD bool vert_is_in_conflict(VERT v, double4 eqn) const;
+        HD bool vert_is_in_conflict(VERT v, double4_t eqn) const;
 
         // build the boundary loop separating kept triangles from removed ones
         HD void compute_boundary();
@@ -98,14 +98,14 @@ namespace voronoi {
         HD void new_vertex(IDX i, IDX j, IDX k = 0);
 
         // every cell vertex fits in the sphere of radius ||last_neig - voro_seed|| / 2
-        HD bool is_security_radius_reached(double4 last_neig) const;
+        HD bool is_security_radius_reached(double4_t last_neig) const;
 
         // squared distance from voro_seed to the farthest cell vertex, as num/denom (vertices are
         // homogeneous, so the ratio is only formed by callers that need a plain value)
         HD void max_vertex_r2_ratio(double* out_num, double* out_denom) const;
 
         // primal point of a dual-graph vertex (intersection of DIMENSION planes)
-        HD double4 compute_vertex_point(VERT v, bool persp_divide = true) const;
+        HD double4_t compute_vertex_point(VERT v, bool persp_divide = true) const;
     };
 
     // ConvexCell uses the slow-tier capacity. The fast-tier kernel instantiates
@@ -135,8 +135,8 @@ namespace voronoi {
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD bool collect_face_vertices(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
                                   int                                             p,
-                                  const double4*                                  vertices,
-                                  double4*                                        face_verts,
+                                  const double4_t*                                  vertices,
+                                  double4_t*                                        face_verts,
                                   int*                                            n_face_verts);
 
     // number of planes that contribute a face (at least DIMENSION triangles reference them)
@@ -154,7 +154,7 @@ namespace voronoi {
     // bounding-sphere radius squared is r2_num / r2_denom. See the definition in cell.cu for
     // the 2R <= safe argument. data_hi == data_lo disables the check (single rank).
     HD bool cell_certified_within_data(
-        double4 seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi);
+        double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi);
 
     // build the Voronoi cell for seed `k` by clipping the bounding box against its K nearest
     // neighbours; on success atomically reserves face storage and emits geometry into mesh

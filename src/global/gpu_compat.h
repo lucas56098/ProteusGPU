@@ -52,11 +52,7 @@ typedef struct {
 
 typedef struct {
     double x, y, z, w;
-} double4;
-
-inline double4 make_double4(double x, double y, double z, double w) {
-    return {x, y, z, w};
-}
+} double4_t;
 
 // char vector types
 typedef struct {
@@ -215,6 +211,23 @@ HD inline int imin(int a, int b) {
 }
 HD inline int imax(int a, int b) {
     return a > b ? a : b;
+}
+
+#ifndef CPU_DEBUG
+#if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ >= 13
+typedef double4_16a double4_t;
+#else
+typedef double4 double4_t;
+#endif
+#endif
+
+HD inline double4_t make_double4_t(double x, double y, double z, double w) {
+    double4_t v;
+    v.x = x;
+    v.y = y;
+    v.z = z;
+    v.w = w;
+    return v;
 }
 
 // typedefs

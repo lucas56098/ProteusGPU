@@ -8,24 +8,24 @@
 
 // vector math helpers for voronoi mesh generation and hydro
 
-HD inline double4 minus4(double4 A, double4 B) {
-    return make_double4(A.x - B.x, A.y - B.y, A.z - B.z, A.w - B.w);
+HD inline double4_t minus4(double4_t A, double4_t B) {
+    return make_double4_t(A.x - B.x, A.y - B.y, A.z - B.z, A.w - B.w);
 }
-HD inline double4 plus4(double4 A, double4 B) {
-    return make_double4(A.x + B.x, A.y + B.y, A.z + B.z, A.w + B.w);
+HD inline double4_t plus4(double4_t A, double4_t B) {
+    return make_double4_t(A.x + B.x, A.y + B.y, A.z + B.z, A.w + B.w);
 }
-HD inline double dot3(double4 A, double4 B) {
+HD inline double dot3(double4_t A, double4_t B) {
     return A.x * B.x + A.y * B.y + A.z * B.z;
 }
-HD inline double4 cross3(double4 A, double4 B) {
-    return make_double4(A.y * B.z - A.z * B.y, A.z * B.x - A.x * B.z, A.x * B.y - A.y * B.x, 0);
+HD inline double4_t cross3(double4_t A, double4_t B) {
+    return make_double4_t(A.y * B.z - A.z * B.y, A.z * B.x - A.x * B.z, A.x * B.y - A.y * B.x, 0);
 }
 
-HD inline double4 point_from_ptr(double* f) {
+HD inline double4_t point_from_ptr(double* f) {
 #ifdef dim_2D
-    return make_double4(f[0], f[1], 0, 1);
+    return make_double4_t(f[0], f[1], 0, 1);
 #else
-    return make_double4(f[0], f[1], f[2], 1);
+    return make_double4_t(f[0], f[1], f[2], 1);
 #endif
 }
 
