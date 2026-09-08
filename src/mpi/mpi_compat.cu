@@ -174,8 +174,6 @@ namespace proteus_mpi {
     static void sync_device() {
         cudaDeviceSynchronize();
     }
-#else
-    static inline void sync_device() {}
 #endif
 
     void mpi_sync_before_send(const void* buf, size_t bytes) {
@@ -194,6 +192,7 @@ namespace proteus_mpi {
             sync_device(); // make sure prefetch is done before MPI reads
         }
 #else
+        (void)buf;
         (void)bytes;
 #endif
 #endif

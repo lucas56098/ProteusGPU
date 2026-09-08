@@ -863,6 +863,8 @@ namespace voronoi {
                               double4        neighbor) {
         (void)face_verts;
         (void)n_face_verts;
+        (void)seed;
+        (void)neighbor;
 
         // neighbor_id arrives as a sorted-mixed sid (or -1 for bounding-box planes).
         // Remap to a real-sorted index via mesh->sid_to_neighbor before storing.

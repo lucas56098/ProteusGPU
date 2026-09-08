@@ -34,7 +34,9 @@ namespace proteus_mpi {
 
 namespace proteus_mpi {
 
-    static int s_n_local_max     = 0;
+#ifdef USE_MPI
+    static int s_n_local_max = 0;
+#endif
     static int s_last_n_migrated = 0;
 #ifdef USE_MPI
     static MPI_Datatype s_mpi_migrant_t = MPI_DATATYPE_NULL;
@@ -243,10 +245,12 @@ namespace proteus_mpi {
     }
 
     void migrate_init(int n_local_initial) {
-        s_n_local_max = max_n_local(n_local_initial);
 #ifdef USE_MPI
+        s_n_local_max = max_n_local(n_local_initial);
         MPI_Type_contiguous(sizeof(MigrantCell), MPI_BYTE, &s_mpi_migrant_t);
         MPI_Type_commit(&s_mpi_migrant_t);
+#else
+        (void)n_local_initial;
 #endif
     }
 

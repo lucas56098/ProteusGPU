@@ -130,6 +130,7 @@ namespace astro {
     HD double gravity_magnitude(double r, const GravityParams& p) {
         const double r2 = r * r;
         double       g  = 0.0;
+        (void)r2; // read by NFW and SMBH only
 #ifdef NFW
         {
             const double x = r / p.nfw_Rs;

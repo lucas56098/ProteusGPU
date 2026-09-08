@@ -102,8 +102,7 @@ namespace proteus_mpi {
 #ifdef dim_3D
         if (bz < 0 || bz >= N_grid_global) return -1;
 #else
-        (void)bz;
-        bz = 0;
+        (void)bz; // 2D never reads bz
         (void)dims_z;
         (void)splits_z;
 #endif

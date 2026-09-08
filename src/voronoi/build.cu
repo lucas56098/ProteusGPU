@@ -430,7 +430,6 @@ namespace voronoi {
 
     // dispatch the slow voronoi kernel over the cells that failed the fast tier
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed) {
-        const int n_hydro = (int)mesh->n_hydro;
 #ifndef CPU_DEBUG
         const int tpb    = _VORO_BLOCK_SIZE_;
         const int blocks = (n_failed + tpb - 1) / tpb;
@@ -448,6 +447,7 @@ namespace voronoi {
         }
 #else
         (void)n_failed;
+        const int n_hydro = (int)mesh->n_hydro;
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(dynamic)
 #endif

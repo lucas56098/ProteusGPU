@@ -1,6 +1,7 @@
 namespace voronoi {
 
     // ---- forward declarations ----
+#ifdef CPU_DEBUG
     static hsize_t cpu_generate_periodic_ghosts(hsize_t           n_hydro,
                                                 const POINT_TYPE* pts_data,
                                                 POINT_TYPE*       pts,
@@ -9,6 +10,7 @@ namespace voronoi {
                                                 int               wx,
                                                 int               wy,
                                                 int               wz);
+#endif // CPU_DEBUG
     HD static inline bool
     ghost_box_contains(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za = 0.0, double zb = 1.0);
     static inline void append_ghost_copy(POINT_TYPE*    pts,
@@ -68,6 +70,7 @@ namespace voronoi {
     // Helpers
     // ============================================================
 
+#ifdef CPU_DEBUG
     // CPU path: per-real-cell loop over the 3^d - 1 periodic offsets
     static hsize_t cpu_generate_periodic_ghosts(hsize_t           n_hydro,
                                                 const POINT_TYPE* pts_data,
@@ -111,6 +114,7 @@ namespace voronoi {
         }
         return n_ghosts;
     }
+#endif // CPU_DEBUG
 
 #ifndef CPU_DEBUG
     // GPU path: launch the warp-aggregated ghost kernel and read back the produced count

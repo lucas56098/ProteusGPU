@@ -269,6 +269,8 @@ namespace astro {
         const double r2 = dx * dx + dy * dy;
 #endif
         (void)dm_jet;
+        (void)de; // de/dm are used under AGN_THERMAL only
+        (void)dm;
         double rho = primvar->rho[i];
 
         // deplete accreted cold gas (removes mass and its energy, leaving v and T unchanged)
