@@ -34,6 +34,9 @@ Tiers:
   mustfail   always built; a Makefile guard must REJECT these, so a successful
              build is the failure
 
+Warnings are errors by default. Use --no-werror when a
+new compiler introduces a diagnostic you have not addressed yet.
+
 Before building anything, a coverage audit greps src/ for every #ifdef flag and fails
 if one is never compiled by any configuration in tests/configs.txt.
 
@@ -42,7 +45,7 @@ capability this machine lacks (nvcc, mpicxx, parallel HDF5) are skipped.
 USAGE
 }
 
-FULL=0; WITH_CUDA=0; LIST=0; KEEP=0; AUDIT=1; SYSTYPE=""; JOBS=""
+FULL=0; WITH_CUDA=0; LIST=0; KEEP=0; AUDIT=1; WERROR=1; SYSTYPE=""; JOBS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --full)      FULL=1 ;;
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
         --list)      LIST=1 ;;
         --keep)      KEEP=1 ;;
         --no-audit)  AUDIT=0 ;;
+        --no-werror) WERROR=0 ;;
         --systype)   SYSTYPE="${2:-}"; shift ;;
         -j|--jobs)   JOBS="${2:-}"; shift ;;
         -h|--help)   usage; exit 0 ;;
@@ -146,7 +150,7 @@ fi
 # ============================================================
 # Coverage audit (ensures all existing configs have to be tested)
 # ============================================================
-AUDIT_IGNORE="__CUDA_ARCH__ __cplusplus _OPENMP M_PI NDEBUG DRY_RUN GIT_COMMIT GIT_DIFFSTAT
+AUDIT_IGNORE="__CUDA_ARCH__ __CUDACC_VER_MAJOR__ __cplusplus _OPENMP M_PI NDEBUG DRY_RUN GIT_COMMIT GIT_DIFFSTAT
 __APPLE__ __MACH__ __linux__ __unix__ __has_include MPIX_CUDA_AWARE_SUPPORT
 PROTEUS_HAS_MPIX_QUERY_CUDA RUN_MODE DIMENSION"
 
@@ -258,7 +262,7 @@ for i in "${!NAMES[@]}"; do
     printf '%s\n' $flags > "$b/Config.sh"
 
     t0=$SECONDS
-    make ${JOBS:+-j$JOBS} CONFIG="$b/Config.sh" SYSTYPE="$SYSTYPE" \
+    make ${JOBS:+-j$JOBS} CONFIG="$b/Config.sh" SYSTYPE="$SYSTYPE" WERROR="$WERROR" \
          BUILD_DIR="$b" EXEC="$b/ProteusGPU" > "$b/build.log" 2>&1
     rc=$?
     dt=$((SECONDS - t0))

@@ -114,6 +114,16 @@ CUDA_MESSAGE = CUDA disabled (CPU_DEBUG)
 
 endif # CUDA_ENABLED
 
+
+# Opt-in -Werror (WERROR=1), used by tests/build_matrix.sh
+ifeq ($(WERROR),1)
+ifeq ($(CUDA_ENABLED),CUDA)
+	CXXFLAGS += --compiler-options -Werror -Werror all-warnings
+else
+	CXXFLAGS += -Werror
+endif
+endif
+
 CXXFLAGS += -MMD -MP
 INCLUDES = -Isrc -Isrc/global
 
