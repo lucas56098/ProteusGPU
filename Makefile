@@ -29,6 +29,18 @@ MPI_ENABLED := $(call flag,USE_MPI)
 GPU_AWARE_MPI_ENABLED := $(call flag,GPU_AWARE_MPI)
 FAST_MATH_ENABLED := $(call flag,CUDA_FAST_MATH)
 
+# require minimum CUDA version 12.0
+ifeq ($(CUDA_ENABLED),CUDA)
+CUDA_VER_NUM := $(shell nvcc --version 2>/dev/null | grep -oE 'release [0-9]+\.[0-9]+' | head -1 | awk '{split($$2,v,"."); print v[1]*100+v[2]}')
+ifeq ($(CUDA_VER_NUM),)
+$(warning Could not determine the CUDA version from nvcc; skipping the minimum-version check.)
+else
+ifeq ($(shell test $(CUDA_VER_NUM) -lt 1200 && echo old),old)
+$(error CUDA $(shell nvcc --version | grep -oE 'release [0-9.]+' | head -1) is too old: Proteus requires 12.0 or newer)
+endif
+endif
+endif
+
 # CUDA_FAST_MATH only affects nvcc flags
 ifeq ($(FAST_MATH_ENABLED),CUDA_FAST_MATH)
 ifneq ($(CUDA_ENABLED),CUDA)
