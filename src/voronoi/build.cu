@@ -18,13 +18,6 @@ namespace voronoi {
     static void read_face_count_from_gpu(VMesh* mesh);
 
 #ifndef CPU_DEBUG
-    GLOBAL void kernel_build_index_pass1_compact_reals(int                 n_total,
-                                                       hsize_t             n_hydro,
-                                                       const unsigned int* d_permutation,
-                                                       unsigned int*       real_sorted_ids,
-                                                       unsigned int*       sid_to_neighbor,
-                                                       unsigned int*       orig_to_k,
-                                                       int*                counter);
     GLOBAL void kernel_collect_failed_cells(int n, const Status* stat, int* failed_indices, int* failed_count);
     GLOBAL void kernel_compute_voronoi_cells_fast(int                n_hydro,
                                                   double*            d_stored_points,
@@ -142,31 +135,28 @@ namespace voronoi {
 
         // pass 1: assign each real seed an output index k
         if (iter == 0) {
-            // Compacting reals into [0, n_hydro) is the one step that is genuinely two
-            // algorithms: the GPU claims slots with an atomic counter, the CPU folds
-            // serially. Unifying them needs a deterministic compaction — see cleanup-ideas.
-#ifndef CPU_DEBUG
-            gpu_memset(mesh->d_real_counter, 0, sizeof(int));
-            const int tpb    = _MESH_BLOCK_SIZE_;
-            const int blocks = (n_total + tpb - 1) / tpb;
-            kernel_build_index_pass1_compact_reals<<<blocks, tpb>>>(
-                n_total, n_hydro, dperm, real_sorted_ids, sid_to_neighbor, orig_to_k, mesh->d_real_counter);
-            GPU_SYNC();
-            GPU_SYNC(); // *d_real_counter must be host-visible for the check below
-            const hsize_t n_reals = (hsize_t)*mesh->d_real_counter;
-#else
-            unsigned int k = 0;
-            for (int sid = 0; sid < n_total; sid++) {
+            unsigned int* flags   = mesh->scan_flags;
+            unsigned int* scratch = mesh->scan_scratch;
+
+            parallel_for<_MESH_BLOCK_SIZE_>(
+                "INDEX_FLAG", n_total, [=] HD(int sid) { flags[sid] = ((hsize_t)dperm[sid] < n_hydro) ? 1u : 0u; });
+
+            parallel_exclusive_scan<_MESH_BLOCK_SIZE_>("INDEX_SCAN", (size_t)n_total, flags, flags, scratch);
+
+            parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P1", n_total, [=] HD(int sid) {
                 const unsigned int orig = dperm[sid];
                 if ((hsize_t)orig < n_hydro) {
+                    const unsigned int k = flags[sid];
                     real_sorted_ids[k]   = (unsigned int)sid;
                     sid_to_neighbor[sid] = k;
                     orig_to_k[orig]      = k;
-                    k++;
                 }
-            }
-            const hsize_t n_reals = (hsize_t)k;
-#endif
+            });
+
+            // exclusive scan, so the total is the last slot plus whether the last sid was real
+            const hsize_t n_reals =
+                (n_total > 0) ? (hsize_t)flags[n_total - 1] + (((hsize_t)dperm[n_total - 1] < n_hydro) ? 1 : 0) : 0;
+
             if (n_reals != n_hydro) {
                 std::cerr << "VORONOI: build_index_maps: counted " << n_reals << " reals but n_hydro = " << n_hydro
                           << ". Aborting." << std::endl;
@@ -431,25 +421,6 @@ namespace voronoi {
 #ifndef CPU_DEBUG
 
     // gather: out[k] = in[perm[k]] for k in [0, n)
-    // pass-1 compact-reals: each real sid grabs a unique k via atomic counter
-    GLOBAL void kernel_build_index_pass1_compact_reals(int                 n_total,
-                                                       hsize_t             n_hydro,
-                                                       const unsigned int* d_permutation,
-                                                       unsigned int*       real_sorted_ids,
-                                                       unsigned int*       sid_to_neighbor,
-                                                       unsigned int*       orig_to_k,
-                                                       int*                counter) {
-        const int sid = blockIdx.x * blockDim.x + threadIdx.x;
-        if (sid >= n_total) return;
-        const unsigned int orig = d_permutation[sid];
-        if ((hsize_t)orig < n_hydro) {
-            const int k          = portable_atomicAdd(counter, 1);
-            real_sorted_ids[k]   = (unsigned int)sid;
-            sid_to_neighbor[sid] = (unsigned int)k;
-            orig_to_k[orig]      = (unsigned int)k;
-        }
-    }
-
     // collect indices of cells whose status is not success into failed_indices[0 .. *failed_count)
     GLOBAL void kernel_collect_failed_cells(int n, const Status* stat, int* failed_indices, int* failed_count) {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;

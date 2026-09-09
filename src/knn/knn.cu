@@ -46,6 +46,8 @@ namespace knn {
         knn->d_counters               = NULL;
         knn->d_ptrs                   = NULL;
         knn->d_globcounter            = NULL;
+        knn->d_scan_scratch           = NULL;
+        knn->d_bucket_ids             = NULL;
         knn->d_stored_points          = NULL;
 
         int N_max = 16;
@@ -120,6 +122,8 @@ namespace knn {
         knn->d_globcounter   = gpu_calloc<int>(1);
         knn->d_stored_points = gpu_calloc<POINT_TYPE>(max_n_total);
         knn->d_permutation   = gpu_calloc<unsigned int>(max_n_total);
+        knn->d_scan_scratch  = gpu_calloc<int>((int)scan_scratch_size((size_t)Npow, _KNN_BLOCK_SIZE_));
+        knn->d_bucket_ids    = gpu_calloc<int>(max_n_total);
 
         // hint GPU-preferred location for hot KNN arrays (reduces UM page faults)
         gpu_advise_gpu_preferred(knn->d_stored_points, max_n_total * sizeof(POINT_TYPE));
@@ -203,6 +207,8 @@ namespace knn {
         gpu_free((*knn)->d_counters);
         gpu_free((*knn)->d_ptrs);
         gpu_free((*knn)->d_globcounter);
+        gpu_free((*knn)->d_scan_scratch);
+        gpu_free((*knn)->d_bucket_ids);
         gpu_free((*knn)->d_stored_points);
         gpu_free(*knn);
         *knn = NULL;
@@ -216,8 +222,10 @@ namespace knn {
         if (new_pts_capacity <= knn->pts_capacity) return;
         gpu_free(knn->d_stored_points);
         gpu_free(knn->d_permutation);
+        gpu_free(knn->d_bucket_ids);
         knn->d_stored_points = gpu_calloc<POINT_TYPE>(new_pts_capacity);
         knn->d_permutation   = gpu_calloc<unsigned int>(new_pts_capacity);
+        knn->d_bucket_ids    = gpu_calloc<int>(new_pts_capacity);
         knn->pts_capacity    = new_pts_capacity;
         gpu_advise_gpu_preferred(knn->d_stored_points, new_pts_capacity * sizeof(POINT_TYPE));
     }
@@ -233,32 +241,48 @@ namespace knn {
         const double* grid_lo       = knn->grid_lo;
         double        inv_cell_size = knn->inv_cell_size;
         int*          d_counters    = knn->d_counters;
+        int*          d_ptrs        = knn->d_ptrs;
+        int*          bucket_ids    = knn->d_bucket_ids;
+        POINT_TYPE*   stored_points = knn->d_stored_points;
+        unsigned int* permutation   = knn->d_permutation;
 
-        int*          d_ptrs          = knn->d_ptrs;
-        int*          d_globcounter   = knn->d_globcounter;
-        POINT_TYPE*   d_stored_points = knn->d_stored_points;
-        unsigned int* d_permutation   = knn->d_permutation;
-
-        // 1) count points per grid cell
+        // 1) count points per grid cell. Integer atomics, so the totals do not depend on
+        //    the order the increments land in.
         parallel_for<_KNN_BLOCK_SIZE_>("COUNT", len_pts, [=] HD(int id) {
             const int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
             portable_atomicAdd(d_counters + cell, 1);
         });
 
-        // 2) reserve a memory range for each cell
-        parallel_for<_KNN_BLOCK_SIZE_>("PTRS", Npow, [=] HD(int id) {
-            const int count = d_counters[id];
-            if (count > 0) { d_ptrs[id] = portable_atomicAdd(d_globcounter, count); }
-        });
+        // 2) exclusive prefix sum -> each cell's base offset. This replaces a running
+        //    atomicAdd on one global counter, which handed out bases in race order and made
+        //    the whole point array (and therefore the mesh) differ between runs.
+        parallel_exclusive_scan<_KNN_BLOCK_SIZE_>("PTRS", (size_t)Npow, d_counters, d_ptrs, knn->d_scan_scratch);
 
-        // 3) scatter points into their cell-organized locations
+        // 3) drop each point's id into its bucket. Order within a bucket is still arbitrary;
+        //    d_counters is reused as the fill cursor and ends up back at the counts.
         gpu_memset(d_counters, 0, Npow * sizeof(int));
         parallel_for<_KNN_BLOCK_SIZE_>("SCATTER", len_pts, [=] HD(int id) {
-            const POINT_TYPE p    = pts[id];
-            const int        cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, p);
-            const int        pos  = d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1);
-            d_stored_points[pos]  = p;
-            d_permutation[pos]    = id;
+            const int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
+            bucket_ids[d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1)] = id;
+        });
+
+        // 4) place each point at base + (its rank among the ids sharing its bucket), which is
+        //    a pure function of the input. Buckets hold ~3.1 points by construction, and the
+        //    O(b) scan is done per point rather than per bucket so one fat bucket cannot
+        //    serialise a thread.
+        parallel_for<_KNN_BLOCK_SIZE_>("RANK", len_pts, [=] HD(int slot) {
+            const int id   = bucket_ids[slot];
+            const int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
+            const int base = d_ptrs[cell];
+            const int end  = base + d_counters[cell];
+
+            int rank = 0;
+            for (int q = base; q < end; q++) {
+                if (bucket_ids[q] < id) rank++;
+            }
+
+            stored_points[base + rank] = pts[id];
+            permutation[base + rank]   = (unsigned int)id;
         });
     }
 

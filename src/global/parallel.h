@@ -52,4 +52,105 @@ template <int BLOCK, int MIN_BLOCKS = 1, typename F> inline void parallel_for(co
 #endif
 }
 
+inline size_t scan_scratch_size(size_t n, int block) {
+    size_t total = 0;
+    while (n > 1) {
+        n = (n + (size_t)block - 1) / (size_t)block;
+        total += n;
+    }
+    return total > 0 ? total : 1;
+}
+
+#ifndef CPU_DEBUG
+template <int BLOCK, typename T> GLOBAL void kernel_scan_block(size_t n, const T* in, T* out, T* block_sums) {
+    __shared__ T buf[2][BLOCK];
+    const size_t i   = (size_t)blockIdx.x * BLOCK + threadIdx.x;
+    const int    tid = threadIdx.x;
+
+    const T v    = (i < n) ? in[i] : (T)0;
+    int     pout = 0, pin = 1;
+    buf[pout][tid] = v;
+    __syncthreads();
+
+    for (int offset = 1; offset < BLOCK; offset *= 2) {
+        pin            = pout;
+        pout           = 1 - pout;
+        buf[pout][tid] = (tid >= offset) ? buf[pin][tid] + buf[pin][tid - offset] : buf[pin][tid];
+        __syncthreads();
+    }
+
+    const T incl = buf[pout][tid];
+    if (i < n) out[i] = incl - v; // inclusive -> exclusive
+    if (tid == BLOCK - 1) block_sums[blockIdx.x] = incl;
+}
+
+template <int BLOCK, typename T> GLOBAL void kernel_scan_add(size_t n, T* out, const T* block_offsets) {
+    const size_t i = (size_t)blockIdx.x * BLOCK + threadIdx.x;
+    if (i < n) out[i] += block_offsets[blockIdx.x];
+}
+
+template <int BLOCK, typename T> inline void scan_device(size_t n, const T* in, T* out, T* scratch) {
+    const size_t nb = (n + BLOCK - 1) / BLOCK;
+    kernel_scan_block<BLOCK, T><<<(unsigned int)nb, BLOCK>>>(n, in, out, scratch);
+    GPU_SYNC();
+    if (nb > 1) {
+        scan_device<BLOCK, T>(nb, scratch, scratch, scratch + nb);
+        kernel_scan_add<BLOCK, T><<<(unsigned int)nb, BLOCK>>>(n, out, scratch);
+        GPU_SYNC();
+    }
+}
+
+#endif // !CPU_DEBUG
+
+template <int BLOCK, typename T>
+inline void parallel_exclusive_scan(const char* name, size_t n, const T* in, T* out, T* scratch) {
+    (void)name;
+    (void)scratch;
+    if (n == 0) return;
+
+#ifndef CPU_DEBUG
+    PROFILE_KERNEL(name);
+    scan_device<BLOCK, T>(n, in, out, scratch);
+#else
+    PROFILE(name);
+    const size_t CHUNKS = 1024;
+    const size_t chunk  = (n + CHUNKS - 1) / CHUNKS;
+    T            totals[CHUNKS];
+
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t c = 0; c < CHUNKS; c++) {
+        const size_t lo = c * chunk;
+        const size_t hi = (lo + chunk < n) ? lo + chunk : n;
+        T            s  = 0;
+        for (size_t i = lo; i < hi; i++) {
+            s += in[i];
+        }
+        totals[c] = s;
+    }
+
+    T running = 0;
+    for (size_t c = 0; c < CHUNKS; c++) {
+        const T t = totals[c];
+        totals[c] = running;
+        running += t;
+    }
+
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t c = 0; c < CHUNKS; c++) {
+        const size_t lo = c * chunk;
+        const size_t hi = (lo + chunk < n) ? lo + chunk : n;
+        T            r  = totals[c];
+        for (size_t i = lo; i < hi; i++) {
+            const T v = in[i]; // read before write, so in == out is safe
+            out[i]    = r;
+            r += v;
+        }
+    }
+#endif
+}
+
 #endif // PARALLEL_H

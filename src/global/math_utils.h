@@ -4,9 +4,37 @@
 
 #include "gpu_compat.h"
 #include "structs.h"
+#include <cfloat>
 #include <cmath>
 
 // vector math helpers for voronoi mesh generation and hydro
+
+HD inline double portable_cbrt(double a) {
+    if (a == 0.0) return a;  // preserves -0.0
+    if (!(a == a)) return a; // NaN
+    const bool neg = (a < 0.0);
+    double     x   = neg ? -a : a;
+    if (x > DBL_MAX) return a; // +-inf
+
+    // x = m * 2^e with the exponent forced to a multiple of 3, so cbrt(x) = cbrt(m) * 2^(e/3)
+    int    e;
+    double m = frexp(x, &e); // m in [0.5, 1)
+    int    r = e % 3;
+    if (r < 0) r += 3;
+    e -= r;
+    m = ldexp(m, r); // m in [0.5, 4)
+
+    // quadratic seed, then Newton y <- (2y + m/y^2)/3
+    double y = 0.4748 + 0.6529 * m - 0.1090 * m * m;
+    for (int i = 0; i < 4; i++) {
+        y = (2.0 * y + m / (y * y)) / 3.0;
+    }
+    // one more step in residual form: rounds better than re-forming the whole quotient
+    y += (m - y * y * y) / (3.0 * y * y);
+
+    const double res = ldexp(y, e / 3); // e is a multiple of 3, so this division is exact
+    return neg ? -res : res;
+}
 
 HD inline double4_t minus4(double4_t A, double4_t B) {
     return make_double4_t(A.x - B.x, A.y - B.y, A.z - B.z, A.w - B.w);

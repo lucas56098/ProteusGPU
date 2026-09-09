@@ -17,6 +17,8 @@ typedef struct knn_problem {
     int*          d_counters;               // counters per cell,   N_grid*N_grid*N_grid
     int*          d_ptrs;                   // cell start pointers, N_grid*N_grid*N_grid
     int*          d_globcounter;            // global allocation counter, 1
+    int*          d_scan_scratch;           // block sums for the exclusive scan over d_counters
+    int*          d_bucket_ids;             // point ids in bucket order, pre-rank; pts_capacity
     POINT_TYPE*   d_stored_points;          // input points sorted, numpoints
     double        buff;                     // periodic ghost buffer; bucket grid spans [-buff, 1+buff]^d
     double        inv_boxsize;              // 1 / (1 + 2*buff), precomputed for cellFromPoint

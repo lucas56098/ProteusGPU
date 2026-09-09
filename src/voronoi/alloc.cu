@@ -51,7 +51,7 @@ namespace voronoi {
 #ifdef dim_2D
         mesh->Ri_ref = sqrt(V_ref / PI);
 #else
-        mesh->Ri_ref = cbrt(3.0 * V_ref / (4.0 * PI));
+        mesh->Ri_ref = portable_cbrt(3.0 * V_ref / (4.0 * PI));
 #endif
 
         mesh->cell_status = gpu_alloc<Status>(ext);
@@ -113,6 +113,8 @@ namespace voronoi {
         mesh->cell_to_original = gpu_alloc<unsigned int>(ext);
         mesh->gather_perm      = gpu_alloc<unsigned int>(ext);
         mesh->orig_to_k_save   = gpu_alloc<unsigned int>(ext);
+        mesh->scan_flags       = gpu_alloc<unsigned int>(total);
+        mesh->scan_scratch     = gpu_alloc<unsigned int>(scan_scratch_size((size_t)total, _MESH_BLOCK_SIZE_));
         for (hsize_t i = 0; i < n_hydro; i++)
             mesh->cell_to_original[i] = (unsigned int)i;
 
@@ -124,9 +126,6 @@ namespace voronoi {
         // mesh-build scratch
         mesh->scratch_pts  = gpu_alloc<POINT_TYPE>(total);
         mesh->scratch_move = gpu_alloc<POINT_TYPE>(ext);
-
-        // device counters
-        mesh->d_real_counter = gpu_calloc<int>(1);
 
         // KNN cache
         mesh->knn = knn::init_once((int)n_hydro);
@@ -175,12 +174,13 @@ namespace voronoi {
         gpu_free(mesh->cell_to_original);
         gpu_free(mesh->gather_perm);
         gpu_free(mesh->orig_to_k_save);
+        gpu_free(mesh->scan_flags);
+        gpu_free(mesh->scan_scratch);
         gpu_free(mesh->scratch_uint);
         gpu_free(mesh->scratch_double);
         gpu_free(mesh->scratch_point);
         gpu_free(mesh->scratch_pts);
         gpu_free(mesh->scratch_move);
-        gpu_free(mesh->d_real_counter);
         if (mesh->seeds_g) gpu_free(mesh->seeds_g);
 #ifdef VOL_REGULARIZE
         if (mesh->volumes_g) gpu_free(mesh->volumes_g);

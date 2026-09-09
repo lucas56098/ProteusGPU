@@ -160,7 +160,7 @@ namespace voronoi {
 #ifdef dim_2D
         L.Ri = sqrt(fmax(mesh->volumes[i], 0.0) / PI);
 #else
-        L.Ri = cbrt(3.0 * fmax(mesh->volumes[i], 0.0) / (4.0 * PI));
+        L.Ri = portable_cbrt(3.0 * fmax(mesh->volumes[i], 0.0) / (4.0 * PI));
 #endif
 
         // base offset: seed -> centroid, with periodic wrap on the deltas

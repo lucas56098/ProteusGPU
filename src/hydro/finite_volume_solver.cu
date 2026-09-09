@@ -573,7 +573,7 @@ namespace hydro {
 #ifdef dim_2D
         double R_i = sqrt(mesh->volumes[i] / M_PI);
 #else
-        double R_i = cbrt(3.0 * mesh->volumes[i] / (4.0 * M_PI));
+        double R_i = portable_cbrt(3.0 * mesh->volumes[i] / (4.0 * M_PI));
 #endif
         // fluid speed
 #ifdef MOVING_MESH

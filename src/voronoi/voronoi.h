@@ -84,6 +84,8 @@ struct VMesh {
     // stable [orig] -> k mapping captured after iter 0 of the halo-widening loop,
     // reused by later iterations so primvar order stays aligned across them
     unsigned int* orig_to_k_save; // [orig] -> k;      size n_hydro
+    unsigned int* scan_flags;     // per-sid predicate, then its exclusive scan; size n_seeds
+    unsigned int* scan_scratch;   // block sums for that scan
 
     // typed scratch pools — one per type, reused across every permute_inplace<T> call
     unsigned int* scratch_uint;   // size n_hydro
@@ -93,8 +95,6 @@ struct VMesh {
     // mesh-build scratch
     POINT_TYPE* scratch_pts;  // ghost-augmented point buffer; size total_capacity
     POINT_TYPE* scratch_move; // post-move seed buffer;        size n_hydro
-
-    int* d_real_counter; // build_index_maps atomic counter, size 1
 
     // minimum specific internal energy for the hydro positivity/temperature floor (0 disables).
     // Mirror of sim.min_egy_spec, copied here so the flux kernel can read it device-side.
