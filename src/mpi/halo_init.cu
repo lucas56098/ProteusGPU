@@ -98,6 +98,10 @@ void halo_free() {
 #endif
     if (halo.is_outer_layer) gpu_free(halo.is_outer_layer);
     if (halo.neighbor_shift_flat) gpu_free(halo.neighbor_shift_flat);
+    if (s_is_outer_meta_dev) {
+        gpu_free(s_is_outer_meta_dev);
+        s_is_outer_meta_dev = nullptr;
+    }
 
     if (halo.n_neighbors > 0) {
         MPI_Type_free(&halo.mpi_prim_t);
