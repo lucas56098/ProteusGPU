@@ -85,12 +85,13 @@ namespace proteus_mpi {
         }
 
         // ============================================================
-        // pack_outgoing_migrants: per-cell scatter into sendbuf via atomic cursor
+        // pack_outgoing_migrants: per-cell scatter into sendbuf at a precomputed position
         // ============================================================
 
         template <typename MigrantCell>
         HD inline void pack_migrant_body(int               k,
                                          const int*        per_cell_slot,
+                                         const int*        dest_pos,
                                          const POINT_TYPE* pts,
                                          const double*     primvar_rho,
                                          const POINT_TYPE* primvar_v,
@@ -102,13 +103,8 @@ namespace proteus_mpi {
                                          const POINT_TYPE* v_mesh,
                                          const double*     old_volumes,
 #endif
-                                         int*         cursor,
-                                         MigrantCell* sendbuf,
-                                         int*         n_migrant_local_counter,
-                                         int*         migrant_local_k) {
-            const int slot_id = per_cell_slot[k];
-            if (slot_id < 0) return;
-            const int   slot = portable_atomicAdd(&cursor[slot_id], 1);
+                                         MigrantCell* sendbuf) {
+            if (per_cell_slot[k] < 0) return;
             MigrantCell mc;
             mc.pos     = pts[k];
             mc.rho_old = primvar_rho[k];
@@ -121,9 +117,7 @@ namespace proteus_mpi {
             mc.v_mesh     = v_mesh[k];
             mc.old_volume = old_volumes[k];
 #endif
-            sendbuf[slot]              = mc;
-            const int local_idx        = portable_atomicAdd(n_migrant_local_counter, 1);
-            migrant_local_k[local_idx] = k;
+            sendbuf[dest_pos[k]] = mc;
         }
 
         // ============================================================

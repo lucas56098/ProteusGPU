@@ -66,19 +66,21 @@ namespace proteus_mpi {
     static int          s_migrant_local_k_cap = 0;
     // logical count of local cells currently marked for removal (= total_send post-pack)
     static int s_n_migrant_local = 0;
-    // per-slot output cursor for the pack loop (= s_send_displs initially; advanced once per migrant)
-    static int* s_cursor     = nullptr;
-    static int  s_cursor_cap = 0;
     // neighbor_rank -> Cart-neighbor slot index, or -1 if not a neighbor. Sized to nranks,
     // refilled on each migrate_seeds call (cheap; size <= nranks).
     static int* s_nbr_rank_to_slot     = nullptr;
     static int  s_nbr_rank_to_slot_cap = 0;
     // 1-int error signal for assign_destinations kernels (kernel can't exit_failure
     // cleanly; host checks and exits after the kernel sync).
-    static int* s_assign_err = nullptr;
-    // running count for s_migrant_local_k (kernel atomicAdds into it)
-    static int* s_n_migrant_local_dev = nullptr;
-    // 1-int counter for migrants per kernel call
+    static int* s_assign_err       = nullptr;
+    static int* s_mig_scan         = nullptr;
+    static int  s_mig_scan_cap     = 0;
+    static int* s_scan_scratch     = nullptr;
+    static int  s_scan_scratch_cap = 0;
+    static int* s_dest_pos         = nullptr;
+    static int  s_dest_pos_cap     = 0;
+    static int* s_chunk_tab        = nullptr;
+    static int  s_chunk_tab_cap    = 0;
 #endif
 
     // grow a managed buffer to >= need elements (doubling, floor 64). nullptr-safe.
@@ -94,7 +96,6 @@ namespace proteus_mpi {
     // lazy-alloc single-int managed counters (called on first use).
     static void ensure_scratch_singletons() {
         if (!s_assign_err) s_assign_err = (int*)gpu_malloc(sizeof(int));
-        if (!s_n_migrant_local_dev) s_n_migrant_local_dev = (int*)gpu_malloc(sizeof(int));
     }
 #endif
 
@@ -427,26 +428,105 @@ namespace proteus_mpi {
         *total_recv = tr;
     }
 
+    static constexpr int PACK_TABLE_BUDGET = 1 << 20; // table entries; 4 MiB at 4 B each
+    static constexpr int PACK_MAX_CHUNKS   = 1024;
+
+    static int pack_chunks_for(int nslots) {
+        int c = (nslots > 0) ? (PACK_TABLE_BUDGET / nslots) : PACK_MAX_CHUNKS;
+        if (c > PACK_MAX_CHUNKS) c = PACK_MAX_CHUNKS;
+        if (c < 1) c = 1;
+        return c;
+    }
+
+    // half-open range of the compacted list owned by chunk c
+    HD inline void pack_chunk_range(int c, int m, int chunks, int* lo, int* hi) {
+        const int span = (m + chunks - 1) / chunks;
+        int       a    = c * span;
+        int       b    = a + span;
+        if (a > m) a = m;
+        if (b > m) b = m;
+        *lo = a;
+        *hi = b;
+    }
+
+    static void build_pack_layout(int n_hydro, int nslots) {
+        ensure_managed(s_mig_scan, s_mig_scan_cap, std::max(n_hydro, 1));
+        ensure_managed(s_dest_pos, s_dest_pos_cap, std::max(n_hydro, 1));
+        ensure_managed(s_migrant_local_k, s_migrant_local_k_cap, std::max(n_hydro, 1));
+
+        const int* per_cell_slot = s_per_cell_slot;
+        int*       off           = s_mig_scan;
+
+        s_n_migrant_local = 0;
+        if (n_hydro <= 0) return;
+
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+            "MIG_FLAG", n_hydro, [=] HD(size_t k) { off[k] = (per_cell_slot[k] >= 0) ? 1 : 0; });
+
+        const size_t need = scan_scratch_size((size_t)n_hydro, _MPI_PACK_BLOCK_SIZE_);
+        ensure_managed(s_scan_scratch, s_scan_scratch_cap, (int)need);
+        parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_, int>("MIG_SCAN", (size_t)n_hydro, off, off, s_scan_scratch);
+
+        // exclusive scan, so the total is the last offset plus whether the last cell migrates
+        const int m       = off[n_hydro - 1] + ((per_cell_slot[n_hydro - 1] >= 0) ? 1 : 0);
+        s_n_migrant_local = m;
+        if (m == 0) return;
+
+        int* mig_k = s_migrant_local_k;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_COMPACT", n_hydro, [=] HD(size_t k) {
+            if (per_cell_slot[k] >= 0) mig_k[off[k]] = (int)k;
+        });
+
+        const int chunks = pack_chunks_for(nslots);
+        ensure_managed(s_chunk_tab, s_chunk_tab_cap, chunks * nslots);
+        int*       tab         = s_chunk_tab;
+        const int* send_displs = s_send_displs;
+        int*       dest_pos    = s_dest_pos;
+
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+            "MIG_TAB_ZERO", (size_t)chunks * (size_t)nslots, [=] HD(size_t i) { tab[i] = 0; });
+
+        // chunk c owns row c outright, so counting into it needs no atomic
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_TAB_COUNT", chunks, [=] HD(size_t c) {
+            int lo, hi;
+            pack_chunk_range((int)c, m, chunks, &lo, &hi);
+            for (int j = lo; j < hi; j++)
+                tab[(size_t)c * nslots + per_cell_slot[mig_k[j]]]++;
+        });
+
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_TAB_SCAN", nslots, [=] HD(size_t sl) {
+            int run = send_displs[sl];
+            for (int c = 0; c < chunks; c++) {
+                const size_t idx = (size_t)c * nslots + sl;
+                const int    t   = tab[idx];
+                tab[idx]         = run;
+                run += t;
+            }
+        });
+
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_TAB_POS", chunks, [=] HD(size_t c) {
+            int lo, hi;
+            pack_chunk_range((int)c, m, chunks, &lo, &hi);
+            for (int j = lo; j < hi; j++) {
+                const int k = mig_k[j];
+                dest_pos[k] = tab[(size_t)c * nslots + per_cell_slot[k]]++;
+            }
+        });
+    }
+
     static void pack_outgoing_migrants(
         VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new, POINT_TYPE* pts, int n_hydro, int nslots) {
-        ensure_managed(s_migrant_local_k, s_migrant_local_k_cap, std::max(n_hydro, 1));
-        ensure_managed(s_cursor, s_cursor_cap, std::max(nslots, 1));
-        for (int i = 0; i < nslots; i++)
-            s_cursor[i] = s_send_displs[i];
-        ensure_scratch_singletons();
-        *s_n_migrant_local_dev = 0;
+        build_pack_layout(n_hydro, nslots);
 
-        auto*   per_cell_slot   = s_per_cell_slot;
-        auto*   cursor          = s_cursor;
-        auto*   sendbuf         = s_sendbuf;
-        auto*   n_migrant_local = s_n_migrant_local_dev;
-        auto*   migrant_local_k = s_migrant_local_k;
-        double* rho             = primvar->rho;
-        auto*   v               = primvar->v;
-        double* E               = primvar->E;
-        double* rho_new         = prim_new->rho;
-        auto*   v_new           = prim_new->v;
-        double* E_new           = prim_new->E;
+        auto*   per_cell_slot = s_per_cell_slot;
+        auto*   dest_pos      = s_dest_pos;
+        auto*   sendbuf       = s_sendbuf;
+        double* rho           = primvar->rho;
+        auto*   v             = primvar->v;
+        double* E             = primvar->E;
+        double* rho_new       = prim_new->rho;
+        auto*   v_new         = prim_new->v;
+        double* E_new         = prim_new->E;
 #ifdef MOVING_MESH
         auto*   v_mesh      = mesh->v_mesh;
         double* old_volumes = mesh->old_volumes;
@@ -455,6 +535,7 @@ namespace proteus_mpi {
         parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", n_hydro, [=] HD(int k) {
             pack::pack_migrant_body(k,
                                     per_cell_slot,
+                                    dest_pos,
                                     pts,
                                     rho,
                                     v,
@@ -466,12 +547,8 @@ namespace proteus_mpi {
                                     v_mesh,
                                     old_volumes,
 #endif
-                                    cursor,
-                                    sendbuf,
-                                    n_migrant_local,
-                                    migrant_local_k);
+                                    sendbuf);
         });
-        s_n_migrant_local = *s_n_migrant_local_dev;
 #ifndef MOVING_MESH
         (void)mesh;
 #endif

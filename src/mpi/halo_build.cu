@@ -148,8 +148,21 @@ void halo_build_used_subset(VMesh* mesh) {
 
 #ifdef USE_MPI
 
-// pass 1: for each local cell, count how many neighbor directions it ships to
-// (and how many of those are in the outermost layer)
+static constexpr int EXPORT_CHUNKS = 1024;
+
+static int s_chunk_outer[EXPORT_CHUNKS][HALO_MAX_NEIGHBORS];
+static int s_chunk_inner[EXPORT_CHUNKS][HALO_MAX_NEIGHBORS];
+
+static inline void export_chunk_range(int c, int n_local, int* lo, int* hi) {
+    const long long chunk = ((long long)n_local + EXPORT_CHUNKS - 1) / EXPORT_CHUNKS;
+    long long       a     = (long long)c * chunk;
+    long long       b     = a + chunk;
+    if (a > n_local) a = n_local;
+    if (b > n_local) b = n_local;
+    *lo = (int)a;
+    *hi = (int)b;
+}
+
 static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, double buff, int W) {
     const int nn     = halo.n_neighbors;
     const int N_grid = decomp.N_grid_global;
@@ -163,43 +176,62 @@ static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, 
         ndz[n] = halo.neighbor_dirs[n][2];
     }
 
-    int send_count[HALO_MAX_NEIGHBORS]   = {0};
-    int send_n_outer[HALO_MAX_NEIGHBORS] = {0};
-
 #ifdef USE_OPENMP
-#pragma omp parallel for schedule(static) reduction(+ : send_count[ : HALO_MAX_NEIGHBORS])                             \
-    reduction(+ : send_n_outer[ : HALO_MAX_NEIGHBORS])
+#pragma omp parallel for schedule(static)
 #endif
-    for (int k = 0; k < n_local; k++) {
-        const double px = local_seeds[k].x;
-        const double py = local_seeds[k].y;
-#ifdef dim_3D
-        const double pz = local_seeds[k].z;
-#else
-        const double pz = 0.0;
-#endif
-        int bx, by, bz;
-        decomp_bucket_of_point(px, py, pz, N_grid, buff, &bx, &by, &bz);
+    for (int c = 0; c < EXPORT_CHUNKS; c++) {
+        int cnt_outer[HALO_MAX_NEIGHBORS] = {0};
+        int cnt_inner[HALO_MAX_NEIGHBORS] = {0};
 
-        const BoundaryFlags f = classify_brick_boundary(bx, by, bz, b0x, b1x, b0y, b1y, b0z, b1z, W);
-        if (!touches_brick_boundary(f)) continue;
+        int lo, hi;
+        export_chunk_range(c, n_local, &lo, &hi);
+        for (int k = lo; k < hi; k++) {
+            const double px = local_seeds[k].x;
+            const double py = local_seeds[k].y;
+#ifdef dim_3D
+            const double pz = local_seeds[k].z;
+#else
+            const double pz = 0.0;
+#endif
+            int bx, by, bz;
+            decomp_bucket_of_point(px, py, pz, N_grid, buff, &bx, &by, &bz);
+
+            const BoundaryFlags f = classify_brick_boundary(bx, by, bz, b0x, b1x, b0y, b1y, b0z, b1z, W);
+            if (!touches_brick_boundary(f)) continue;
+
+            for (int n = 0; n < nn; n++) {
+                const int dx = ndx[n], dy = ndy[n], dz = ndz[n];
+                if (!ships_to_neighbor(f, dx, dy, dz)) continue;
+                if (ships_to_outer_layer(f, dx, dy, dz))
+                    cnt_outer[n]++;
+                else
+                    cnt_inner[n]++;
+            }
+        }
 
         for (int n = 0; n < nn; n++) {
-            const int dx = ndx[n], dy = ndy[n], dz = ndz[n];
-            if (!ships_to_neighbor(f, dx, dy, dz)) continue;
-            send_count[n]++;
-            if (ships_to_outer_layer(f, dx, dy, dz)) send_n_outer[n]++;
+            s_chunk_outer[c][n] = cnt_outer[n];
+            s_chunk_inner[c][n] = cnt_inner[n];
         }
     }
 
     for (int n = 0; n < nn; n++) {
-        halo.send_count[n]   = send_count[n];
-        halo.send_n_outer[n] = send_n_outer[n];
+        int run = 0;
+        for (int c = 0; c < EXPORT_CHUNKS; c++) {
+            const int t         = s_chunk_outer[c][n];
+            s_chunk_outer[c][n] = run;
+            run += t;
+        }
+        halo.send_n_outer[n] = run;
+        for (int c = 0; c < EXPORT_CHUNKS; c++) {
+            const int t         = s_chunk_inner[c][n];
+            s_chunk_inner[c][n] = run;
+            run += t;
+        }
+        halo.send_count[n] = run;
     }
 }
 
-// pass 2: pack export_indices and dir_of_slot. outermost-layer cells go to the
-// front of each neighbor's range, inner-layer cells after them.
 static void fill_export_slots(const POINT_TYPE* local_seeds, int n_local, double buff, int W) {
     const int nn     = halo.n_neighbors;
     const int N_grid = decomp.N_grid_global;
@@ -213,47 +245,42 @@ static void fill_export_slots(const POINT_TYPE* local_seeds, int n_local, double
         ndz[n] = halo.neighbor_dirs[n][2];
     }
 
-    int outer_cur[HALO_MAX_NEIGHBORS] = {0};
-    int inner_cur[HALO_MAX_NEIGHBORS];
-    for (int n = 0; n < nn; n++)
-        inner_cur[n] = halo.send_n_outer[n];
-
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int k = 0; k < n_local; k++) {
-        const double px = local_seeds[k].x;
-        const double py = local_seeds[k].y;
-#ifdef dim_3D
-        const double pz = local_seeds[k].z;
-#else
-        const double pz = 0.0;
-#endif
-        int bx, by, bz;
-        decomp_bucket_of_point(px, py, pz, N_grid, buff, &bx, &by, &bz);
+    for (int c = 0; c < EXPORT_CHUNKS; c++) {
 
-        const BoundaryFlags f = classify_brick_boundary(bx, by, bz, b0x, b1x, b0y, b1y, b0z, b1z, W);
-        if (!touches_brick_boundary(f)) continue;
-
+        int outer_cur[HALO_MAX_NEIGHBORS], inner_cur[HALO_MAX_NEIGHBORS];
         for (int n = 0; n < nn; n++) {
-            const int dx = ndx[n], dy = ndy[n], dz = ndz[n];
-            if (!ships_to_neighbor(f, dx, dy, dz)) continue;
+            outer_cur[n] = s_chunk_outer[c][n];
+            inner_cur[n] = s_chunk_inner[c][n];
+        }
 
-            int j;
-            if (ships_to_outer_layer(f, dx, dy, dz)) {
-#ifdef USE_OPENMP
-#pragma omp atomic capture
+        int lo, hi;
+        export_chunk_range(c, n_local, &lo, &hi);
+        for (int k = lo; k < hi; k++) {
+            const double px = local_seeds[k].x;
+            const double py = local_seeds[k].y;
+#ifdef dim_3D
+            const double pz = local_seeds[k].z;
+#else
+            const double pz = 0.0;
 #endif
-                j = outer_cur[n]++;
-            } else {
-#ifdef USE_OPENMP
-#pragma omp atomic capture
-#endif
-                j = inner_cur[n]++;
+            int bx, by, bz;
+            decomp_bucket_of_point(px, py, pz, N_grid, buff, &bx, &by, &bz);
+
+            const BoundaryFlags f = classify_brick_boundary(bx, by, bz, b0x, b1x, b0y, b1y, b0z, b1z, W);
+            if (!touches_brick_boundary(f)) continue;
+
+            for (int n = 0; n < nn; n++) {
+                const int dx = ndx[n], dy = ndy[n], dz = ndz[n];
+                if (!ships_to_neighbor(f, dx, dy, dz)) continue;
+
+                const int j               = ships_to_outer_layer(f, dx, dy, dz) ? outer_cur[n]++ : inner_cur[n]++;
+                const int slot            = halo.send_offset[n] + j;
+                halo.export_indices[slot] = k;
+                halo.dir_of_slot[slot]    = (unsigned char)n;
             }
-            const int slot            = halo.send_offset[n] + j;
-            halo.export_indices[slot] = k;
-            halo.dir_of_slot[slot]    = (unsigned char)n;
         }
     }
 }
