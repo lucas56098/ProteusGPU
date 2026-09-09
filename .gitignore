@@ -33,3 +33,5 @@ ProteusGPU
 !tests/*.txt
 !tests/convergence/**/*.sh
 !tests/convergence/**/*.py
+!tests/equality/**/*.sh
+!tests/equality/**/*.py
