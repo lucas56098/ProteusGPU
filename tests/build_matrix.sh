@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proteus compile matrix
-# The configurations themselves are set in tests/configs.txt, one per line
+# The configurations themselves are set in tests/builds/configs.txt, one per line
 #
 # Compile-only. No running is done.
 
@@ -8,14 +8,14 @@ set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SELF_DIR/.." && pwd)"
-CONFIGS="$SELF_DIR/configs.txt"
+CONFIGS="$SELF_DIR/builds/configs.txt"
 
 usage() {
     cat <<'USAGE'
 Usage: tests/build_matrix.sh [options]
 
 Builds Proteus in many Config.sh flag combinations to catch configuration-specific
-breaks. Configurations are listed in tests/configs.txt -- to add one, copy a line
+breaks. Configurations are listed in tests/builds/configs.txt -- to add one, copy a line
 there and edit it.
 
 Options:
@@ -39,8 +39,8 @@ Warnings are errors by default. Use --no-werror when a
 new compiler introduces a diagnostic you have not addressed yet.
 
 Before building anything two audits run. The coverage audit greps src/ for every #ifdef
-flag and fails if one is never compiled by any configuration in tests/configs.txt. The
-format audit checks every tracked .cu/.h against clang-format. Both are bypassed by
+flag and fails if one is never compiled by any configuration in the list. The format
+audit checks every tracked .cu/.h against clang-format. Both are bypassed by
 --no-audit.
 
 Exit status is non-zero if any runnable configuration fails. Configurations needing a
@@ -99,7 +99,7 @@ if have nvidia-smi; then
 fi
 
 # ============================================================
-# Load tests/configs.txt
+# Load tests/builds/configs.txt
 # ============================================================
 NAMES=(); FLAGS=(); TIERS=()
 while read -r tier name rest; do
@@ -107,7 +107,7 @@ while read -r tier name rest; do
         basic|mustfail) ;;
         full) [ "$FULL" -eq 1 ] || continue ;;
         cuda) [ "$WITH_CUDA" -eq 1 ] || continue ;;
-        *) printf 'configs.txt: unknown tier "%s" for %s\n' "$tier" "$name" >&2; exit 2 ;;
+        *) printf 'builds/configs.txt: unknown tier "%s" for %s\n' "$tier" "$name" >&2; exit 2 ;;
     esac
     TIERS+=("$tier"); NAMES+=("$name"); FLAGS+=("$rest")
 done < <(grep -vE '^[[:space:]]*(#|$)' "$CONFIGS")
@@ -212,7 +212,7 @@ run_audit() {
         fi
         if [ "$holes" -eq 0 ]; then
             printf '\n\033[31mcoverage audit failed\033[0m — these flags are used in src/ but no\n'
-            printf 'configuration in tests/configs.txt ever compiles them:\n\n'
+            printf 'configuration in tests/builds/configs.txt ever compiles them:\n\n'
         fi
         printf '  \033[31m%-28s\033[0m %s\n' "$flag" "${USED_IN[$flag]}"
         holes=$((holes + 1))
@@ -220,7 +220,7 @@ run_audit() {
 
     if [ "$holes" -gt 0 ]; then
         printf '\nCode behind an uncompiled flag is never checked, so the matrix would report\n'
-        printf 'success while src/ does not build. Add a line to tests/configs.txt covering\n'
+        printf 'success while src/ does not build. Add a line to tests/builds/configs.txt covering\n'
         printf 'each flag above, or --no-audit to bypass.\n\n'
         return 1
     fi
