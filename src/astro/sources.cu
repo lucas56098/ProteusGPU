@@ -1,9 +1,9 @@
 /* Strang-split source-term orchestration */
-#include "sources.h"
 #include "agn.h"
 #include "cooling.h"
 #include "gravity.h"
 #include "limiters.h"
+#include "sources.h"
 #include "stars.h"
 
 namespace astro {

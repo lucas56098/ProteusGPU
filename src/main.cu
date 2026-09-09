@@ -1,6 +1,6 @@
 /* main simulation routine */
-#include "astro/sources.h"
 #include "astro/agn.h"
+#include "astro/sources.h"
 #include "begrun/begrun.h"
 #include "global/allvars.h"
 #include "hydro/finite_volume_solver.h"
@@ -39,12 +39,12 @@ int main(int argc, char* argv[]) {
         PROFILE("HYDRO");
         while (sim.t_sim < sim.t_end) {
 
-            // calculate dt
-            #ifdef AGN_ENABLED
+// calculate dt
+#ifdef AGN_ENABLED
             // one global reduction per step; the cached cold mass feeds both the CFL ceilings
             // below and both Strang halves
             astro::agn_prepare();
-            #endif
+#endif
             double dt = hydro::calc_timestep(sim.CFL, sim.mesh, sim.primvar);
 
             // print diagnostics

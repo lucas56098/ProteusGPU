@@ -1,4 +1,5 @@
 /* begrun: calls everything to start or end a run */
+#include "../astro/sources.h"
 #include "../global/allvars.h"
 #include "../hydro/finite_volume_solver.h"
 #include "../io/input.h"
@@ -9,7 +10,6 @@
 #include "../mpi/mpi_compat.h"
 #include "../mpi/rebalance.h"
 #include "../profiler/profiler.h"
-#include "../astro/sources.h"
 #include "../voronoi/voronoi.h"
 #include "begrun.h"
 #include <cmath>
@@ -201,8 +201,8 @@ namespace begrun {
                        input.getParameterDouble("UnitMass_in_g"),
                        input.getParameterDouble("UnitVelocity_in_cm_per_s"));
 
-        logging::root() << "UNITS: 1 code unit = " << units.UnitLength_in_cm << " cm, " << units.UnitMass_in_g
-                        << " g, " << units.UnitVelocity_in_cm_per_s << " cm/s" << std::endl;
+        logging::root() << "UNITS: 1 code unit = " << units.UnitLength_in_cm << " cm, " << units.UnitMass_in_g << " g, "
+                        << units.UnitVelocity_in_cm_per_s << " cm/s" << std::endl;
 #endif
     }
 

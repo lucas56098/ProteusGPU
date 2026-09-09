@@ -289,7 +289,9 @@ static void write_mesh_geometry(hid_t mesh_group, int n_hydro) {
     const VMesh* m = sim.mesh;
 
     int64_t F = 0;
-    for (int k = 0; k < n_hydro; k++) { F += (int64_t)m->face_counts[k]; }
+    for (int k = 0; k < n_hydro; k++) {
+        F += (int64_t)m->face_counts[k];
+    }
 
     std::vector<int>     n_faces((size_t)n_hydro);
     std::vector<int64_t> face_offset((size_t)n_hydro + 1);
@@ -332,9 +334,9 @@ static void write_mesh_geometry(hid_t mesh_group, int n_hydro) {
 #endif
                 const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
                 const double inv = (len > 0.0) ? 1.0 / len : 0.0;
-                nx = dx * inv;
-                ny = dy * inv;
-                nz = dz * inv;
+                nx               = dx * inv;
+                ny               = dy * inv;
+                nz               = dz * inv;
             }
             face_normal[dst * DIMENSION + 0] = nx;
             face_normal[dst * DIMENSION + 1] = ny;
@@ -347,12 +349,12 @@ static void write_mesh_geometry(hid_t mesh_group, int n_hydro) {
     face_offset[(size_t)n_hydro] = run;
 
     bool ok = true;
-    ok = ok && write_dataset_1d_i32(mesh_group, "n_faces", n_faces.data(), (hsize_t)n_hydro);
-    ok = ok && write_dataset_1d_i64(mesh_group, "face_offset", face_offset.data(), (hsize_t)n_hydro + 1);
-    ok = ok && write_dataset_1d_i32(mesh_group, "face_neighbor", face_neighbor.data(), (hsize_t)F);
-    ok = ok && write_dataset_1d(mesh_group, "face_area", face_area.data(), (hsize_t)F);
-    ok = ok && write_dataset_2d(mesh_group, "face_normal", face_normal.data(), (hsize_t)F, DIMENSION);
-    ok = ok && write_dataset_2d(mesh_group, "centroid", com_flat.data(), (hsize_t)n_hydro, DIMENSION);
+    ok      = ok && write_dataset_1d_i32(mesh_group, "n_faces", n_faces.data(), (hsize_t)n_hydro);
+    ok      = ok && write_dataset_1d_i64(mesh_group, "face_offset", face_offset.data(), (hsize_t)n_hydro + 1);
+    ok      = ok && write_dataset_1d_i32(mesh_group, "face_neighbor", face_neighbor.data(), (hsize_t)F);
+    ok      = ok && write_dataset_1d(mesh_group, "face_area", face_area.data(), (hsize_t)F);
+    ok      = ok && write_dataset_2d(mesh_group, "face_normal", face_normal.data(), (hsize_t)F, DIMENSION);
+    ok      = ok && write_dataset_2d(mesh_group, "centroid", com_flat.data(), (hsize_t)n_hydro, DIMENSION);
     if (!ok) {
         std::cerr << "OUTPUT: Error! failed to write OUTPUT_MESH geometry" << std::endl;
         exit(EXIT_FAILURE);

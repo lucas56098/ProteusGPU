@@ -35,7 +35,7 @@ struct Units {
     // Newton's constant expressed in code units (G_cgs has units cm^3 g^-1 s^-2)
     double G_in_code_units() const {
         constexpr double G_cgs = 6.67430e-8;
-        const double     T      = UnitTime_in_s();
+        const double     T     = UnitTime_in_s();
         return G_cgs * UnitMass_in_g * T * T / (UnitLength_in_cm * UnitLength_in_cm * UnitLength_in_cm);
     }
 };

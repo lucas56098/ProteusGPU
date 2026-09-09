@@ -6,22 +6,22 @@
 #include <cmath>
 
 typedef struct knn_problem {
-    int           len_pts;             // number of input points (current call)
-    int           pts_capacity;        // allocated capacity for d_stored_points / d_permutation
-    int           N_grid;              // grid resolution
-    int           Npow;                // N_grid^DIMENSION (total grid cells)
-    int           N_cell_offsets;      // actual number of cells in the offset grid
-    int*          d_cell_offsets;      // cell offsets (sorted by rings), Nmax*Nmax*Nmax*Nmax
-    double*       d_cell_offset_dists; // stores min dist to the cells in the rings
-    unsigned int* d_permutation;       // allows to restore original point order
-    int*          d_counters;          // counters per cell,   N_grid*N_grid*N_grid
-    int*          d_ptrs;              // cell start pointers, N_grid*N_grid*N_grid
-    int*          d_globcounter;       // global allocation counter, 1
-    POINT_TYPE*   d_stored_points;     // input points sorted, numpoints
-    double        buff;                // periodic ghost buffer; bucket grid spans [-buff, 1+buff]^d
-    double        inv_boxsize;         // 1 / (1 + 2*buff), precomputed for cellFromPoint
-    double        grid_lo[3];          // per-rank grid origin (data_lo; -buff in global fallback)
-    double        inv_cell_size;       // 1 / isotropic cell_size, for cellFromPoint
+    int           len_pts;                  // number of input points (current call)
+    int           pts_capacity;             // allocated capacity for d_stored_points / d_permutation
+    int           N_grid;                   // grid resolution
+    int           Npow;                     // N_grid^DIMENSION (total grid cells)
+    int           N_cell_offsets;           // actual number of cells in the offset grid
+    int*          d_cell_offsets;           // cell offsets (sorted by rings), Nmax*Nmax*Nmax*Nmax
+    double*       d_cell_offset_dists;      // stores min dist to the cells in the rings
+    unsigned int* d_permutation;            // allows to restore original point order
+    int*          d_counters;               // counters per cell,   N_grid*N_grid*N_grid
+    int*          d_ptrs;                   // cell start pointers, N_grid*N_grid*N_grid
+    int*          d_globcounter;            // global allocation counter, 1
+    POINT_TYPE*   d_stored_points;          // input points sorted, numpoints
+    double        buff;                     // periodic ghost buffer; bucket grid spans [-buff, 1+buff]^d
+    double        inv_boxsize;              // 1 / (1 + 2*buff), precomputed for cellFromPoint
+    double        grid_lo[3];               // per-rank grid origin (data_lo; -buff in global fallback)
+    double        inv_cell_size;            // 1 / isotropic cell_size, for cellFromPoint
     double*       d_cell_offset_dists_unit; // ring lower-bound dist^2 at unit cell_size; rescaled per build
 } knn_problem;
 

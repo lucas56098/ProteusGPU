@@ -9,7 +9,7 @@ namespace voronoi {
     // area + centroid via shoelace
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD double compute_cell_area_centroid_2d(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
-                                            const double4_t*                                  vertices,
+                                            const double4_t*                                vertices,
                                             double&                                         cx,
                                             double&                                         cy) {
         const int nb_t = cell.nb_t;
@@ -57,7 +57,7 @@ namespace voronoi {
 
             // accumulate shoelace edge contribution prev -> cur
             const double4_t cur_pt = vertices[next];
-            const double  cross  = prev_pt.x * cur_pt.y - cur_pt.x * prev_pt.y;
+            const double    cross  = prev_pt.x * cur_pt.y - cur_pt.x * prev_pt.y;
             area2 += cross;
             Cx_num += (prev_pt.x + cur_pt.x) * cross;
             Cy_num += (prev_pt.y + cur_pt.y) * cross;
@@ -104,7 +104,7 @@ namespace voronoi {
         const double4_t outward = minus4(fc, seed);
         if (dot3(face_cross, outward) < 0) {
             for (int lo = 0, hi = n_fv - 1; lo < hi; lo++, hi--) {
-                double4_t tmp    = face_verts[lo];
+                double4_t tmp  = face_verts[lo];
                 face_verts[lo] = face_verts[hi];
                 face_verts[hi] = tmp;
             }
@@ -114,14 +114,14 @@ namespace voronoi {
     // 3D: fan-triangulate from v0; accumulate face area, cell volume, and weighted centroid.
     // Volume is computed via the divergence theorem on (seed, v0, v_i, v_{i+1}) tetrahedra.
     HD void compute_face_area_and_volume_centroid(const double4_t* face_verts,
-                                                  int            n_fv,
+                                                  int              n_fv,
                                                   double4_t        seed,
-                                                  double&        face_area,
-                                                  double&        vol_accum,
-                                                  double&        wx_accum,
-                                                  double&        wy_accum,
-                                                  double&        wz_accum) {
-        face_area        = 0.0;
+                                                  double&          face_area,
+                                                  double&          vol_accum,
+                                                  double&          wx_accum,
+                                                  double&          wy_accum,
+                                                  double&          wz_accum) {
+        face_area          = 0.0;
         const double4_t v0 = face_verts[0];
 
         for (int i = 1; i + 1 < n_fv; i++) {
@@ -136,7 +136,7 @@ namespace voronoi {
             const double4_t b   = minus4(face_verts[i], seed);
             const double4_t c   = minus4(face_verts[i + 1], seed);
             const double4_t bxc = cross3(b, c);
-            const double  tv  = dot3(a, bxc) * (1.0 / 6.0);
+            const double    tv  = dot3(a, bxc) * (1.0 / 6.0);
 
             // weighted centroid contribution: tv * (average of the 4 tet vertices)
             wx_accum += tv * 0.25 * (seed.x + v0.x + face_verts[i].x + face_verts[i + 1].x);
@@ -178,7 +178,7 @@ namespace voronoi {
             const double4_t outward = minus4(centroid, seed);
             if (dot3(face_cross, outward) < 0) {
                 for (int lo = 0, hi = n_face_verts - 1; lo < hi; lo++, hi--) {
-                    double4_t tmp    = face_verts[lo];
+                    double4_t tmp  = face_verts[lo];
                     face_verts[lo] = face_verts[hi];
                     face_verts[hi] = tmp;
                 }

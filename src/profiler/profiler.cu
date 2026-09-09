@@ -432,12 +432,33 @@ namespace {
         std::vector<char>      name_all(my_rank == 0 ? ntotal : 0);
         std::vector<char>      kind_all(my_rank == 0 ? ktotal : 0);
         std::vector<long long> val_all(my_rank == 0 ? ktotal : 0);
-        MPI_Gatherv(name_buf.data(), nlen, MPI_BYTE, name_all.data(), nlens.data(), ndispls.data(), MPI_BYTE, 0,
+        MPI_Gatherv(name_buf.data(),
+                    nlen,
+                    MPI_BYTE,
+                    name_all.data(),
+                    nlens.data(),
+                    ndispls.data(),
+                    MPI_BYTE,
+                    0,
                     MPI_COMM_WORLD);
-        MPI_Gatherv(my_kinds.data(), my_count, MPI_BYTE, kind_all.data(), counts.data(), kdispls.data(), MPI_BYTE, 0,
+        MPI_Gatherv(my_kinds.data(),
+                    my_count,
+                    MPI_BYTE,
+                    kind_all.data(),
+                    counts.data(),
+                    kdispls.data(),
+                    MPI_BYTE,
+                    0,
                     MPI_COMM_WORLD);
-        MPI_Gatherv(my_vals.data(), my_count, MPI_LONG_LONG, val_all.data(), counts.data(), kdispls.data(),
-                    MPI_LONG_LONG, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(my_vals.data(),
+                    my_count,
+                    MPI_LONG_LONG,
+                    val_all.data(),
+                    counts.data(),
+                    kdispls.data(),
+                    MPI_LONG_LONG,
+                    0,
+                    MPI_COMM_WORLD);
 
         if (my_rank != 0) return g;
 

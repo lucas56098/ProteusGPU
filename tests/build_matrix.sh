@@ -23,7 +23,7 @@ Options:
   --cuda           also build the 'cuda' tier (requires nvcc)
   --list           print the selected configurations and exit, without building
   --keep           keep the temporary build tree instead of deleting it
-  --no-audit       skip the flag-coverage check
+  --no-audit       skip the flag-coverage and formatting checks
   -j, --jobs N     make parallelism per configuration (default: the Makefile's own -j)
   --systype NAME   override SYSTYPE (default: Ubuntu on Linux, macOS on Darwin)
   -h, --help       show this message
@@ -38,8 +38,10 @@ Tiers:
 Warnings are errors by default. Use --no-werror when a
 new compiler introduces a diagnostic you have not addressed yet.
 
-Before building anything, a coverage audit greps src/ for every #ifdef flag and fails
-if one is never compiled by any configuration in tests/configs.txt.
+Before building anything two audits run. The coverage audit greps src/ for every #ifdef
+flag and fails if one is never compiled by any configuration in tests/configs.txt. The
+format audit checks every tracked .cu/.h against clang-format. Both are bypassed by
+--no-audit.
 
 Exit status is non-zero if any runnable configuration fails. Configurations needing a
 capability this machine lacks (nvcc, mpicxx, parallel HDF5) are skipped.
@@ -226,7 +228,48 @@ run_audit() {
     return 0
 }
 
+# Formatting is pinned to one clang-format major version: different majors disagree, so an
+# unpinned check would demand changes the next machine undoes.
+CLANG_FORMAT_VERSION=21
+
+run_format_audit() {
+    local cf="clang-format-$CLANG_FORMAT_VERSION"
+    if ! have "$cf"; then
+        printf '\nformat audit: \033[33mskipped\033[0m (%s not found — install it, or --no-audit)\n' "$cf"
+        return 0
+    fi
+
+    local files bad
+    files=$(git ls-files '*.cu' '*.h' 2>/dev/null) || files=""
+    if [ -z "$files" ]; then
+        printf '\nformat audit: \033[33mskipped\033[0m (not a git checkout)\n'
+        return 0
+    fi
+
+    bad=""
+    for f in $files; do
+        "$cf" --dry-run --Werror "$f" >/dev/null 2>&1 || bad="$bad $f"
+    done
+
+    if [ -n "$bad" ]; then
+        printf '\n\033[31mformat audit failed\033[0m — these files do not match clang-format:\n\n'
+        for f in $bad; do printf '  \033[31m%s\033[0m\n' "$f"; done
+        printf '\nFix with:  %s -i%s\n' "$cf" "$bad"
+        printf 'or bypass with --no-audit.\n\n'
+        return 1
+    fi
+    printf '\nformat audit:   \033[32mok\033[0m (%s files match %s)\n' "$(echo "$files" | wc -w)" "$cf"
+
+    # the audit only runs when someone runs the matrix; the hook catches it at commit time
+    if [ "$(git config --get core.hooksPath 2>/dev/null)" != ".githooks" ]; then
+        printf '                \033[33mhint\033[0m: pre-commit hook not installed — '
+        printf 'git config core.hooksPath .githooks\n'
+    fi
+    return 0
+}
+
 if [ "$AUDIT" -eq 1 ]; then
+    run_format_audit || exit 1
     run_audit || exit 1
 fi
 

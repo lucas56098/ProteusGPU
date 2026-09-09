@@ -7,6 +7,25 @@ on:
     branches: [ main, cleanup ]
 
 jobs:
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format-21
+        run: |
+          . /etc/os-release
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-format-21
+
+      - name: Check formatting
+        run: clang-format-21 --dry-run --Werror $(git ls-files '*.cu' '*.h')
+
   build:
     runs-on: ubuntu-latest
 

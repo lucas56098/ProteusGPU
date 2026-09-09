@@ -24,11 +24,11 @@ namespace voronoi {
 
         // per-cell — every n_hydro-indexed array is sized ext so it survives migration
         // growth and the MPI ghost band [n_hydro, n_hydro + n_mpi_ghosts)
-        mesh->seeds          = gpu_calloc<double3>(ext);
-        mesh->com            = gpu_calloc<double3>(ext);
-        mesh->volumes        = gpu_calloc<double>(ext);
-        mesh->face_counts    = gpu_calloc<hsize_t>(ext);
-        mesh->face_ptr       = gpu_calloc<hsize_t>(ext);
+        mesh->seeds       = gpu_calloc<double3>(ext);
+        mesh->com         = gpu_calloc<double3>(ext);
+        mesh->volumes     = gpu_calloc<double>(ext);
+        mesh->face_counts = gpu_calloc<hsize_t>(ext);
+        mesh->face_ptr    = gpu_calloc<hsize_t>(ext);
         // device-side mirror of the hydro floor; sources_init() runs before this, so a
         // cooling-derived floor is already in sim by now
         mesh->min_egy_spec = sim.min_egy_spec;

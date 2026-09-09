@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Reject a commit whose staged .cu/.h files do not match clang-format.
+#
+# Checks the staged content, not the working tree, so a file you deliberately left
+# half-edited does not block the part you are committing. Prints one copy-pasteable
+# command that fixes and re-stages exactly the offending files.
+#
+# Install:  git config core.hooksPath .githooks
+# Bypass:   git commit --no-verify
+
+set -u
+
+CLANG_FORMAT_VERSION=21
+CF="clang-format-$CLANG_FORMAT_VERSION"
+
+command -v "$CF" >/dev/null 2>&1 || {
+    printf '\033[33mpre-commit: %s not found, skipping the format check\033[0m\n' "$CF" >&2
+    exit 0
+}
+
+files=$(git diff --cached --name-only --diff-filter=ACM -- '*.cu' '*.h')
+[ -n "$files" ] || exit 0
+
+bad=""
+for f in $files; do
+    # compare the staged blob against its formatted self, never the file on disk
+    if ! diff -q <(git show ":$f") <(git show ":$f" | "$CF" --assume-filename="$f") >/dev/null 2>&1; then
+        bad="$bad $f"
+    fi
+done
+
+[ -n "$bad" ] || exit 0
+
+printf '\n\033[31mpre-commit: staged files do not match %s\033[0m\n\n' "$CF" >&2
+for f in $bad; do printf '  \033[31m%s\033[0m\n' "$f" >&2; done
+printf '\nFix and re-stage with:\n\n  %s -i%s && git add%s\n\n' "$CF" "$bad" "$bad" >&2
+printf 'or commit with --no-verify to bypass.\n\n' >&2
+exit 1

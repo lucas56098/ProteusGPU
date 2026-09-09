@@ -20,12 +20,12 @@ namespace astro {
         double bcg_rsoft; // floor on r in rho_BCG to tame the central cusp
 
         // particle-free SF heating (thermostat on cold dense gas)
-        double sf_eff;             // efficiency (converted gas rest-mass -> heat)
-        double sf_c2;              // c^2 in code units
-        double sf_G;               // G in code units (for the free-fall time)
-        double sf_rho_thresh;      // density above which SF can act (from n_SF)
-        double sf_T_max;           // temperature below which SF can act [K]
-        double sf_C_T;             // T[K] = sf_C_T * e_int/rho
+        double sf_eff;              // efficiency (converted gas rest-mass -> heat)
+        double sf_c2;               // c^2 in code units
+        double sf_G;                // G in code units (for the free-fall time)
+        double sf_rho_thresh;       // density above which SF can act (from n_SF)
+        double sf_T_max;            // temperature below which SF can act [K]
+        double sf_C_T;              // T[K] = sf_C_T * e_int/rho
         double sf_r_in2, sf_r_out2; // R_acc^2, R_SF^2 (code units, squared)
     };
 

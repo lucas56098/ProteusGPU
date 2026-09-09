@@ -58,14 +58,13 @@ namespace voronoi {
                                                int          W);
     static void    record_mpi_ghost_indices(hsize_t* original_ids, hsize_t n_hydro, hsize_t n_ghosts);
     static void    remap_exports_and_pts(VMesh* mesh, POINT_TYPE* pts_data, hsize_t n_hydro);
-    static bool
-    widen_converged_across_ranks(VMesh* mesh, bool have_mpi, int* local_failed_out, int* global_beyond_out);
-    static int     count_local_failed_cells(const VMesh* mesh);
-    static int     count_local_beyond_data_cells(const VMesh* mesh);
-    static void    sum_ints_across_ranks(const int* local, int* global, int n);
-    static void    check_ghost_count(hsize_t n_ghosts, hsize_t max_ghosts);
-    static int     default_starting_halo_width();
-    static void    set_data_extent_for_build(VMesh* mesh, int W, bool have_mpi);
+    static bool widen_converged_across_ranks(VMesh* mesh, bool have_mpi, int* local_failed_out, int* global_beyond_out);
+    static int  count_local_failed_cells(const VMesh* mesh);
+    static int  count_local_beyond_data_cells(const VMesh* mesh);
+    static void sum_ints_across_ranks(const int* local, int* global, int n);
+    static void check_ghost_count(hsize_t n_ghosts, hsize_t max_ghosts);
+    static int  default_starting_halo_width();
+    static void set_data_extent_for_build(VMesh* mesh, int W, bool have_mpi);
 
     // halo width remembered across calls: ratchets up when widening fires,
     // decays back to base after long streaks of steady steps
@@ -145,7 +144,7 @@ namespace voronoi {
                          : 0;
 
             // build the Voronoi cells from the augmented seed buffer
-            mesh->n_mpi_ghosts   = proteus_mpi::halo.n_mpi_ghosts;
+            mesh->n_mpi_ghosts = proteus_mpi::halo.n_mpi_ghosts;
             set_data_extent_for_build(mesh, stats.final_halo_width, have_mpi);
             compute_mesh(mesh, pts, (int)(n_hydro + n_ghosts + n_mpi), primvar, primvar_aux, iter);
             if (iter == 0 && have_mpi) remap_exports_and_pts(mesh, pts_data, n_hydro);
@@ -154,7 +153,7 @@ namespace voronoi {
             // degeneracies or K-limited cells. Those still have to reach cpu_perturb_and_repair,
             // which fires off stats.local_failed_cells — so record it on every exit path.
             int        local_failed = 0, global_beyond = 0;
-            const bool converged = widen_converged_across_ranks(mesh, have_mpi, &local_failed, &global_beyond);
+            const bool converged     = widen_converged_across_ranks(mesh, have_mpi, &local_failed, &global_beyond);
             stats.local_failed_cells = local_failed;
 
             // converged across all ranks: done
@@ -177,8 +176,7 @@ namespace voronoi {
             if (iter > 0 && global_beyond >= prev_beyond) {
                 logging::root() << "VORONOI: widening to W=" << stats.final_halo_width << " still leaves "
                                 << global_beyond << " cell(s) uncertified (was " << prev_beyond
-                                << ") — halo growth is not helping, handing them to the CPU fallback."
-                                << std::endl;
+                                << ") — halo growth is not helping, handing them to the CPU fallback." << std::endl;
                 return stats;
             }
             prev_beyond = global_beyond;
@@ -196,8 +194,8 @@ namespace voronoi {
             // widen the halo and retry. Logged because this costs a full mesh rebuild, and the
             // count says exactly why it is being paid.
             logging::root() << "VORONOI: " << global_beyond << " cell(s) reach beyond the rank data extent; "
-                            << "widening halo W " << stats.final_halo_width << " -> "
-                            << (stats.final_halo_width + 2) << std::endl;
+                            << "widening halo W " << stats.final_halo_width << " -> " << (stats.final_halo_width + 2)
+                            << std::endl;
             stats.final_halo_width += 2;
         }
         return stats; // unreachable
@@ -248,8 +246,7 @@ namespace voronoi {
             // A seed with no ghost copy anywhere needs nothing: the local symmetry cascade
             // already restored consistency around it.
             proteus_mpi::MovedExportLists lists;
-            const int                     local_exported =
-                have_mpi ? proteus_mpi::halo_collect_moved_exports(mesh, pending, &lists) : 0;
+            const int local_exported = have_mpi ? proteus_mpi::halo_collect_moved_exports(mesh, pending, &lists) : 0;
 
             // one fused Allreduce for convergence, diagnostics and the exported gate
             int local[3]  = {(int)pending.size(), local_num_failed, local_exported};
@@ -457,8 +454,8 @@ namespace voronoi {
     // repairs by perturbation in microseconds -- made the loop run to MAX_WIDEN_ITERS every
     // single step, rebuilding all n_hydro cells four times over for an identical result, while
     // adapt_halo_width ratcheted W up and the halo grew without bound.
-    static bool widen_converged_across_ranks(VMesh* mesh, bool have_mpi, int* local_failed_out,
-                                             int* global_beyond_out) {
+    static bool
+    widen_converged_across_ranks(VMesh* mesh, bool have_mpi, int* local_failed_out, int* global_beyond_out) {
         // all statuses — drives the post-loop perturb cascade
         *local_failed_out = count_local_failed_cells(mesh);
 

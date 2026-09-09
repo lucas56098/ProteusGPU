@@ -18,8 +18,8 @@ namespace hydro {
 struct VMesh {
 
     // current counts
-    hsize_t n_seeds;   // n_total = reals + ghosts fed to KNN this build
-    hsize_t n_hydro;   // number of real cells; size of every per-cell array below
+    hsize_t n_seeds; // n_total = reals + ghosts fed to KNN this build
+    hsize_t n_hydro; // number of real cells; size of every per-cell array below
     // face array entries in use this build. The CPU fallback reuses a rebuilt cell's slot
     // where it fits and retires the old slice in place, so this range can contain inert
     // holes (neighbor_cell = -1, zero area). Slice-based consumers never see them; a flat

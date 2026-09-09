@@ -19,19 +19,18 @@ namespace voronoi {
     HD static inline auto ith_plane(const VERT* triangles, int t, int i) -> decltype(triangles[0].x);
     template <typename VERT, typename IDXP>
     HD static inline bool vert_references_plane(const VERT* triangles, int t_idx, IDXP p);
-    HD static void          write_face(VMesh*         mesh,
-                                       hsize_t        fi,
-                                       int            neighbor_id,
-                                       double         face_measure,
-                                       const double4_t* face_verts,
-                                       int            n_face_verts,
-                                       double4_t        seed,
-                                       double4_t        neighbor);
+    HD static void        write_face(VMesh*           mesh,
+                                     hsize_t          fi,
+                                     int              neighbor_id,
+                                     double           face_measure,
+                                     const double4_t* face_verts,
+                                     int              n_face_verts,
+                                     double4_t        seed,
+                                     double4_t        neighbor);
 
     // ============================================================
     // Main routines
     // ============================================================
-
 
 #ifdef USE_MPI
     // Store the squared security diameter (2R)^2 for cell k from the num/denom pair the
@@ -96,7 +95,6 @@ namespace voronoi {
         if (!cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * local_knn[K - 1]))) {
             stat[k] = security_radius_not_reached;
         }
-
 
 #ifdef USE_MPI
         // Data-extent certification. Reaching the security radius only proves the cell is closed
@@ -195,14 +193,14 @@ namespace voronoi {
         mesh->com[cell_index]     = {cx, cy, 0.0};
 
         // emit one edge per plane that reached the polygon
-        hsize_t fi = mesh->face_ptr[cell_index];
+        hsize_t   fi = mesh->face_ptr[cell_index];
         double4_t face_verts[2];
-        int     n_fv;
+        int       n_fv;
         for (int p = 0; p < cell.nb_v; p++) {
             if (!collect_face_vertices(cell, p, vertices_2d, face_verts, &n_fv)) continue;
             const double face_measure = compute_face_measure(face_verts, n_fv, cell.voro_seed, nullptr);
             const int    neighbor_id  = cell.plane_vid[p];
-            double4_t      neighbor     = make_double4_t(0.0, 0.0, 0.0, 0.0);
+            double4_t    neighbor     = make_double4_t(0.0, 0.0, 0.0, 0.0);
             if (neighbor_id >= 0) { neighbor = point_from_ptr(cell.pts + DIMENSION * neighbor_id); }
             write_face(mesh, fi, neighbor_id, face_measure, face_verts, n_fv, cell.voro_seed, neighbor);
             fi++;
@@ -210,9 +208,9 @@ namespace voronoi {
         return fi - mesh->face_ptr[cell_index];
 #else
         // 3D: fan-triangulate each face; volume via divergence theorem on (seed,v0,vi,vi+1) tets
-        double  total_volume = 0.0;
-        double  wx = 0.0, wy = 0.0, wz = 0.0;
-        hsize_t fi = mesh->face_ptr[cell_index];
+        double    total_volume = 0.0;
+        double    wx = 0.0, wy = 0.0, wz = 0.0;
+        hsize_t   fi = mesh->face_ptr[cell_index];
         double4_t face_verts[MAX_T];
 
         for (int p = 0; p < cell.nb_v; p++) {
@@ -274,7 +272,7 @@ namespace voronoi {
 
             // write the face into mesh's SoA arrays
             const int neighbor_id = cell.plane_vid[p];
-            double4_t   neighbor    = make_double4_t(0.0, 0.0, 0.0, 0.0);
+            double4_t neighbor    = make_double4_t(0.0, 0.0, 0.0, 0.0);
             if (neighbor_id >= 0) { neighbor = point_from_ptr(cell.pts + DIMENSION * neighbor_id); }
             write_face(mesh, fi, neighbor_id, face_measure, face_verts, n_fv, cell.voro_seed, neighbor);
             fi++;
@@ -308,8 +306,8 @@ namespace voronoi {
     //
     // data_hi == data_lo marks "extent checking disabled" (single rank: the periodic ghost band
     // already covers every direction, so nothing is missing).
-    HD bool cell_certified_within_data(double4_t seed, double r2_num, double r2_denom, const double* data_lo,
-                                       const double* data_hi) {
+    HD bool cell_certified_within_data(
+        double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi) {
         if (!(data_hi[0] > data_lo[0])) return true;
 
         double safe = fmin(seed.x - data_lo[0], data_hi[0] - seed.x);
@@ -388,8 +386,8 @@ namespace voronoi {
 
         // partition: move conflicting triangles to the tail (kept = [0, nb_t), removed = [nb_t, nb_t + nb_r))
         const double4_t eqn = plane_for(cur_v);
-        nb_r              = 0;
-        int i             = 0;
+        nb_r                = 0;
+        int i               = 0;
         while (i < nb_t) {
             if (vert_is_in_conflict(triangle[i], eqn)) {
                 nb_t--;
@@ -452,7 +450,7 @@ namespace voronoi {
 
         // check d^2/4 > max_vertex_d2 (rearranged to avoid a division)
         const double4_t diff = minus4(last_neig, voro_seed);
-        const double  d2   = dot3(diff, diff);
+        const double    d2   = dot3(diff, diff);
         return (d2 * max_denom > 4.0 * max_num);
     }
 
@@ -465,8 +463,8 @@ namespace voronoi {
         double max_denom = 1.0;
         for (int i = 0; i < nb_t; i++) {
             const double4_t pc = compute_vertex_point(triangle[i], false);
-            const double  dx = pc.x - voro_seed.x * pc.w;
-            const double  dy = pc.y - voro_seed.y * pc.w;
+            const double    dx = pc.x - voro_seed.x * pc.w;
+            const double    dy = pc.y - voro_seed.y * pc.w;
 #ifdef dim_3D
             const double dz  = pc.z - voro_seed.z * pc.w;
             const double num = dx * dx + dy * dy + dz * dz;
@@ -518,7 +516,7 @@ namespace voronoi {
         const double4_t B    = point_from_ptr(pts + DIMENSION * plane_vid[p]);
         const double4_t dir  = minus4(voro_seed, B);
         const double4_t ave2 = plus4(voro_seed, B);
-        const double  dot  = dot3(ave2, dir);
+        const double    dot  = dot3(ave2, dir);
         return make_double4_t(dir.x, dir.y, dir.z, -dot * 0.5);
     }
 
@@ -732,7 +730,7 @@ namespace voronoi {
         (void)k;
         const double4_t hi = plane_for(i);
         const double4_t hj = plane_for(j);
-        const double  rw = det2x2(hi.x, hi.y, hj.x, hj.y);
+        const double    rw = det2x2(hi.x, hi.y, hj.x, hj.y);
         if (rw > 0) {
             triangle[nb_t] = make_vert<VERT>(j, i);
         } else {
@@ -761,10 +759,10 @@ namespace voronoi {
 #else
         // 3D: 3x3 determinants in (x, y, z, w) coordinates
         const double4_t pi3 = plane_for(v.z);
-        result.x          = -det3x3(pi1.w, pi1.y, pi1.z, pi2.w, pi2.y, pi2.z, pi3.w, pi3.y, pi3.z);
-        result.y          = -det3x3(pi1.x, pi1.w, pi1.z, pi2.x, pi2.w, pi2.z, pi3.x, pi3.w, pi3.z);
-        result.z          = -det3x3(pi1.x, pi1.y, pi1.w, pi2.x, pi2.y, pi2.w, pi3.x, pi3.y, pi3.w);
-        result.w          = det3x3(pi1.x, pi1.y, pi1.z, pi2.x, pi2.y, pi2.z, pi3.x, pi3.y, pi3.z);
+        result.x            = -det3x3(pi1.w, pi1.y, pi1.z, pi2.w, pi2.y, pi2.z, pi3.w, pi3.y, pi3.z);
+        result.y            = -det3x3(pi1.x, pi1.w, pi1.z, pi2.x, pi2.w, pi2.z, pi3.x, pi3.w, pi3.z);
+        result.z            = -det3x3(pi1.x, pi1.y, pi1.w, pi2.x, pi2.y, pi2.w, pi3.x, pi3.y, pi3.w);
+        result.w            = det3x3(pi1.x, pi1.y, pi1.z, pi2.x, pi2.y, pi2.z, pi3.x, pi3.y, pi3.z);
         if (persp_divide) {
             const double inv_w = 1.0 / result.w;
             return make_double4_t(result.x * inv_w, result.y * inv_w, result.z * inv_w, 1);
@@ -778,8 +776,8 @@ namespace voronoi {
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD bool collect_face_vertices(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
                                   int                                             p,
-                                  const double4_t*                                  vertices,
-                                  double4_t*                                        face_verts,
+                                  const double4_t*                                vertices,
+                                  double4_t*                                      face_verts,
                                   int*                                            n_face_verts) {
 #ifdef dim_2D
         // 2D: a face has exactly 2 vertices (an edge); grab them from the dual-graph triangles
@@ -853,12 +851,12 @@ namespace voronoi {
 
     // write a single face into mesh's SoA arrays (neighbour id, area, and moving-mesh face midpoint
     // expressed in the local rotated frame of the face)
-    HD static void write_face(VMesh*         mesh,
-                              hsize_t        fi,
-                              int            neighbor_id,
-                              double         face_measure,
+    HD static void write_face(VMesh*           mesh,
+                              hsize_t          fi,
+                              int              neighbor_id,
+                              double           face_measure,
                               const double4_t* face_verts,
-                              int            n_face_verts,
+                              int              n_face_verts,
                               double4_t        seed,
                               double4_t        neighbor) {
         (void)face_verts;

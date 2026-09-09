@@ -31,43 +31,45 @@ namespace voronoi {
     } // namespace
 
     // ---- forward declarations ----
-    static int      count_failed_and_prefetch_status(VMesh* mesh);
-    static CellSids build_cell_sids_for(const VMesh* mesh, const std::vector<int>& target_ks);
-    static FallbackOutcome
-    rebuild_cell_with_perturb_retry(
+    static int             count_failed_and_prefetch_status(VMesh* mesh);
+    static CellSids        build_cell_sids_for(const VMesh* mesh, const std::vector<int>& target_ks);
+    static FallbackOutcome rebuild_cell_with_perturb_retry(
         VMesh* mesh, int k, double* d_stored_points, CellSids& cell_sids, double dt, Status& last_status_out);
     static std::vector<std::pair<double, int>>
     gather_nearby_seeds_sorted(double* d_stored_points, int seed_id, const knn_problem* knn, int max_candidates);
     static std::vector<std::pair<double, int>>
-                   sort_neighbours_by_distance(double* d_stored_points, int seed_id, int n_seeds);
+    sort_neighbours_by_distance(double* d_stored_points, int seed_id, int n_seeds);
     template <typename CellT>
-    static bool try_build_cell_from_neighbours_as(VMesh*                                     mesh,
-                                                  int                                        k,
-                                                  int                                        seed_id,
-                                                  double*                                    d_stored_points,
-                                                  const std::vector<std::pair<double, int>>& sorted,
-                                                  bool                                       require_security,
-                                                  Status&                                    last_status_out);
-    static bool rebuild_on_wide_tier(VMesh*                                     mesh,
-                                     int                                        k,
-                                     int                                        seed_id,
-                                     double*                                    d_stored_points,
-                                     const std::vector<std::pair<double, int>>& bounded,
-                                     Status&                                    last_status_out);
+    static bool    try_build_cell_from_neighbours_as(VMesh*                                     mesh,
+                                                     int                                        k,
+                                                     int                                        seed_id,
+                                                     double*                                    d_stored_points,
+                                                     const std::vector<std::pair<double, int>>& sorted,
+                                                     bool                                       require_security,
+                                                     Status&                                    last_status_out);
+    static bool    rebuild_on_wide_tier(VMesh*                                     mesh,
+                                        int                                        k,
+                                        int                                        seed_id,
+                                        double*                                    d_stored_points,
+                                        const std::vector<std::pair<double, int>>& bounded,
+                                        Status&                                    last_status_out);
     static double3 compute_perturbation_delta(int seed_id, int attempt, double scale);
     static void    apply_perturbation(
-        double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4_t* orig_positions);
+           double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4_t* orig_positions);
     static void
     rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4_t* orig_positions);
 #ifdef MOVING_MESH
     static void apply_vmesh_perturbation_correction(VMesh* mesh, int k, double3 delta, double dt);
 #endif
-    static void             retire_face_range(VMesh* mesh, hsize_t first, hsize_t count);
+    static void                           retire_face_range(VMesh* mesh, hsize_t first, hsize_t count);
     template <typename CellT> static void write_cell_to_mesh(VMesh* mesh, int k, const CellT& cell);
-    static void             reclaim_appended_slice(
-                    VMesh* mesh, int k, hsize_t fp_old, hsize_t fc_old, unsigned long long* face_offset,
-                    unsigned long long off_before);
-    static std::vector<int> collect_unique_neighbors(const VMesh* mesh, const std::vector<int>& sources);
+    static void                           reclaim_appended_slice(VMesh*              mesh,
+                                                                 int                 k,
+                                                                 hsize_t             fp_old,
+                                                                 hsize_t             fc_old,
+                                                                 unsigned long long* face_offset,
+                                                                 unsigned long long  off_before);
+    static std::vector<int>               collect_unique_neighbors(const VMesh* mesh, const std::vector<int>& sources);
 
     // counters returned by cascade_rebuild_affected so callers can log in their own voice
     struct CascadeResult {
@@ -89,8 +91,8 @@ namespace voronoi {
     static double        compute_max_security_d2(const VMesh* mesh);
 
 #ifndef CPU_DEBUG
-    GLOBAL void kernel_count_failures(int n, const Status* stat, int* fail_count);
-    GLOBAL void kernel_max_security_d2(int n, const double* sec, unsigned long long* out_bits);
+    GLOBAL void                kernel_count_failures(int n, const Status* stat, int* fail_count);
+    GLOBAL void                kernel_max_security_d2(int n, const double* sec, unsigned long long* out_bits);
     static int*                d_fail_count   = nullptr;
     static unsigned long long* d_max_sec_bits = nullptr;
 #endif
@@ -138,9 +140,9 @@ namespace voronoi {
             // 255 as the no-such-plane sentinel, and Euler (V = 2F - 4) ties _MAX_T_ to the same
             // ceiling. The wide tier is the runtime answer; this gate is what kept it
             // unreachable. Anything genuinely unknown still aborts.
-            if (original != security_radius_not_reached && original != needs_exact_predicates
-                && original != inconsistent_boundary && original != vertex_overflow
-                && original != triangle_overflow && original != security_radius_beyond_data) {
+            if (original != security_radius_not_reached && original != needs_exact_predicates &&
+                original != inconsistent_boundary && original != vertex_overflow && original != triangle_overflow &&
+                original != security_radius_beyond_data) {
                 proteus_mpi::exit_failure(
                     "VORONOI: cell %d failed with unrecoverable status: %d\n", (int)k, (int)original);
             }
@@ -183,13 +185,12 @@ namespace voronoi {
         }
 
         if (s_wide_tier_rebuilds > 0) {
-            std::cerr << "VORONOI: " << s_wide_tier_rebuilds << " cell(s) rebuilt on the wide tier ("
-                      << _BIG_MAX_P_ << "/" << _BIG_MAX_T_ << " slots)." << std::endl;
+            std::cerr << "VORONOI: " << s_wide_tier_rebuilds << " cell(s) rebuilt on the wide tier (" << _BIG_MAX_P_
+                      << "/" << _BIG_MAX_T_ << " slots)." << std::endl;
         }
         if (s_uncertified_rebuilds > 0) {
             std::cerr << "VORONOI: WARNING " << s_uncertified_rebuilds
-                      << " fallback cell(s) could not be certified against this rank's data extent."
-                      << std::endl;
+                      << " fallback cell(s) could not be certified against this rank's data extent." << std::endl;
         }
         return (int)perturbed_ks.size();
     }
@@ -269,7 +270,7 @@ namespace voronoi {
                                               const std::vector<std::pair<double, int>>& sorted,
                                               const int*                                 sids,
                                               size_t                                     n_sids,
-                                              const double4_t*                             orig_positions,
+                                              const double4_t*                           orig_positions,
                                               double                                     dt,
                                               bool                                       require_security,
                                               Status&                                    last_status_out) {
@@ -284,7 +285,7 @@ namespace voronoi {
             }
 
             Status     attempt_status = success;
-            const bool ok              = try_build_cell_from_neighbours_as<ConvexCell>(
+            const bool ok             = try_build_cell_from_neighbours_as<ConvexCell>(
                 mesh, k, seed_id, d_stored_points, sorted, require_security, attempt_status);
             if (ok) {
                 if (attempt == 0) return FallbackOutcome::ok_unchanged;
@@ -312,8 +313,7 @@ namespace voronoi {
     // robust than KNN's K-nearest sample for stubborn degeneracies. On ok_perturbed, the
     // surviving delta is folded into v_mesh (when dt > 0) so face velocities stay consistent
     // with the perturbed geometry.
-    static FallbackOutcome
-    rebuild_cell_with_perturb_retry(
+    static FallbackOutcome rebuild_cell_with_perturb_retry(
         VMesh* mesh, int k, double* d_stored_points, CellSids& cell_sids, double dt, Status& last_status_out) {
         // lazy-build cell_sids[k] if a cascade in run_symmetry_pass brought us a cell that
         // wasn't in the initial failed-set; no-op when build_cell_sids_for already populated it
@@ -396,7 +396,7 @@ namespace voronoi {
     static std::vector<std::pair<double, int>>
     gather_nearby_seeds_sorted(double* d_stored_points, int seed_id, const knn_problem* knn, int max_candidates) {
         const double4_t seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
-        const int     seed_cell =
+        const int       seed_cell =
             knn::cellFromPoint(knn->N_grid, knn->grid_lo, knn->inv_cell_size, knn->d_stored_points[seed_id]);
 
         std::vector<std::pair<double, int>> candidates;
@@ -416,9 +416,9 @@ namespace voronoi {
                 const int sid = cell_base + i;
                 if (sid == seed_id) continue;
                 const double4_t other = point_from_ptr(d_stored_points + DIMENSION * sid);
-                const double  dx    = other.x - seed_pos.x;
-                const double  dy    = other.y - seed_pos.y;
-                const double  dz    = other.z - seed_pos.z;
+                const double    dx    = other.x - seed_pos.x;
+                const double    dy    = other.y - seed_pos.y;
+                const double    dz    = other.z - seed_pos.z;
                 candidates.push_back({dx * dx + dy * dy + dz * dz, sid});
             }
 
@@ -438,15 +438,15 @@ namespace voronoi {
     // clip list invoked only when the bounded gather couldn't yield a security-certified cell.
     static std::vector<std::pair<double, int>>
     sort_neighbours_by_distance(double* d_stored_points, int seed_id, int n_seeds) {
-        const double4_t                       seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
+        const double4_t                     seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
         std::vector<std::pair<double, int>> dists;
         dists.reserve(n_seeds - 1);
         for (int j = 0; j < n_seeds; j++) {
             if (j == seed_id) continue;
             const double4_t other = point_from_ptr(d_stored_points + DIMENSION * j);
-            const double  dx    = other.x - seed_pos.x;
-            const double  dy    = other.y - seed_pos.y;
-            const double  dz    = other.z - seed_pos.z;
+            const double    dx    = other.x - seed_pos.x;
+            const double    dy    = other.y - seed_pos.y;
+            const double    dz    = other.z - seed_pos.z;
             dists.push_back({dx * dx + dy * dy + dz * dz, j});
         }
         std::sort(dists.begin(), dists.end());
@@ -499,8 +499,8 @@ namespace voronoi {
 #ifdef USE_MPI
         store_security_d2(mesh, (hsize_t)k, r2_num, r2_denom);
 #endif
-        if (security_reached
-            && !cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi)) {
+        if (security_reached &&
+            !cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi)) {
             s_uncertified_rebuilds++;
         }
 
@@ -596,8 +596,8 @@ namespace voronoi {
         constexpr double DV_REL     = 1e-3; // fraction of the cell's own mesh speed
         constexpr double DV_MAX_ABS = 1e-2; // absolute backstop
 #ifdef dim_3D
-        const double vm_mag = sqrt(mesh->v_mesh[k].x * mesh->v_mesh[k].x + mesh->v_mesh[k].y * mesh->v_mesh[k].y
-                                   + mesh->v_mesh[k].z * mesh->v_mesh[k].z);
+        const double vm_mag = sqrt(mesh->v_mesh[k].x * mesh->v_mesh[k].x + mesh->v_mesh[k].y * mesh->v_mesh[k].y +
+                                   mesh->v_mesh[k].z * mesh->v_mesh[k].z);
 #else
         const double vm_mag = sqrt(mesh->v_mesh[k].x * mesh->v_mesh[k].x + mesh->v_mesh[k].y * mesh->v_mesh[k].y);
 #endif
@@ -689,9 +689,12 @@ namespace voronoi {
     // exactly rather than subtracting face_counts[k]: the cell reserved count_cell_faces
     // slots but face_counts[k] now holds the (possibly smaller) number extract_cell_all
     // wrote, so subtracting the latter would leave the reservation's slack behind forever.
-    static void reclaim_appended_slice(
-        VMesh* mesh, int k, hsize_t fp_old, hsize_t fc_old, unsigned long long* face_offset,
-        unsigned long long off_before) {
+    static void reclaim_appended_slice(VMesh*              mesh,
+                                       int                 k,
+                                       hsize_t             fp_old,
+                                       hsize_t             fc_old,
+                                       unsigned long long* face_offset,
+                                       unsigned long long  off_before) {
         const hsize_t fp_new = mesh->face_ptr[k];
         const hsize_t fc_new = mesh->face_counts[k];
         if (fc_new <= fc_old) {
@@ -769,7 +772,7 @@ namespace voronoi {
             std::vector<int> perturbed_this_round;
             for (int kn : work_affected) {
                 mesh->cell_status[kn] = security_radius_not_reached;
-                const int     seed_id = (int)mesh->real_sorted_ids[kn];
+                const int seed_id     = (int)mesh->real_sorted_ids[kn];
                 // snapshot the cell's live slot; on success the appended rebuild is folded
                 // back into it (affected cells were built successfully this step, so the
                 // slot is valid — unlike the initial failed set)
@@ -794,7 +797,7 @@ namespace voronoi {
 
                 // KNN rebuild failed for this neighbour: fall through to the perturb path
                 if (mesh->cell_status[kn] != success) {
-                    mesh->num_faces         = (hsize_t)face_offset;
+                    mesh->num_faces             = (hsize_t)face_offset;
                     Status          last_status = success;
                     FallbackOutcome outcome =
                         rebuild_cell_with_perturb_retry(mesh, kn, d_stored_points, cell_sids, dt, last_status);
@@ -833,7 +836,6 @@ namespace voronoi {
 
         std::cout << "VORONOI: " << initial_perturbed.size() << " cell(s) permanently perturbed; " << result.rebuilt
                   << " neighbour rebuild(s) over " << result.rounds << " round(s)." << std::endl;
-
     }
 
     // ============================================================
@@ -877,11 +879,8 @@ namespace voronoi {
     // ghost's old AND new position catches both sides of an adjacency change — the cell that
     // must drop a stale face and the cell that must gain one — which makes this a strict
     // superset of any face-adjacency scan, at the cost of a purely local bucket walk.
-    static void collect_affected_by_moved_ghost(const VMesh* mesh,
-                                                double4_t      g_old,
-                                                double4_t      g_new,
-                                                double       search_l2,
-                                                std::unordered_set<int>* affected) {
+    static void collect_affected_by_moved_ghost(
+        const VMesh* mesh, double4_t g_old, double4_t g_new, double search_l2, std::unordered_set<int>* affected) {
         const knn_problem* knn = mesh->knn;
 
         POINT_TYPE gp;
@@ -942,7 +941,7 @@ namespace voronoi {
         double*   d_stored_points = (double*)mesh->knn->d_stored_points;
         const int n_hydro         = (int)mesh->n_hydro;
 
-        s_wide_tier_rebuilds = 0;
+        s_wide_tier_rebuilds   = 0;
         s_uncertified_rebuilds = 0;
 
         // ---- moved ghost slot -> KNN sorted index, one prefetched linear pass ----
@@ -967,8 +966,8 @@ namespace voronoi {
         for (const proteus_mpi::MovedSeed& m : moved) {
             const auto it = slot_to_sid.find(m.ghost_slot);
             if (it == slot_to_sid.end()) {
-                proteus_mpi::exit_failure(
-                    "VORONOI: moved ghost slot %d has no KNN point in this build\n", m.ghost_slot);
+                proteus_mpi::exit_failure("VORONOI: moved ghost slot %d has no KNN point in this build\n",
+                                          m.ghost_slot);
             }
             const int sid = it->second;
 
@@ -1007,8 +1006,8 @@ namespace voronoi {
             cascade_rebuild_affected(mesh, d_stored_points, cell_sids, affected, dt, newly_perturbed_out);
 
         std::cout << "VORONOI: MPI repair: " << moved.size() << " moved ghost seed(s) -> " << affected.size()
-                  << " affected cell(s), " << result.rebuilt << " rebuild(s) over " << result.rounds
-                  << " round(s)." << std::endl;
+                  << " affected cell(s), " << result.rebuilt << " rebuild(s) over " << result.rounds << " round(s)."
+                  << std::endl;
 
         if (s_uncertified_rebuilds > 0) {
             std::cerr << "VORONOI: WARNING " << s_uncertified_rebuilds

@@ -56,10 +56,10 @@ namespace voronoi {
         static constexpr IDX END_OF_LIST = (IDX)(-1);
 
         // input arrays + per-cell context
-        double* pts;
+        double*   pts;
         double4_t voro_seed;
-        Status* status;
-        double  buff; // bounding box covers [-buff, 1+buff]^d (set per-cell so plane_for can read it)
+        Status*   status;
+        double    buff; // bounding box covers [-buff, 1+buff]^d (set per-cell so plane_for can read it)
 
         // current plane / triangle counts
         IDX nb_v; // number of planes (= bounding box + clip planes added so far)
@@ -135,8 +135,8 @@ namespace voronoi {
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD bool collect_face_vertices(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
                                   int                                             p,
-                                  const double4_t*                                  vertices,
-                                  double4_t*                                        face_verts,
+                                  const double4_t*                                vertices,
+                                  double4_t*                                      face_verts,
                                   int*                                            n_face_verts);
 
     // number of planes that contribute a face (at least DIMENSION triangles reference them)
