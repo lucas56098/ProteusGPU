@@ -38,14 +38,7 @@ namespace voronoi {
                                                           const hydro::primvars*          primvar,
                                                           const gradients::PrimGradients* grads);
     static HD void              blend_into_mesh_velocity(
-        hsize_t i, VMesh* mesh, POINT_TYPE v_gas, LloydDisplacement L, const hydro::primvars* primvar);
-
-#ifndef CPU_DEBUG
-    GLOBAL void kernel_mesh_velocities(hsize_t, VMesh*, const hydro::primvars*, const gradients::PrimGradients*);
-    GLOBAL void kernel_move_mesh(hsize_t, const VMesh*, double, POINT_TYPE*);
-    GLOBAL void kernel_volume_correct(
-        hsize_t n_hydro, const double* old_volumes, const double* new_volumes, double* rho, double* E);
-#endif
+                     hsize_t i, VMesh* mesh, POINT_TYPE v_gas, LloydDisplacement L, const hydro::primvars* primvar);
 
     // ============================================================
     // Main routines
@@ -53,22 +46,8 @@ namespace voronoi {
 
     // compute the mesh-point velocity (gas velocity + Lloyd regularization) for every cell
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads) {
-#ifndef CPU_DEBUG
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("V_MESH");
-            kernel_mesh_velocities<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            compute_mesh_velocity_for_cell(i, mesh, primvar, grads);
-        }
-#endif
+        parallel_for<_MESH_BLOCK_SIZE_>(
+            "V_MESH", mesh->n_hydro, [=] HD(size_t i) { compute_mesh_velocity_for_cell(i, mesh, primvar, grads); });
     }
 
     // advance seeds by v_mesh * dt, migrate across ranks, rebuild mesh,
@@ -109,48 +88,26 @@ namespace voronoi {
     // Helpers
     // ============================================================
 
-    // dispatch the per-cell move kernel; CPU branch loops via OpenMP
     static void advance_seeds_by_dt(VMesh* mesh, double dt, POINT_TYPE* pts) {
         const hsize_t n_hydro = mesh->n_hydro;
-#ifndef CPU_DEBUG
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = ((int)n_hydro + tpb - 1) / tpb;
-        kernel_move_mesh<<<blocks, tpb>>>(n_hydro, mesh, dt, pts);
-        GPU_SYNC();
+        parallel_for<_MESH_BLOCK_SIZE_>(
+            "MOVE_MESH", n_hydro, [=] HD(size_t i) { move_mesh_for_cell(i, mesh, dt, pts); });
         GPU_SYNC(); // migrate_seeds reads pts on the host below
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (hsize_t i = 0; i < n_hydro; i++) {
-            move_mesh_for_cell(i, mesh, dt, pts);
-        }
-#endif
     }
 
-    // dispatch the per-cell volume-correction kernel; CPU branch loops via OpenMP
     static void correct_for_volume_change(VMesh* mesh, hydro::primvars* primvar) {
-        const hsize_t n_hydro = mesh->n_hydro;
-#ifndef CPU_DEBUG
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = ((int)n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("VOL_CORRECT");
-            kernel_volume_correct<<<blocks, tpb>>>(n_hydro, mesh->old_volumes, mesh->volumes, primvar->rho, primvar->E);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (hsize_t i = 0; i < n_hydro; i++) {
-            volume_correct_for_cell(i, mesh->old_volumes, mesh->volumes, primvar->rho, primvar->E);
-        }
-#endif
+        const hsize_t n_hydro     = mesh->n_hydro;
+        const double* old_volumes = mesh->old_volumes;
+        const double* new_volumes = mesh->volumes;
+        double*       rho         = primvar->rho;
+        double*       E           = primvar->E;
+
+        parallel_for<_MESH_BLOCK_SIZE_>(
+            "VOL_CORRECT", n_hydro, [=] HD(size_t i) { volume_correct_for_cell(i, old_volumes, new_volumes, rho, E); });
     }
 
     // ============================================================
-    // Per-cell work (called by kernels and CPU loops)
+    // Per-cell work (parallel_for bodies)
     // ============================================================
 
     // mesh-point velocity = gas velocity + Lloyd regularization, both scaled by sound speed
@@ -354,35 +311,6 @@ namespace voronoi {
         mesh->v_mesh[i].z = v_gas.z;
 #endif
     }
-
-    // ============================================================
-    // CUDA kernels
-    // ============================================================
-#ifndef CPU_DEBUG
-
-    GLOBAL void kernel_mesh_velocities(hsize_t                         n_hydro,
-                                       VMesh*                          mesh,
-                                       const hydro::primvars*          primvar,
-                                       const gradients::PrimGradients* grads) {
-        const hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        compute_mesh_velocity_for_cell(i, mesh, primvar, grads);
-    }
-
-    GLOBAL void kernel_move_mesh(hsize_t n_hydro, const VMesh* mesh, double dt, POINT_TYPE* pts) {
-        const hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        move_mesh_for_cell(i, mesh, dt, pts);
-    }
-
-    GLOBAL void kernel_volume_correct(
-        hsize_t n_hydro, const double* old_volumes, const double* new_volumes, double* rho, double* E) {
-        const hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        volume_correct_for_cell(i, old_volumes, new_volumes, rho, E);
-    }
-
-#endif // !CPU_DEBUG
 
 #endif // MOVING_MESH
 

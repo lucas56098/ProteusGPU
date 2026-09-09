@@ -17,12 +17,9 @@ namespace astro {
 #ifdef COOLING
 
     // forward declarations
-    HD double tef_Y(double T, const CoolingTable& t);
-    HD double tef_Yinv(double Yt, const CoolingTable& t);
-    HD void   cool_cell(hsize_t i, hydro::primvars* primvar, CoolingTable t, double dt_half);
-#ifndef CPU_DEBUG
-    GLOBAL void kernel_cool(hsize_t n_hydro, hydro::primvars* primvar, CoolingTable t, double dt_half);
-#endif
+    HD double   tef_Y(double T, const CoolingTable& t);
+    HD double   tef_Yinv(double Yt, const CoolingTable& t);
+    HD void     cool_cell(hsize_t i, hydro::primvars* primvar, CoolingTable t, double dt_half);
     static void load_table(const std::string& path, CoolingTable& t);
 
     static CoolingTable g_cool;
@@ -36,20 +33,19 @@ namespace astro {
         g_cool.T_floor = input.getParameterDouble("T_floor");
 
         // T[K] = C_T * (e_int_code / rho_code)
-        g_cool.C_T = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS *
-                     units.UnitVelocity_in_cm_per_s * units.UnitVelocity_in_cm_per_s / BOLTZMANN;
+        g_cool.C_T = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS * units.UnitVelocity_in_cm_per_s *
+                     units.UnitVelocity_in_cm_per_s / BOLTZMANN;
 
         // TEF step dY = C_dY * rho_code * dt_code, from dY = (L_ref/T_ref)*(n_e n_H / a)*dt with
         // a = rho k_B / ((gamma-1) mu m_H) and n_e n_H = (X_H/mu_e)(rho/m_H)^2
-        g_cool.C_dY = (g_cool.L_ref / g_cool.T_ref) * (gamma_eos - 1.0) * MEAN_MOL_WEIGHT *
-                      HYDROGEN_MASSFRAC * units.UnitDensity_in_cgs() * units.UnitTime_in_s() /
-                      (MEAN_MOL_WEIGHT_E * BOLTZMANN * PROTONMASS);
+        g_cool.C_dY = (g_cool.L_ref / g_cool.T_ref) * (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * HYDROGEN_MASSFRAC *
+                      units.UnitDensity_in_cgs() * units.UnitTime_in_s() / (MEAN_MOL_WEIGHT_E * BOLTZMANN * PROTONMASS);
 
         // let the hydro update enforce the same temperature floor (e_int >= rho * T_floor / C_T)
         sim.min_egy_spec = g_cool.T_floor / g_cool.C_T;
 
-        logging::root() << "COOLING: loaded " << g_cool.N << " node table, T = [" << g_cool.T[0] << ", "
-                        << g_cool.T_ref << "] K, floor " << g_cool.T_floor << " K" << std::endl;
+        logging::root() << "COOLING: loaded " << g_cool.N << " node table, T = [" << g_cool.T[0] << ", " << g_cool.T_ref
+                        << "] K, floor " << g_cool.T_floor << " K" << std::endl;
     }
 
     // ============================================================
@@ -61,31 +57,11 @@ namespace astro {
         VMesh*           mesh    = sim.mesh;
         hydro::primvars* primvar = sim.primvar;
 
-#ifndef CPU_DEBUG
-        const int tpb    = _HYDRO_BLOCK_SIZE_;
-        const int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("COOL_KERNEL");
-            kernel_cool<<<blocks, tpb>>>(mesh->n_hydro, primvar, g_cool, dt_half);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            cool_cell(i, primvar, g_cool, dt_half);
-        }
-#endif
-    }
+        const CoolingTable t = g_cool;
 
-#ifndef CPU_DEBUG
-    GLOBAL void kernel_cool(hsize_t n_hydro, hydro::primvars* primvar, CoolingTable t, double dt_half) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        cool_cell(i, primvar, t, dt_half);
+        parallel_for<_HYDRO_BLOCK_SIZE_>(
+            "COOL_KERNEL", mesh->n_hydro, [=] HD(size_t i) { cool_cell(i, primvar, t, dt_half); });
     }
-#endif
 
     // ============================================================
     // Per-cell work
@@ -130,8 +106,7 @@ namespace astro {
         const double a     = t.alpha[k];
         const double ratio = T / t.T[k];
         const double pref  = (t.L_ref / t.T_ref) * t.T[k] / t.L[k];
-        const double term  = (fabs(1.0 - a) > 1e-6) ? pref / (1.0 - a) * (pow(ratio, 1.0 - a) - 1.0)
-                                                    : pref * log(ratio);
+        const double term = (fabs(1.0 - a) > 1e-6) ? pref / (1.0 - a) * (pow(ratio, 1.0 - a) - 1.0) : pref * log(ratio);
         return t.Y[k] - term;
     }
 
@@ -199,8 +174,8 @@ namespace astro {
             const double a     = t.alpha[k];
             const double ratio = t.T[k + 1] / t.T[k];
             const double pref  = (t.L_ref / t.T_ref) * t.T[k] / t.L[k];
-            const double seg   = (fabs(1.0 - a) > 1e-6) ? pref / (1.0 - a) * (pow(ratio, 1.0 - a) - 1.0)
-                                                       : pref * log(ratio);
+            const double seg =
+                (fabs(1.0 - a) > 1e-6) ? pref / (1.0 - a) * (pow(ratio, 1.0 - a) - 1.0) : pref * log(ratio);
             t.Y[k] = t.Y[k + 1] + seg;
         }
     }

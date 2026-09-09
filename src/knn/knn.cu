@@ -9,14 +9,6 @@ namespace knn {
     // forward declarations
     static void sort_points_into_grid(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
 
-#ifndef CPU_DEBUG
-    // kernels
-    GLOBAL void kernel_count_cells(const POINT_TYPE*, int, int, const double*, double, int*);
-    GLOBAL void kernel_compute_ptrs(int*, int*, int*, int);
-    GLOBAL void kernel_scatter_points(
-        const POINT_TYPE*, int, int, const double*, double, int*, const int*, POINT_TYPE*, unsigned int*);
-#endif
-
     // ============================================================
     // init (once), prepare (per timestep), free (once)
     // ============================================================
@@ -36,8 +28,8 @@ namespace knn {
         knn->N_grid       = std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
         knn->Npow         = (int)pow(knn->N_grid, DIMENSION);
         // bucket grid spans [-buff, 1+buff]^d; cellFromPoint uses inv_boxsize to index into it
-        knn->buff                = buff;
-        knn->inv_boxsize         = 1.0 / (1.0 + 2.0 * buff);
+        knn->buff        = buff;
+        knn->inv_boxsize = 1.0 / (1.0 + 2.0 * buff);
         // default to the global box; set_local_extent() re-anchors to the rank's extent each build
         knn->inv_cell_size = (double)knn->N_grid * knn->inv_boxsize;
         knn->grid_lo[0]    = -buff;
@@ -51,10 +43,10 @@ namespace knn {
         knn->d_cell_offset_dists      = NULL;
         knn->d_cell_offset_dists_unit = NULL;
         knn->d_permutation            = NULL;
-        knn->d_counters          = NULL;
-        knn->d_ptrs              = NULL;
-        knn->d_globcounter       = NULL;
-        knn->d_stored_points     = NULL;
+        knn->d_counters               = NULL;
+        knn->d_ptrs                   = NULL;
+        knn->d_globcounter            = NULL;
+        knn->d_stored_points          = NULL;
 
         int N_max = 16;
         if (knn->N_grid < N_max) {
@@ -65,10 +57,10 @@ namespace knn {
         // ring-expansion offset table: grid-cell offsets ordered by Chebyshev ring distance.
         // cell_offset_dists holds the lower-bound dist^2 for the *current* cell_size; the _unit
         // copy holds it at cell_size==1 so set_local_extent() can rescale per build.
-        double  cell_size         = (1.0 + 2.0 * buff) / (double)knn->N_grid; // global-box default
-        int     alloc             = N_max * N_max * N_max * N_max;             // very naive upper bound
-        int*    cell_offsets      = gpu_alloc<int>(alloc);
-        double* cell_offset_dists = gpu_alloc<double>(alloc);
+        double  cell_size              = (1.0 + 2.0 * buff) / (double)knn->N_grid; // global-box default
+        int     alloc                  = N_max * N_max * N_max * N_max;            // very naive upper bound
+        int*    cell_offsets           = gpu_alloc<int>(alloc);
+        double* cell_offset_dists      = gpu_alloc<double>(alloc);
         double* cell_offset_dists_unit = gpu_alloc<double>(alloc);
 
         // ring 0: the home cell itself
@@ -145,14 +137,14 @@ namespace knn {
     // falls back to the global box, making non-MPI behaviour identical. Called per build, before
     // prepare(); only this rank's KNN grid is affected — the MPI/decomp grid is untouched.
     void set_local_extent(knn_problem* knn, const double* data_lo, const double* data_hi) {
-        const int    N_grid       = knn->N_grid;
-        const bool   extent_valid = (data_hi[0] > data_lo[0]); // same predicate as cell.cu safe-radius
-        double       cell_size;
+        const int  N_grid       = knn->N_grid;
+        const bool extent_valid = (data_hi[0] > data_lo[0]); // same predicate as cell.cu safe-radius
+        double     cell_size;
 
         if (extent_valid) {
             // isotropic cell sized from the largest active-axis span; origin at data_lo
-            double span = data_hi[0] - data_lo[0];
-            span        = std::max(span, data_hi[1] - data_lo[1]);
+            double span     = data_hi[0] - data_lo[0];
+            span            = std::max(span, data_hi[1] - data_lo[1]);
             knn->grid_lo[0] = data_lo[0];
             knn->grid_lo[1] = data_lo[1];
 #ifdef dim_2D
@@ -242,126 +234,33 @@ namespace knn {
         double        inv_cell_size = knn->inv_cell_size;
         int*          d_counters    = knn->d_counters;
 
-#ifndef CPU_DEBUG
-        int tpb = _KNN_BLOCK_SIZE_;
+        int*          d_ptrs          = knn->d_ptrs;
+        int*          d_globcounter   = knn->d_globcounter;
+        POINT_TYPE*   d_stored_points = knn->d_stored_points;
+        unsigned int* d_permutation   = knn->d_permutation;
 
         // 1) count points per grid cell
-        int blocks1 = (len_pts + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("COUNT");
-            kernel_count_cells<<<blocks1, tpb>>>(pts, len_pts, N_grid, grid_lo, inv_cell_size, d_counters);
-            GPU_SYNC();
-        }
-
-        // 2) compute prefix pointers via atomicAdd
-        int blocks2 = (Npow + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("PTRS");
-            kernel_compute_ptrs<<<blocks2, tpb>>>(d_counters, knn->d_ptrs, knn->d_globcounter, Npow);
-            GPU_SYNC();
-        }
-
-        // 3) scatter points into sorted positions
-        gpu_memset(d_counters, 0, Npow * sizeof(int));
-        {
-            PROFILE_KERNEL("SCATTER");
-            kernel_scatter_points<<<blocks1, tpb>>>(pts,
-                                                    len_pts,
-                                                    N_grid,
-                                                    grid_lo,
-                                                    inv_cell_size,
-                                                    d_counters,
-                                                    knn->d_ptrs,
-                                                    knn->d_stored_points,
-                                                    knn->d_permutation);
-            GPU_SYNC();
-        }
-
-#else
-        // count points per grid cell
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (int id = 0; id < len_pts; id++) {
-            int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
+        parallel_for<_KNN_BLOCK_SIZE_>("COUNT", len_pts, [=] HD(int id) {
+            const int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
             portable_atomicAdd(d_counters + cell, 1);
-        }
+        });
 
-        // reserve memory ranges for each cell
-        {
-            int* d_ptrs        = knn->d_ptrs;
-            int* d_globcounter = knn->d_globcounter;
+        // 2) reserve a memory range for each cell
+        parallel_for<_KNN_BLOCK_SIZE_>("PTRS", Npow, [=] HD(int id) {
+            const int count = d_counters[id];
+            if (count > 0) { d_ptrs[id] = portable_atomicAdd(d_globcounter, count); }
+        });
 
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-            for (int id = 0; id < Npow; id++) {
-                int count = d_counters[id];
-                if (count > 0) { d_ptrs[id] = portable_atomicAdd(d_globcounter, count); }
-            }
-        }
-
-        // store points in their cell-organized locations
-        {
-            gpu_memset(d_counters, 0, Npow * sizeof(int));
-
-            const int*    d_ptrs          = knn->d_ptrs;
-            POINT_TYPE*   d_stored_points = knn->d_stored_points;
-            unsigned int* d_permutation   = knn->d_permutation;
-
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-            for (int id = 0; id < len_pts; id++) {
-                POINT_TYPE p         = pts[id];
-                int        cell      = cellFromPoint(N_grid, grid_lo, inv_cell_size, p);
-                int        pos       = d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1);
-                d_stored_points[pos] = p;
-                d_permutation[pos]   = id;
-            }
-        }
-#endif // CPU_DEBUG
+        // 3) scatter points into their cell-organized locations
+        gpu_memset(d_counters, 0, Npow * sizeof(int));
+        parallel_for<_KNN_BLOCK_SIZE_>("SCATTER", len_pts, [=] HD(int id) {
+            const POINT_TYPE p    = pts[id];
+            const int        cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, p);
+            const int        pos  = d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1);
+            d_stored_points[pos]  = p;
+            d_permutation[pos]    = id;
+        });
     }
-
-    // ============================================================
-    // CUDA kernel wrappers
-    // ============================================================
-#ifndef CPU_DEBUG
-
-    GLOBAL void kernel_count_cells(
-        const POINT_TYPE* pts, int len_pts, int N_grid, const double* grid_lo, double inv_cell_size, int* d_counters) {
-        int id = blockIdx.x * blockDim.x + threadIdx.x;
-        if (id >= len_pts) return;
-        int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
-        portable_atomicAdd(d_counters + cell, 1);
-    }
-
-    GLOBAL void kernel_compute_ptrs(int* d_counters, int* d_ptrs, int* d_globcounter, int Npow) {
-        int id = blockIdx.x * blockDim.x + threadIdx.x;
-        if (id >= Npow) return;
-        int count = d_counters[id];
-        if (count > 0) { d_ptrs[id] = portable_atomicAdd(d_globcounter, count); }
-    }
-
-    GLOBAL void kernel_scatter_points(const POINT_TYPE* pts,
-                                      int               len_pts,
-                                      int               N_grid,
-                                      const double*     grid_lo,
-                                      double            inv_cell_size,
-                                      int*              d_counters,
-                                      const int*        d_ptrs,
-                                      POINT_TYPE*       d_stored_points,
-                                      unsigned int*     d_permutation) {
-        int id = blockIdx.x * blockDim.x + threadIdx.x;
-        if (id >= len_pts) return;
-        POINT_TYPE p         = pts[id];
-        int        cell      = cellFromPoint(N_grid, grid_lo, inv_cell_size, p);
-        int        pos       = d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1);
-        d_stored_points[pos] = p;
-        d_permutation[pos]   = id;
-    }
-
-#endif // !CPU_DEBUG
 
     // ============================================================
     // helpers (grid mapping)

@@ -110,7 +110,7 @@ namespace proteus_mpi {
         VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new, POINT_TYPE* pts, int n_hydro, int nslots);
     static void exchange_payload(int total_send, int total_recv);
     static int  remove_migrated_local(
-        VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new, POINT_TYPE* pts, int n_hydro);
+         VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new, POINT_TYPE* pts, int n_hydro);
     static void append_incoming_migrants(VMesh*           mesh,
                                          hydro::primvars* primvar,
                                          hydro::primvars* prim_new,
@@ -120,120 +120,6 @@ namespace proteus_mpi {
                                          int              my_rank);
     static void check_conservation(int n_new);
 
-#ifndef CPU_DEBUG
-    // CUDA kernel wrappers, one per per-element body.
-    GLOBAL static void kernel_assign_destinations(int               n_hydro,
-                                                  const POINT_TYPE* pts,
-                                                  int               my_rank,
-                                                  int               N_grid_global,
-                                                  double            buff,
-                                                  int               dims_x,
-                                                  int               dims_y,
-                                                  int               dims_z,
-                                                  const int*        splits_x,
-                                                  const int*        splits_y,
-                                                  const int*        splits_z,
-                                                  const int*        coord_to_rank,
-                                                  const int*        neighbor_rank_to_slot,
-                                                  int               variant,
-                                                  int*              per_cell_slot,
-                                                  int*              send_counts,
-                                                  int*              error_flag) {
-        int k = blockIdx.x * blockDim.x + threadIdx.x;
-        if (k >= n_hydro) return;
-        pack::assign_destination_body(k,
-                                      pts,
-                                      my_rank,
-                                      N_grid_global,
-                                      buff,
-                                      dims_x,
-                                      dims_y,
-                                      dims_z,
-                                      splits_x,
-                                      splits_y,
-                                      splits_z,
-                                      coord_to_rank,
-                                      neighbor_rank_to_slot,
-                                      variant,
-                                      per_cell_slot,
-                                      send_counts,
-                                      error_flag);
-    }
-
-    GLOBAL static void kernel_pack_migrants(int               n_hydro,
-                                            const int*        per_cell_slot,
-                                            const POINT_TYPE* pts,
-                                            const double*     primvar_rho,
-                                            const POINT_TYPE* primvar_v,
-                                            const double*     primvar_E,
-                                            const double*     prim_new_rho,
-                                            const POINT_TYPE* prim_new_v,
-                                            const double*     prim_new_E,
-#ifdef MOVING_MESH
-                                            const POINT_TYPE* v_mesh,
-                                            const double*     old_volumes,
-#endif
-                                            int*         cursor,
-                                            MigrantCell* sendbuf,
-                                            int*         n_migrant_local_counter,
-                                            int*         migrant_local_k) {
-        int k = blockIdx.x * blockDim.x + threadIdx.x;
-        if (k >= n_hydro) return;
-        pack::pack_migrant_body(k,
-                                per_cell_slot,
-                                pts,
-                                primvar_rho,
-                                primvar_v,
-                                primvar_E,
-                                prim_new_rho,
-                                prim_new_v,
-                                prim_new_E,
-#ifdef MOVING_MESH
-                                v_mesh,
-                                old_volumes,
-#endif
-                                cursor,
-                                sendbuf,
-                                n_migrant_local_counter,
-                                migrant_local_k);
-    }
-
-    GLOBAL static void kernel_append_migrants(int                total_recv,
-                                              int                n_after_remove,
-                                              const MigrantCell* recvbuf,
-                                              POINT_TYPE*        pts,
-                                              double3*           seeds,
-                                              double*            primvar_rho,
-                                              POINT_TYPE*        primvar_v,
-                                              double*            primvar_E,
-                                              double*            prim_new_rho,
-                                              POINT_TYPE*        prim_new_v,
-                                              double*            prim_new_E,
-#ifdef MOVING_MESH
-                                              POINT_TYPE* v_mesh,
-                                              double*     old_volumes,
-#endif
-                                              unsigned int* cell_to_original) {
-        int j = blockIdx.x * blockDim.x + threadIdx.x;
-        if (j >= total_recv) return;
-        pack::unpack_migrant_body(j,
-                                  n_after_remove,
-                                  recvbuf,
-                                  pts,
-                                  seeds,
-                                  primvar_rho,
-                                  primvar_v,
-                                  primvar_E,
-                                  prim_new_rho,
-                                  prim_new_v,
-                                  prim_new_E,
-#ifdef MOVING_MESH
-                                  v_mesh,
-                                  old_volumes,
-#endif
-                                  cell_to_original);
-    }
-#endif // !CPU_DEBUG
 #endif // USE_MPI
 
     // ============================================================
@@ -437,58 +323,36 @@ namespace proteus_mpi {
         ensure_scratch_singletons();
         *s_assign_err = 0;
 
-#ifndef CPU_DEBUG
-        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
-        const int blocks = (n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("ASSIGN");
-            kernel_assign_destinations<<<blocks, tpb>>>(n_hydro,
-                                                        pts,
-                                                        my_rank,
-                                                        N_grid,
-                                                        bf,
-                                                        decomp.dims[0],
-                                                        decomp.dims[1],
-                                                        decomp.dims[2],
-                                                        decomp.splits[0],
-                                                        decomp.splits[1],
-                                                        decomp.splits[2],
-                                                        decomp.coord_to_rank,
-                                                        nbr_lookup,
-                                                        variant,
-                                                        s_per_cell_slot,
-                                                        s_send_counts,
-                                                        s_assign_err);
-        }
-        GPU_SYNC();
-        GPU_SYNC(); // need *s_assign_err host-visible for the error check below
-#else
-        {
-            PROFILE("ASSIGN");
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-            for (int k = 0; k < n_hydro; k++) {
-                pack::assign_destination_body(k,
-                                              pts,
-                                              my_rank,
-                                              N_grid,
-                                              bf,
-                                              decomp.dims[0],
-                                              decomp.dims[1],
-                                              decomp.dims[2],
-                                              decomp.splits[0],
-                                              decomp.splits[1],
-                                              decomp.splits[2],
-                                              decomp.coord_to_rank,
-                                              nbr_lookup,
-                                              variant,
-                                              s_per_cell_slot,
-                                              s_send_counts,
-                                              s_assign_err);
-            }
-        }
-#endif
+        const int  dims_x        = decomp.dims[0];
+        const int  dims_y        = decomp.dims[1];
+        const int  dims_z        = decomp.dims[2];
+        const int* splits_x      = decomp.splits[0];
+        const int* splits_y      = decomp.splits[1];
+        const int* splits_z      = decomp.splits[2];
+        const int* coord_to_rank = decomp.coord_to_rank;
+        auto*      per_cell_slot = s_per_cell_slot;
+        auto*      send_counts   = s_send_counts;
+        auto*      assign_err    = s_assign_err;
+
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("ASSIGN", n_hydro, [=] HD(int k) {
+            pack::assign_destination_body(k,
+                                          pts,
+                                          my_rank,
+                                          N_grid,
+                                          bf,
+                                          dims_x,
+                                          dims_y,
+                                          dims_z,
+                                          splits_x,
+                                          splits_y,
+                                          splits_z,
+                                          coord_to_rank,
+                                          nbr_lookup,
+                                          variant,
+                                          per_cell_slot,
+                                          send_counts,
+                                          assign_err);
+        });
 
         if (*s_assign_err == 1) {
             exit_failure("[rank %d] %s: invalid owner for some migrating cell. Bucket coords out of range; "
@@ -572,58 +436,41 @@ namespace proteus_mpi {
         ensure_scratch_singletons();
         *s_n_migrant_local_dev = 0;
 
-#ifndef CPU_DEBUG
-        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
-        const int blocks = (n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("PACK");
-            kernel_pack_migrants<<<blocks, tpb>>>(n_hydro,
-                                                  s_per_cell_slot,
-                                                  pts,
-                                                  primvar->rho,
-                                                  primvar->v,
-                                                  primvar->E,
-                                                  prim_new->rho,
-                                                  prim_new->v,
-                                                  prim_new->E,
+        auto*   per_cell_slot   = s_per_cell_slot;
+        auto*   cursor          = s_cursor;
+        auto*   sendbuf         = s_sendbuf;
+        auto*   n_migrant_local = s_n_migrant_local_dev;
+        auto*   migrant_local_k = s_migrant_local_k;
+        double* rho             = primvar->rho;
+        auto*   v               = primvar->v;
+        double* E               = primvar->E;
+        double* rho_new         = prim_new->rho;
+        auto*   v_new           = prim_new->v;
+        double* E_new           = prim_new->E;
 #ifdef MOVING_MESH
-                                                  mesh->v_mesh,
-                                                  mesh->old_volumes,
+        auto*   v_mesh      = mesh->v_mesh;
+        double* old_volumes = mesh->old_volumes;
 #endif
-                                                  s_cursor,
-                                                  s_sendbuf,
-                                                  s_n_migrant_local_dev,
-                                                  s_migrant_local_k);
-        }
-        GPU_SYNC();
-        GPU_SYNC(); // need *s_n_migrant_local_dev host-visible (used by remove_migrated_local)
-#else
-        {
-            PROFILE("PACK");
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-            for (int k = 0; k < n_hydro; k++) {
-                pack::pack_migrant_body(k,
-                                        s_per_cell_slot,
-                                        pts,
-                                        primvar->rho,
-                                        primvar->v,
-                                        primvar->E,
-                                        prim_new->rho,
-                                        prim_new->v,
-                                        prim_new->E,
+
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", n_hydro, [=] HD(int k) {
+            pack::pack_migrant_body(k,
+                                    per_cell_slot,
+                                    pts,
+                                    rho,
+                                    v,
+                                    E,
+                                    rho_new,
+                                    v_new,
+                                    E_new,
 #ifdef MOVING_MESH
-                                        mesh->v_mesh,
-                                        mesh->old_volumes,
+                                    v_mesh,
+                                    old_volumes,
 #endif
-                                        s_cursor,
-                                        s_sendbuf,
-                                        s_n_migrant_local_dev,
-                                        s_migrant_local_k);
-            }
-        }
-#endif
+                                    cursor,
+                                    sendbuf,
+                                    n_migrant_local,
+                                    migrant_local_k);
+        });
         s_n_migrant_local = *s_n_migrant_local_dev;
 #ifndef MOVING_MESH
         (void)mesh;
@@ -719,55 +566,38 @@ namespace proteus_mpi {
         (void)my_rank;
         if (total_recv <= 0) return;
 
-#ifndef CPU_DEBUG
-        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
-        const int blocks = (total_recv + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("APPEND");
-            kernel_append_migrants<<<blocks, tpb>>>(total_recv,
-                                                    n_after_remove,
-                                                    s_recvbuf,
-                                                    pts,
-                                                    mesh->seeds,
-                                                    primvar->rho,
-                                                    primvar->v,
-                                                    primvar->E,
-                                                    prim_new->rho,
-                                                    prim_new->v,
-                                                    prim_new->E,
+        auto*   recvbuf          = s_recvbuf;
+        auto*   seeds            = mesh->seeds;
+        double* rho              = primvar->rho;
+        auto*   v                = primvar->v;
+        double* E                = primvar->E;
+        double* rho_new          = prim_new->rho;
+        auto*   v_new            = prim_new->v;
+        double* E_new            = prim_new->E;
+        auto*   cell_to_original = mesh->cell_to_original;
 #ifdef MOVING_MESH
-                                                    mesh->v_mesh,
-                                                    mesh->old_volumes,
+        auto*   v_mesh      = mesh->v_mesh;
+        double* old_volumes = mesh->old_volumes;
 #endif
-                                                    mesh->cell_to_original);
-        }
-        GPU_SYNC();
-#else
-        {
-            PROFILE("APPEND");
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-            for (int j = 0; j < total_recv; j++) {
-                pack::unpack_migrant_body(j,
-                                          n_after_remove,
-                                          s_recvbuf,
-                                          pts,
-                                          mesh->seeds,
-                                          primvar->rho,
-                                          primvar->v,
-                                          primvar->E,
-                                          prim_new->rho,
-                                          prim_new->v,
-                                          prim_new->E,
+
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("APPEND", total_recv, [=] HD(int j) {
+            pack::unpack_migrant_body(j,
+                                      n_after_remove,
+                                      recvbuf,
+                                      pts,
+                                      seeds,
+                                      rho,
+                                      v,
+                                      E,
+                                      rho_new,
+                                      v_new,
+                                      E_new,
 #ifdef MOVING_MESH
-                                          mesh->v_mesh,
-                                          mesh->old_volumes,
+                                      v_mesh,
+                                      old_volumes,
 #endif
-                                          mesh->cell_to_original);
-            }
-        }
-#endif
+                                      cell_to_original);
+        });
     }
 
     // global cell count must stay constant. Long long because the global sum is

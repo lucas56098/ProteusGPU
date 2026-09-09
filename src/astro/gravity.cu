@@ -14,11 +14,7 @@ namespace astro {
     // forward declarations
     HD double     gravity_magnitude(double r, const GravityParams& p);
     HD POINT_TYPE gravity_accel(double3 pos, const GravityParams& p);
-    HD void       gravity_kick_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half);
-#ifndef CPU_DEBUG
-    GLOBAL void
-    kernel_gravity_kick(hsize_t n_hydro, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half);
-#endif
+    HD void gravity_kick_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half);
 
     static GravityParams g_grav;
 
@@ -36,7 +32,7 @@ namespace astro {
         {
             const double M     = input.getParameterDouble("M_NFW") * SOLAR_MASS_G / units.UnitMass_in_g;
             const double c     = input.getParameterDouble("c_NFW");
-            const double H0     = input.getParameterDouble("H0") * KM_S_IN_CGS / MPC_IN_CM * units.UnitTime_in_s();
+            const double H0    = input.getParameterDouble("H0") * KM_S_IN_CGS / MPC_IN_CM * units.UnitTime_in_s();
             const double mc    = log(1.0 + c) - c / (1.0 + c);
             const double rho_s = 200.0 * c * c * c * H0 * H0 / (8.0 * PI * G * mc); // characteristic density
             g_grav.nfw_Rs      = cbrt(M / (4.0 * PI * rho_s * mc));
@@ -71,40 +67,18 @@ namespace astro {
         VMesh*           mesh    = sim.mesh;
         hydro::primvars* primvar = sim.primvar;
 
-#ifndef CPU_DEBUG
-        const int tpb    = _HYDRO_BLOCK_SIZE_;
-        const int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("GRAVITY_KICK");
-            kernel_gravity_kick<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, g_grav, dt_half);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            gravity_kick_cell(i, mesh, primvar, g_grav, dt_half);
-        }
-#endif
-    }
+        const GravityParams p = g_grav;
 
-#ifndef CPU_DEBUG
-    GLOBAL void
-    kernel_gravity_kick(hsize_t n_hydro, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        gravity_kick_cell(i, mesh, primvar, p, dt_half);
+        parallel_for<_HYDRO_BLOCK_SIZE_>(
+            "GRAVITY_KICK", mesh->n_hydro, [=] HD(size_t i) { gravity_kick_cell(i, mesh, primvar, p, dt_half); });
     }
-#endif
 
     // ============================================================
     // Per-cell work
     // ============================================================
 
     // kick: v += a*dt_half; update E by the kinetic-energy change so internal energy is untouched
-    HD void
-    gravity_kick_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half) {
+    HD void gravity_kick_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half) {
         const POINT_TYPE a   = gravity_accel(mesh->seeds[i], p);
         const double     rho = primvar->rho[i];
         POINT_TYPE       v   = primvar->v[i];

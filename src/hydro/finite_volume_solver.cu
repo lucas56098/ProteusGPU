@@ -1,11 +1,11 @@
 /* hydro handling: init/free; hydro stepping; flux calc; CFL timestep */
+#include "../astro/agn.h"
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../mpi/decomp.h"
 #include "../mpi/halo.h"
 #include "../mpi/mpi_compat.h"
 #include "../profiler/profiler.h"
-#include "../astro/agn.h"
 #include "finite_volume_solver.h"
 #include "riemann.cu"
 #include <utility>
@@ -18,7 +18,7 @@ namespace hydro {
 #ifdef AGN_ENABLED
     HD double dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*, bool, const astro::AgnParams&);
 #else
-    HD double   dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*);
+    HD double dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*);
 #endif
     static void check_unphysical_state(VMesh*, const primvars*);
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new);
@@ -26,8 +26,6 @@ namespace hydro {
 
 #ifndef CPU_DEBUG
     // kernels
-    GLOBAL void
-    kernel_flux_update(double, int, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
     GLOBAL void
     kernel_copy_primvars(hsize_t, const double*, const POINT_TYPE*, const double*, double*, POINT_TYPE*, double*);
 #ifdef AGN_ENABLED
@@ -155,25 +153,11 @@ namespace hydro {
 
         PROFILE("FLUX");
 
-#ifndef CPU_DEBUG
-        int tpb                = _HYDRO_BLOCK_SIZE_;
-        int blocks             = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        int do_time_extrap_int = (dt_extrap != 0.0) ? 1 : 0;
-        {
-            PROFILE_KERNEL("FLUX_KERNEL");
-            kernel_flux_update<<<blocks, tpb>>>(
-                dt_update, do_time_extrap_int, dt_extrap, mesh, prim_old, grads, prim_new);
-            GPU_SYNC();
-        }
-#else
         const bool do_time_extrap = (dt_extrap != 0.0);
-#ifdef USE_OPENMP
-#pragma omp parallel for
-#endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
+
+        parallel_for<_HYDRO_BLOCK_SIZE_, 2>("FLUX_KERNEL", mesh->n_hydro, [=] HD(size_t i) {
             flux_update_for_cell(i, dt_update, do_time_extrap, dt_extrap, mesh, prim_old, grads, prim_new);
-        }
-#endif
+        });
     }
 
     double calc_timestep(double CFL, const VMesh* mesh, const primvars* primvar) {
@@ -318,19 +302,6 @@ namespace hydro {
     // ============================================================
 #ifndef CPU_DEBUG
 
-    // calls flux update for cell
-    GLOBAL void LAUNCH_BOUNDS(_HYDRO_BLOCK_SIZE_, 2) kernel_flux_update(double          dt_update,
-                                                                            int             do_time_extrap_int,
-                                                                            double          dt_extrap,
-                                                                            const VMesh*    mesh,
-                                                                            const primvars* prim_old,
-                                                                            const gradients::PrimGradients* grads,
-                                                                            primvars*                       prim_new) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= mesh->n_hydro) return;
-        flux_update_for_cell(i, dt_update, (do_time_extrap_int != 0), dt_extrap, mesh, prim_old, grads, prim_new);
-    }
-
     // copy primvars from one to another
     GLOBAL void kernel_copy_primvars(hsize_t           n_hydro,
                                      const double*     rho_src,
@@ -349,8 +320,13 @@ namespace hydro {
     // for each cell calc CFL and then do warp-level reduction and lane 0 atomicMin
     GLOBAL void
 #ifdef AGN_ENABLED
-    kernel_dt_CFL(double CFL, hsize_t n_hydro, const VMesh* mesh, const primvars* primvar, double* d_min_dt,
-                  bool agn_firing, astro::AgnParams p_agn) {
+    kernel_dt_CFL(double           CFL,
+                  hsize_t          n_hydro,
+                  const VMesh*     mesh,
+                  const primvars*  primvar,
+                  double*          d_min_dt,
+                  bool             agn_firing,
+                  astro::AgnParams p_agn) {
 #else
     kernel_dt_CFL(double CFL, hsize_t n_hydro, const VMesh* mesh, const primvars* primvar, double* d_min_dt) {
 #endif
@@ -400,7 +376,7 @@ namespace hydro {
 #endif // !CPU_DEBUG
 
     // ============================================================
-    // Per-cell work functions (called by kernels and CPU loops)
+    // Per-cell work functions (parallel_for bodies)
     // ============================================================
 
     // sum face fluxes around cell i and apply the conservative update to prim_new[i]
@@ -549,7 +525,11 @@ namespace hydro {
 
     // CFL timestep for cell i
 #ifdef AGN_ENABLED
-    HD double dt_CFL_for_cell(hsize_t i, double CFL, const VMesh* mesh, const primvars* primvar, bool agn_firing,
+    HD double dt_CFL_for_cell(hsize_t                 i,
+                              double                  CFL,
+                              const VMesh*            mesh,
+                              const primvars*         primvar,
+                              bool                    agn_firing,
                               const astro::AgnParams& p_agn) {
 #else
     HD double dt_CFL_for_cell(hsize_t i, double CFL, const VMesh* mesh, const primvars* primvar) {
@@ -566,7 +546,7 @@ namespace hydro {
 #endif
 
         // sound speed
-        double P   = get_P_ideal_gas(&state_i);
+        double P = get_P_ideal_gas(&state_i);
         // guard the sqrt: a negative P (unphysical cell) would make c_i NaN, and NaN survives the
         // atomicMin/fmin reduction to poison the GLOBAL dt
         double c_i = (state_i.rho > 0.0 && P > 0.0) ? sqrt(gamma_eos * P / state_i.rho) : 0.0;

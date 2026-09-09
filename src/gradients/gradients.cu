@@ -15,10 +15,6 @@ namespace gradients {
     recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s);
     HD static inline double
     pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor);
-#ifndef CPU_DEBUG
-    GLOBAL void kernel_compute_gradients(hsize_t, const VMesh*, const hydro::primvars*, PrimGradients*);
-#endif
-
     // ============================================================
     // Main routines
     // ============================================================
@@ -26,22 +22,8 @@ namespace gradients {
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
         PROFILE("GRAD");
 
-#ifndef CPU_DEBUG
-        int tpb    = _GRAD_BLOCK_SIZE_;
-        int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("GRAD_KERNEL");
-            kernel_compute_gradients<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, grads);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for
-#endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            compute_gradient_for_cell(i, mesh, primvar, grads);
-        }
-#endif
+        parallel_for<_GRAD_BLOCK_SIZE_, 2>(
+            "GRAD_KERNEL", mesh->n_hydro, [=] HD(size_t i) { compute_gradient_for_cell(i, mesh, primvar, grads); });
     }
 
     // calc dW/dt ("time gradients") based on states and gradients
@@ -94,21 +76,8 @@ namespace gradients {
     // ============================================================
     // CUDA kernel wrapper
     // ============================================================
-#ifndef CPU_DEBUG
-
-    GLOBAL void LAUNCH_BOUNDS(_GRAD_BLOCK_SIZE_, 2) kernel_compute_gradients(hsize_t                n_hydro,
-                                                                                 const VMesh*           mesh,
-                                                                                 const hydro::primvars* primvar,
-                                                                                 PrimGradients*         grads) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        compute_gradient_for_cell(i, mesh, primvar, grads);
-    }
-
-#endif // !CPU_DEBUG
-
     // ============================================================
-    // Per-cell gradient computation (called by kernel and CPU loop)
+    // Per-cell gradient computation (the parallel_for body)
     // ============================================================
 
     HD void

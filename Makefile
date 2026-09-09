@@ -65,6 +65,8 @@ ifeq ($(CUDA_ENABLED),CUDA)
 
 CXXFLAGS = --compiler-options -Wall,-Wextra,-Wno-unknown-pragmas -std=c++14
 CXXFLAGS += --expt-relaxed-constexpr
+# parallel_for passes an HD lambda to a kernel template; nvcc calls those extended lambdas
+CXXFLAGS += --extended-lambda
 CXXFLAGS += -dc -O3
 
 # Floating-point strictness. CUDA_FAST_MATH trades IEEE calculations for speed

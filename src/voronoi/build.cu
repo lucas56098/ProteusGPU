@@ -18,28 +18,13 @@ namespace voronoi {
     static void read_face_count_from_gpu(VMesh* mesh);
 
 #ifndef CPU_DEBUG
-    template <typename T> GLOBAL void kernel_gather(hsize_t n, const T* in, const unsigned int* perm, T* out);
-    GLOBAL void                       kernel_build_index_pass1_compact_reals(int                 n_total,
-                                                                             hsize_t             n_hydro,
-                                                                             const unsigned int* d_permutation,
-                                                                             unsigned int*       real_sorted_ids,
-                                                                             unsigned int*       sid_to_neighbor,
-                                                                             unsigned int*       orig_to_k,
-                                                                             int*                counter);
-    GLOBAL void                       kernel_build_index_pass1_lookup(int                 n_total,
-                                                                      hsize_t             n_hydro,
-                                                                      const unsigned int* d_permutation,
-                                                                      const unsigned int* orig_to_k_save,
-                                                                      unsigned int*       real_sorted_ids,
-                                                                      unsigned int*       sid_to_neighbor,
-                                                                      unsigned int*       orig_to_k);
-    GLOBAL void                       kernel_build_index_pass2_remap_ghosts(int                 n_total,
-                                                                            hsize_t             n_hydro,
-                                                                            const unsigned int* d_permutation,
-                                                                            const hsize_t*      ghost_ids,
-                                                                            const unsigned int* orig_to_k,
-                                                                            unsigned int*       sid_to_neighbor);
-    GLOBAL void                       kernel_init_cell_status(int n, Status* stat);
+    GLOBAL void kernel_build_index_pass1_compact_reals(int                 n_total,
+                                                       hsize_t             n_hydro,
+                                                       const unsigned int* d_permutation,
+                                                       unsigned int*       real_sorted_ids,
+                                                       unsigned int*       sid_to_neighbor,
+                                                       unsigned int*       orig_to_k,
+                                                       int*                counter);
     GLOBAL void kernel_collect_failed_cells(int n, const Status* stat, int* failed_indices, int* failed_count);
     GLOBAL void kernel_compute_voronoi_cells_fast(int                n_hydro,
                                                   double*            d_stored_points,
@@ -140,18 +125,8 @@ namespace voronoi {
         const hsize_t n_hydro = mesh->n_hydro;
         gpu_memset(mesh->face_counts, 0, n_hydro * sizeof(hsize_t));
         gpu_memset(mesh->face_ptr, 0, n_hydro * sizeof(hsize_t));
-#ifndef CPU_DEBUG
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = (int)((n_hydro + tpb - 1) / tpb);
-        {
-            PROFILE_KERNEL("INIT");
-            kernel_init_cell_status<<<blocks, tpb>>>((int)n_hydro, mesh->cell_status);
-            GPU_SYNC();
-        }
-#else
-        for (hsize_t i = 0; i < n_hydro; i++)
-            mesh->cell_status[i] = security_radius_not_reached;
-#endif
+        Status* stat = mesh->cell_status;
+        parallel_for<_MESH_BLOCK_SIZE_>("INIT", n_hydro, [=] HD(size_t i) { stat[i] = security_radius_not_reached; });
     }
 
     // build real_sorted_ids[k] -> sid and sid_to_neighbor[sid] -> k (both passes).
@@ -160,125 +135,90 @@ namespace voronoi {
         const int     n_total = (int)mesh->n_seeds;
         const hsize_t n_hydro = mesh->n_hydro;
 
+        const unsigned int* dperm           = mesh->knn->d_permutation;
+        unsigned int*       real_sorted_ids = mesh->real_sorted_ids;
+        unsigned int*       sid_to_neighbor = mesh->sid_to_neighbor;
+        unsigned int*       orig_to_k       = mesh->scratch_uint;
+
+        // pass 1: assign each real seed an output index k
+        if (iter == 0) {
+            // Compacting reals into [0, n_hydro) is the one step that is genuinely two
+            // algorithms: the GPU claims slots with an atomic counter, the CPU folds
+            // serially. Unifying them needs a deterministic compaction — see cleanup-ideas.
 #ifndef CPU_DEBUG
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = (n_total + tpb - 1) / tpb;
-
-        // pass 1: assign each real seed an output index k
-        if (iter == 0) {
-            // iter 0: count + emit via atomic counter (compact reals into [0, n_hydro))
             gpu_memset(mesh->d_real_counter, 0, sizeof(int));
-            kernel_build_index_pass1_compact_reals<<<blocks, tpb>>>(n_total,
-                                                                    n_hydro,
-                                                                    mesh->knn->d_permutation,
-                                                                    mesh->real_sorted_ids,
-                                                                    mesh->sid_to_neighbor,
-                                                                    mesh->scratch_uint,
-                                                                    mesh->d_real_counter);
+            const int tpb    = _MESH_BLOCK_SIZE_;
+            const int blocks = (n_total + tpb - 1) / tpb;
+            kernel_build_index_pass1_compact_reals<<<blocks, tpb>>>(
+                n_total, n_hydro, dperm, real_sorted_ids, sid_to_neighbor, orig_to_k, mesh->d_real_counter);
             GPU_SYNC();
-        } else {
-            // iter > 0: reuse iter-0's orig_to_k_save for stable k assignment
-            kernel_build_index_pass1_lookup<<<blocks, tpb>>>(n_total,
-                                                             n_hydro,
-                                                             mesh->knn->d_permutation,
-                                                             mesh->orig_to_k_save,
-                                                             mesh->real_sorted_ids,
-                                                             mesh->sid_to_neighbor,
-                                                             mesh->scratch_uint);
-            GPU_SYNC();
-        }
-
-        // pass 2: resolve ghost sids — MPI ghosts hold ext-array indices, periodic ghosts hold source orig
-        kernel_build_index_pass2_remap_ghosts<<<blocks, tpb>>>(
-            n_total, n_hydro, mesh->knn->d_permutation, mesh->ghost_ids, mesh->scratch_uint, mesh->sid_to_neighbor);
-        GPU_SYNC();
-        GPU_SYNC();
-
-        // sanity check on iter 0: pass-1 must have visited exactly n_hydro reals
-        if (iter == 0 && (hsize_t)*mesh->d_real_counter != n_hydro) {
-            std::cerr << "VORONOI: build_index_maps: counted " << *mesh->d_real_counter
-                      << " reals but n_hydro = " << n_hydro << ". Aborting." << std::endl;
-            exit(EXIT_FAILURE);
-        }
+            GPU_SYNC(); // *d_real_counter must be host-visible for the check below
+            const hsize_t n_reals = (hsize_t)*mesh->d_real_counter;
 #else
-        const unsigned int* dperm = mesh->knn->d_permutation;
-
-        // pass 1: assign each real seed an output index k
-        if (iter == 0) {
-            // iter 0: serial fold over sids, compact reals into [0, n_hydro)
             unsigned int k = 0;
             for (int sid = 0; sid < n_total; sid++) {
                 const unsigned int orig = dperm[sid];
                 if ((hsize_t)orig < n_hydro) {
-                    mesh->real_sorted_ids[k]   = (unsigned int)sid;
-                    mesh->sid_to_neighbor[sid] = k;
-                    mesh->scratch_uint[orig]   = k;
+                    real_sorted_ids[k]   = (unsigned int)sid;
+                    sid_to_neighbor[sid] = k;
+                    orig_to_k[orig]      = k;
                     k++;
                 }
             }
-            if ((hsize_t)k != n_hydro) {
-                std::cerr << "VORONOI: build_index_maps: counted " << k << " reals but n_hydro = " << n_hydro
+            const hsize_t n_reals = (hsize_t)k;
+#endif
+            if (n_reals != n_hydro) {
+                std::cerr << "VORONOI: build_index_maps: counted " << n_reals << " reals but n_hydro = " << n_hydro
                           << ". Aborting." << std::endl;
                 exit(EXIT_FAILURE);
             }
         } else {
             // iter > 0: reuse iter-0's orig_to_k_save for stable k assignment
-            for (int sid = 0; sid < n_total; sid++) {
+            const unsigned int* orig_to_k_save = mesh->orig_to_k_save;
+            parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P1", n_total, [=] HD(int sid) {
                 const unsigned int orig = dperm[sid];
                 if ((hsize_t)orig < n_hydro) {
-                    const unsigned int k       = mesh->orig_to_k_save[orig];
-                    mesh->real_sorted_ids[k]   = (unsigned int)sid;
-                    mesh->sid_to_neighbor[sid] = k;
-                    mesh->scratch_uint[orig]   = k;
+                    const unsigned int k = orig_to_k_save[orig];
+                    real_sorted_ids[k]   = (unsigned int)sid;
+                    sid_to_neighbor[sid] = k;
+                    orig_to_k[orig]      = k; // populate scratch_uint so pass 2 can resolve periodic ghosts
                 }
-            }
+            });
         }
 
         // pass 2: resolve ghost sids — MPI ghosts hold ext-array indices, periodic ghosts hold source orig
-        for (int sid = 0; sid < n_total; sid++) {
+        const hsize_t* ghost_ids = mesh->ghost_ids;
+        parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P2", n_total, [=] HD(int sid) {
             const unsigned int orig = dperm[sid];
             if ((hsize_t)orig >= n_hydro) {
-                const hsize_t      g       = (hsize_t)orig - n_hydro;
-                const unsigned int v       = (unsigned int)mesh->ghost_ids[g];
-                mesh->sid_to_neighbor[sid] = (v >= (unsigned int)n_hydro) ? v : mesh->scratch_uint[v];
+                const hsize_t      g = (hsize_t)orig - n_hydro;
+                const unsigned int v = (unsigned int)ghost_ids[g];
+                sid_to_neighbor[sid] = (v >= (unsigned int)n_hydro) ? v : orig_to_k[v];
             }
-        }
-#endif
+        });
     }
 
     // gather_perm[new_k] = d_permutation[real_sorted_ids[new_k]] = old_k
     // (step N's k IS step N+1's input orig, hence "new_k -> old_k")
     static void compute_gather_perm(VMesh* mesh) {
-        const hsize_t n = mesh->n_hydro;
-#ifndef CPU_DEBUG
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = (int)((n + tpb - 1) / tpb);
-        kernel_gather<unsigned int>
-            <<<blocks, tpb>>>(n, mesh->knn->d_permutation, mesh->real_sorted_ids, mesh->gather_perm);
-        GPU_SYNC();
-#else
-        for (hsize_t k = 0; k < n; k++) {
-            mesh->gather_perm[k] = mesh->knn->d_permutation[mesh->real_sorted_ids[k]];
-        }
-#endif
+        const hsize_t       n        = mesh->n_hydro;
+        const unsigned int* perm     = mesh->knn->d_permutation;
+        const unsigned int* sorted   = mesh->real_sorted_ids;
+        unsigned int*       gathered = mesh->gather_perm;
+
+        parallel_for<_MESH_BLOCK_SIZE_>("GATHER_PERM", n, [=] HD(size_t k) { gathered[k] = perm[sorted[k]]; });
     }
 
     // out-of-place gather then pointer swap. The permutation only touches [0, n);
     // the MPI-ghost-slot region [n, ext) is copied verbatim so it survives the swap.
     template <typename T> static void permute_inplace(T*& live, T*& scratch, hsize_t n, const unsigned int* perm) {
         const hsize_t ext = (hsize_t)proteus_mpi::extended_size((int)n);
-#ifndef CPU_DEBUG
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = (int)((n + tpb - 1) / tpb);
-        kernel_gather<T><<<blocks, tpb>>>(n, live, perm, scratch);
-        GPU_SYNC();
+        T*            src = live;
+        T*            dst = scratch;
+        parallel_for<_MESH_BLOCK_SIZE_>("PERMUTE", n, [=] HD(size_t k) { dst[k] = src[perm[k]]; });
+
+        // the MPI-ghost-slot region [n, ext) carries over untouched
         if (ext > n) { gpu_memcpy(scratch + n, live + n, (ext - n) * sizeof(T)); }
-#else
-        for (hsize_t k = 0; k < n; k++)
-            scratch[k] = live[perm[k]];
-        for (hsize_t k = n; k < ext; k++)
-            scratch[k] = live[k];
-#endif
         std::swap(live, scratch);
     }
 
@@ -388,14 +328,15 @@ namespace voronoi {
         for (int k = 0; k < n_hydro; k++) {
             if (s_cpu_overflow_flag) continue;
             const int seed_id = (int)mesh->real_sorted_ids[k];
-            compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_, uchar, VERT_TYPE>(k,
-                                                                              seed_id,
-                                                                              (double*)mesh->knn->d_stored_points,
-                                                                              mesh->knn,
-                                                                              mesh->cell_status,
-                                                                              mesh,
-                                                                              &s_cpu_face_offset,
-                                                                              &s_cpu_overflow_flag);
+            compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_, uchar, VERT_TYPE>(
+                k,
+                seed_id,
+                (double*)mesh->knn->d_stored_points,
+                mesh->knn,
+                mesh->cell_status,
+                mesh,
+                &s_cpu_face_offset,
+                &s_cpu_overflow_flag);
         }
 #endif
     }
@@ -456,13 +397,13 @@ namespace voronoi {
             if (mesh->cell_status[k] == success) continue;
             const int seed_id = (int)mesh->real_sorted_ids[k];
             compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(k,
-                                                               seed_id,
-                                                               (double*)mesh->knn->d_stored_points,
-                                                               mesh->knn,
-                                                               mesh->cell_status,
-                                                               mesh,
-                                                               &s_cpu_face_offset,
-                                                               &s_cpu_overflow_flag);
+                                                                                 seed_id,
+                                                                                 (double*)mesh->knn->d_stored_points,
+                                                                                 mesh->knn,
+                                                                                 mesh->cell_status,
+                                                                                 mesh,
+                                                                                 &s_cpu_face_offset,
+                                                                                 &s_cpu_overflow_flag);
         }
 #endif
     }
@@ -490,11 +431,6 @@ namespace voronoi {
 #ifndef CPU_DEBUG
 
     // gather: out[k] = in[perm[k]] for k in [0, n)
-    template <typename T> GLOBAL void kernel_gather(hsize_t n, const T* in, const unsigned int* perm, T* out) {
-        hsize_t k = (hsize_t)blockIdx.x * blockDim.x + threadIdx.x;
-        if (k < n) out[k] = in[perm[k]];
-    }
-
     // pass-1 compact-reals: each real sid grabs a unique k via atomic counter
     GLOBAL void kernel_build_index_pass1_compact_reals(int                 n_total,
                                                        hsize_t             n_hydro,
@@ -514,48 +450,6 @@ namespace voronoi {
         }
     }
 
-    // pass-1 lookup: each real sid reuses iter-0's saved orig_to_k for stable k assignment
-    GLOBAL void kernel_build_index_pass1_lookup(int                 n_total,
-                                                hsize_t             n_hydro,
-                                                const unsigned int* d_permutation,
-                                                const unsigned int* orig_to_k_save,
-                                                unsigned int*       real_sorted_ids,
-                                                unsigned int*       sid_to_neighbor,
-                                                unsigned int*       orig_to_k) {
-        const int sid = blockIdx.x * blockDim.x + threadIdx.x;
-        if (sid >= n_total) return;
-        const unsigned int orig = d_permutation[sid];
-        if ((hsize_t)orig < n_hydro) {
-            const unsigned int k = orig_to_k_save[orig];
-            real_sorted_ids[k]   = (unsigned int)sid;
-            sid_to_neighbor[sid] = k;
-            orig_to_k[orig]      = k; // populate scratch_uint so pass-2 can resolve periodic ghosts
-        }
-    }
-
-    // pass-2: resolve ghost sids — MPI ghost = ext-array index (>= n_hydro), periodic = source orig
-    GLOBAL void kernel_build_index_pass2_remap_ghosts(int                 n_total,
-                                                      hsize_t             n_hydro,
-                                                      const unsigned int* d_permutation,
-                                                      const hsize_t*      ghost_ids,
-                                                      const unsigned int* orig_to_k,
-                                                      unsigned int*       sid_to_neighbor) {
-        const int sid = blockIdx.x * blockDim.x + threadIdx.x;
-        if (sid >= n_total) return;
-        const unsigned int orig = d_permutation[sid];
-        if ((hsize_t)orig >= n_hydro) {
-            const hsize_t      g = (hsize_t)orig - n_hydro;
-            const unsigned int v = (unsigned int)ghost_ids[g];
-            sid_to_neighbor[sid] = (v >= (unsigned int)n_hydro) ? v : orig_to_k[v];
-        }
-    }
-
-    // initialise cell status to security_radius_not_reached before each cell build
-    GLOBAL void kernel_init_cell_status(int n, Status* stat) {
-        const int i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i < n) stat[i] = security_radius_not_reached;
-    }
-
     // collect indices of cells whose status is not success into failed_indices[0 .. *failed_count)
     GLOBAL void kernel_collect_failed_cells(int n, const Status* stat, int* failed_indices, int* failed_count) {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -567,12 +461,12 @@ namespace voronoi {
 
     // fast-tier per-cell kernel: small K, small face capacity
     GLOBAL LAUNCH_BOUNDS(_VORO_BLOCK_SIZE_, 16) void kernel_compute_voronoi_cells_fast(int     n_hydro,
-                                                                                           double* d_stored_points,
-                                                                                           const knn_problem* knn,
-                                                                                           Status*            stat,
-                                                                                           VMesh*             mesh,
-                                                                                           hsize_t* face_offset,
-                                                                                           int*     overflow_flag) {
+                                                                                       double* d_stored_points,
+                                                                                       const knn_problem* knn,
+                                                                                       Status*            stat,
+                                                                                       VMesh*             mesh,
+                                                                                       hsize_t*           face_offset,
+                                                                                       int* overflow_flag) {
         const int k = blockIdx.x * blockDim.x + threadIdx.x;
         if (k >= n_hydro) return;
         const int seed_id = (int)mesh->real_sorted_ids[k];
@@ -582,13 +476,13 @@ namespace voronoi {
 
     // slow-tier per-cell kernel: bigger K + larger face capacity, run only on cells that failed fast tier
     GLOBAL LAUNCH_BOUNDS(_VORO_BLOCK_SIZE_, 8) void kernel_compute_voronoi_cells_slow(int        n_failed,
-                                                                                          const int* failed_ks,
-                                                                                          double*    d_stored_points,
-                                                                                          const knn_problem* knn,
-                                                                                          Status*            stat,
-                                                                                          VMesh*             mesh,
-                                                                                          hsize_t* face_offset,
-                                                                                          int*     overflow_flag) {
+                                                                                      const int* failed_ks,
+                                                                                      double*    d_stored_points,
+                                                                                      const knn_problem* knn,
+                                                                                      Status*            stat,
+                                                                                      VMesh*             mesh,
+                                                                                      hsize_t*           face_offset,
+                                                                                      int* overflow_flag) {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= n_failed) return;
         const int k       = failed_ks[i];

@@ -295,15 +295,6 @@ static void exchange_send_recv_counts() {
     }
 }
 
-#ifndef CPU_DEBUG
-GLOBAL static void
-kernel_mark_used_bitmap(int num_faces, const int* nc, int mpi_base, int mpi_top, unsigned char* recv_used_bitmap) {
-    int f = blockIdx.x * blockDim.x + threadIdx.x;
-    if (f >= num_faces) return;
-    pack::mark_used_bitmap_body(f, nc, mpi_base, mpi_top, recv_used_bitmap);
-}
-#endif
-
 // mark recv_used_bitmap[i]=1 for every MPI ghost referenced by a local face.
 // periodic ghosts get remapped to their source-real local k (< n_hydro) by
 // sid_to_neighbor, so they never appear here as ghosts.
@@ -315,23 +306,11 @@ static void mark_used_recv_bitmap(VMesh* mesh, int n_hydro, int n_mpi) {
 
     gpu_memset(halo.recv_used_bitmap, 0, (size_t)n_mpi);
 
-#ifndef CPU_DEBUG
-    const int tpb    = _MPI_PACK_BLOCK_SIZE_;
-    const int blocks = (num_faces + tpb - 1) / tpb;
-    {
-        PROFILE_KERNEL("BITMAP_MARK");
-        kernel_mark_used_bitmap<<<blocks, tpb>>>(num_faces, nc, mpi_base, mpi_top, halo.recv_used_bitmap);
-    }
-    GPU_SYNC();
-#else
-    PROFILE("BITMAP_MARK");
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (int f = 0; f < num_faces; f++) {
-        pack::mark_used_bitmap_body(f, nc, mpi_base, mpi_top, halo.recv_used_bitmap);
-    }
-#endif
+    auto* recv_used_bitmap = halo.recv_used_bitmap;
+
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("BITMAP_MARK", num_faces, [=] HD(int f) {
+        pack::mark_used_bitmap_body(f, nc, mpi_base, mpi_top, recv_used_bitmap);
+    });
 }
 
 // from the bitmap: per-direction counts/offsets + used_to_full_slot

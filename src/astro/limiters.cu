@@ -13,13 +13,12 @@ namespace astro {
 
     // forward declarations
     HD void limiter_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, LimiterParams p);
-#ifndef CPU_DEBUG
-    GLOBAL void kernel_limiters(hsize_t n_hydro, const VMesh* mesh, hydro::primvars* primvar, LimiterParams p);
-#endif
 
     static LimiterParams g_lim;
 
-    const LimiterParams& limiters_params() { return g_lim; }
+    const LimiterParams& limiters_params() {
+        return g_lim;
+    }
 
     // ============================================================
     // Setup
@@ -33,15 +32,15 @@ namespace astro {
         const double R_lim = input.getParameterDouble("R_lim") * KPC_IN_CM / units.UnitLength_in_cm;
         g_lim.r_lim2       = R_lim * R_lim;
         g_lim.T_max        = input.getParameterDouble("T_max_lim");
-        g_lim.C_T          = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS *
-                    units.UnitVelocity_in_cm_per_s * units.UnitVelocity_in_cm_per_s / BOLTZMANN;
-        g_lim.e_max_c = g_lim.T_max / g_lim.C_T; // e_int/rho ceiling
+        g_lim.C_T          = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS * units.UnitVelocity_in_cm_per_s *
+                    units.UnitVelocity_in_cm_per_s / BOLTZMANN;
+        g_lim.e_max_c       = g_lim.T_max / g_lim.C_T; // e_int/rho ceiling
         const double c_code = SPEED_OF_LIGHT / units.UnitVelocity_in_cm_per_s;
         g_lim.v_cap         = input.getParameterDouble("v_cap_lim") * c_code;
         g_lim.v_cap2        = g_lim.v_cap * g_lim.v_cap;
 
-        logging::root() << "LIMITERS: r<" << R_lim << " code, T<" << g_lim.T_max << " K, |v|<"
-                        << g_lim.v_cap << " code enabled" << std::endl;
+        logging::root() << "LIMITERS: r<" << R_lim << " code, T<" << g_lim.T_max << " K, |v|<" << g_lim.v_cap
+                        << " code enabled" << std::endl;
     }
 
     // ============================================================
@@ -53,31 +52,11 @@ namespace astro {
         VMesh*           mesh    = sim.mesh;
         hydro::primvars* primvar = sim.primvar;
 
-#ifndef CPU_DEBUG
-        const int tpb    = _HYDRO_BLOCK_SIZE_;
-        const int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("LIMITERS_KERNEL");
-            kernel_limiters<<<blocks, tpb>>>(mesh->n_hydro, mesh, primvar, g_lim);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            limiter_cell(i, mesh, primvar, g_lim);
-        }
-#endif
-    }
+        const LimiterParams p = g_lim;
 
-#ifndef CPU_DEBUG
-    GLOBAL void kernel_limiters(hsize_t n_hydro, const VMesh* mesh, hydro::primvars* primvar, LimiterParams p) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        limiter_cell(i, mesh, primvar, p);
+        parallel_for<_HYDRO_BLOCK_SIZE_>(
+            "LIMITERS_KERNEL", mesh->n_hydro, [=] HD(size_t i) { limiter_cell(i, mesh, primvar, p); });
     }
-#endif
 
     // ============================================================
     // Per-cell work

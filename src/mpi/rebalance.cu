@@ -88,15 +88,6 @@ namespace proteus_mpi {
 #endif
     }
 
-#ifndef CPU_DEBUG
-    GLOBAL static void
-    kernel_histograms(int n_hydro, const POINT_TYPE* pts, int N_grid, double bf, int* hx, int* hy, int* hz) {
-        int k = blockIdx.x * blockDim.x + threadIdx.x;
-        if (k >= n_hydro) return;
-        hist_body(k, pts, N_grid, bf, hx, hy, hz);
-    }
-#endif
-
     static void compute_local_histograms(
         POINT_TYPE* pts, int n_hydro, int N_grid, double bf, int*& hx, int*& hy, int*& hz, int& hxyz_cap) {
         // grow managed histogram buffers if N_grid has increased (or first call)
@@ -120,25 +111,8 @@ namespace proteus_mpi {
         hz[0] = n_hydro;
 #endif
 
-#ifndef CPU_DEBUG
-        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
-        const int blocks = (n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("HIST_K");
-            kernel_histograms<<<blocks, tpb>>>(n_hydro, pts, N_grid, bf, hx, hy, hz);
-        }
-        GPU_SYNC();
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (int k = 0; k < n_hydro; k++) {
-            hist_body(k, pts, N_grid, bf, hx, hy, hz);
-        }
-#ifndef dim_3D
-        (void)0; // hz already filled above
-#endif
-#endif
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+            "HIST_K", n_hydro, [=] HD(int k) { hist_body(k, pts, N_grid, bf, hx, hy, hz); });
     }
 
     // walk hist[], place split[c] at the smallest bucket index whose cumulative sum reaches

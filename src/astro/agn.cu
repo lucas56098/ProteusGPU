@@ -4,8 +4,8 @@
 #include "../mpi/halo.h"
 #include "../profiler/profiler.h"
 #include "../voronoi/voronoi.h"
-#include "astro_constants.h"
 #include "agn.h"
+#include "astro_constants.h"
 #include <cmath>
 
 namespace astro {
@@ -23,24 +23,23 @@ namespace astro {
                                double           dm,
                                double           dm_jet);
 #ifndef CPU_DEBUG
-    GLOBAL void kernel_cold_mass(hsize_t n_hydro, const VMesh* mesh, const hydro::primvars* primvar, AgnParams p, double* acc);
-    GLOBAL void kernel_agn_deposit(hsize_t          n_hydro,
-                                   const VMesh*     mesh,
-                                   hydro::primvars* primvar,
-                                   AgnParams        p,
-                                   double           f_drain,
-                                   double           de,
-                                   double           dm,
-                                   double           dm_jet);
+    GLOBAL void
+    kernel_cold_mass(hsize_t n_hydro, const VMesh* mesh, const hydro::primvars* primvar, AgnParams p, double* acc);
 #endif
 
     static AgnParams g_agn;
     static double*   g_mcold         = nullptr; // device-visible accumulator for the cold-mass reduction
     static double    s_m_cold_cached = 0.0;     // last agn_prepare() result; reused by CFL and both agn_apply halves
 
-    const AgnParams& agn_params() { return g_agn; }
-    double           agn_m_cold_cached() { return s_m_cold_cached; }
-    bool             agn_is_firing() { return s_m_cold_cached > 0.0; }
+    const AgnParams& agn_params() {
+        return g_agn;
+    }
+    double agn_m_cold_cached() {
+        return s_m_cold_cached;
+    }
+    bool agn_is_firing() {
+        return s_m_cold_cached > 0.0;
+    }
 
     // ============================================================
     // Setup
@@ -54,8 +53,8 @@ namespace astro {
         const double R_acc = input.getParameterDouble("R_acc") * KPC_IN_CM / units.UnitLength_in_cm;
         g_agn.r_acc2       = R_acc * R_acc;
         g_agn.T_cold_acc   = input.getParameterDouble("T_cold_acc");
-        g_agn.C_T          = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS *
-                    units.UnitVelocity_in_cm_per_s * units.UnitVelocity_in_cm_per_s / BOLTZMANN;
+        g_agn.C_T          = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS * units.UnitVelocity_in_cm_per_s *
+                    units.UnitVelocity_in_cm_per_s / BOLTZMANN;
         g_agn.t_acc = input.getParameterDouble("t_acc") * 1.0e6 * YEAR_IN_S / units.UnitTime_in_s(); // Myr -> code
         g_agn.eta   = input.getParameterDouble("eta_agn");
         const double c_code = SPEED_OF_LIGHT / units.UnitVelocity_in_cm_per_s;
@@ -117,7 +116,7 @@ namespace astro {
 
         double m_local = 0.0;
 #ifndef CPU_DEBUG
-        *g_mcold = 0.0;
+        *g_mcold         = 0.0;
         const int tpb    = _HYDRO_BLOCK_SIZE_;
         const int blocks = ((int)n + tpb - 1) / tpb;
         {
@@ -158,9 +157,9 @@ namespace astro {
         static int s_last_logged = -1;
         if (sim.step != s_last_logged) {
             s_last_logged      = sim.step;
-            const double m2s   = units.UnitMass_in_g / SOLAR_MASS_G;                     // code mass -> Msun
-            const double inv_t = 1.0 / units.UnitTime_in_s();                            // 1 / code-time-in-s
-            const double e2erg = units.UnitMass_in_g * units.UnitVelocity_in_cm_per_s *  // code energy -> erg
+            const double m2s   = units.UnitMass_in_g / SOLAR_MASS_G;                    // code mass -> Msun
+            const double inv_t = 1.0 / units.UnitTime_in_s();                           // 1 / code-time-in-s
+            const double e2erg = units.UnitMass_in_g * units.UnitVelocity_in_cm_per_s * // code energy -> erg
                                  units.UnitVelocity_in_cm_per_s;
             logging::root() << "AGN_POWER: t=" << sim.t_sim << " Mcold_Msun=" << (m_cold * m2s)
                             << " Mdot_Msun_per_yr=" << (Mdot * m2s * YEAR_IN_S * inv_t)
@@ -182,22 +181,10 @@ namespace astro {
 #endif
 
         // drain accreted cold gas + deposit thermal feedback (rank-local)
-#ifndef CPU_DEBUG
-        {
-            PROFILE_KERNEL("AGN_DEPOSIT");
-            const int tpb    = _HYDRO_BLOCK_SIZE_;
-            const int blocks = ((int)n + tpb - 1) / tpb;
-            kernel_agn_deposit<<<blocks, tpb>>>(n, mesh, primvar, g_agn, f_drain, de, dm, dm_jet);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (hsize_t i = 0; i < n; i++) {
-            agn_deposit_cell(i, mesh, primvar, g_agn, f_drain, de, dm, dm_jet);
-        }
-#endif
+        const AgnParams p = g_agn;
+
+        parallel_for<_HYDRO_BLOCK_SIZE_>(
+            "AGN_DEPOSIT", n, [=] HD(size_t i) { agn_deposit_cell(i, mesh, primvar, p, f_drain, de, dm, dm_jet); });
     }
 
 #ifndef CPU_DEBUG
@@ -207,19 +194,6 @@ namespace astro {
         if (i >= n_hydro) return;
         const double c = cold_mass_contrib(i, mesh, primvar, p);
         if (c > 0.0) atomicAdd(acc, c);
-    }
-
-    GLOBAL void kernel_agn_deposit(hsize_t          n_hydro,
-                                   const VMesh*     mesh,
-                                   hydro::primvars* primvar,
-                                   AgnParams        p,
-                                   double           f_drain,
-                                   double           de,
-                                   double           dm,
-                                   double           dm_jet) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        agn_deposit_cell(i, mesh, primvar, p, f_drain, de, dm, dm_jet);
     }
 #endif
 
@@ -319,8 +293,8 @@ namespace astro {
 #endif
         const double ady = fabs(dy);
         if (dm_jet > 0.0 && perp2 < p.r_jet2 && ady > p.L_jet && ady < p.L_jet + p.h_jet) {
-            const double sign  = (dy > 0.0) ? 1.0 : -1.0; // momentum points away from center
-            POINT_TYPE   v     = primvar->v[i];
+            const double sign    = (dy > 0.0) ? 1.0 : -1.0; // momentum points away from center
+            POINT_TYPE   v       = primvar->v[i];
             const double rho_new = rho + dm_jet;
             // conserve momentum + add the KE carried by the injected slug (E += 1/2 dm v_jet^2).
             // The natural inelastic mixing heat (slug decelerates against background mass) ends up in
