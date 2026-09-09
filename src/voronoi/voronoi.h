@@ -66,7 +66,11 @@ struct VMesh {
 #endif
 
     // per-face arrays (size face_capacity)
-    int*    neighbor_cell; // [face_idx] -> neighbor k in [0, n_hydro), or -1 for box-boundary
+    // [face_idx] -> neighbour k, or -1 for a bounding-box plane. k < n_hydro is a real local
+    // cell; k >= n_hydro is an MPI ghost and indexes the _g arrays at k - n_hydro (periodic
+    // ghosts are remapped back to their source real cell, so they never appear here).
+    // Decode with get_seed_at / PrimGradients::load_at rather than indexing seeds directly.
+    int*    neighbor_cell;
     double* face_area;
 #ifdef MOVING_MESH
     double* f_mid_local;

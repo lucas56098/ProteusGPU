@@ -322,7 +322,8 @@ static void write_mesh_geometry(hid_t mesh_group, int n_hydro) {
 
             double nx = 0.0, ny = 0.0, nz = 0.0;
             if (nbr >= 0) {
-                const double3 sn = m->seeds[nbr];
+                // nbr >= n_hydro is an MPI ghost living in seeds_g, not further along seeds
+                const double3 sn = get_seed_at(nbr, n_hydro, m);
                 double        dx = sn.x - sk.x;
                 double        dy = sn.y - sk.y;
                 dx -= std::round(dx); // minimum image on the unit box

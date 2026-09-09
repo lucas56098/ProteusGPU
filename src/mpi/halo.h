@@ -119,8 +119,9 @@ namespace proteus_mpi {
     int  halo_default_width(double buff);
     void halo_remap_export_indices(const unsigned int* inv_gather, int n_local);
 
-    // ship seed positions on the full halo. receivers populate pts[pts_mpi_base..]
-    // and mesh->seeds[n_hydro..]. sets halo.n_mpi_ghosts and is_outer_layer.
+    // ship seed positions on the full halo. receivers populate pts[pts_mpi_base..] and
+    // mesh->seeds_g[..] -- NOT mesh->seeds[n_hydro..], which holds periodic ghosts.
+    // sets halo.n_mpi_ghosts and is_outer_layer.
     void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base);
 #ifdef VOL_REGULARIZE
     // refresh ghost cell volumes on the used subset (size-equalizing mesh drift)
