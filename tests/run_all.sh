@@ -2,7 +2,8 @@
 # Proteus: run every test suite.
 #
 # Defaults to the widest coverage each suite offers -- the full compile matrix including
-# CUDA, the full IC rank ladder, convergence under MPI and GPU, and CPU/GPU equality.
+# CUDA, the full IC rank ladder, convergence under MPI and GPU, and bitwise
+# reproducibility across backend, rank count and thread count.
 # Anything the machine cannot do is skipped by the suite that owns that decision, and
 # skips are reported separately: a skip is never a pass.
 #
@@ -23,7 +24,8 @@ with a GPU; the compile matrix and the convergence runs dominate.
 
 Options:
   --no-cuda      skip everything needing a GPU: the matrix's cuda tier, the convergence
-                 gpu variant, and the CPU/GPU equality suite entirely
+                 gpu variant, and the reproducibility suite's GPU variants. That suite
+                 still runs -- its rank and thread axes need no GPU
   --list         print the suites and the exact commands that would run, then exit
   -h, --help     show this message
 
@@ -46,16 +48,19 @@ done
 # keeping two copies of the table in sync
 MATRIX_ARGS="--full"
 CONV_ARGS="--mpi"
+EQ_ARGS=""
 if [ "$NO_CUDA" -eq 0 ]; then
     MATRIX_ARGS="$MATRIX_ARGS --cuda"
     CONV_ARGS="$CONV_ARGS --cuda"
+else
+    EQ_ARGS="--no-cuda"
 fi
 
 # name | script | args | needs a GPU to be worth running at all
 SUITES=(
     "compile matrix|build_matrix.sh|$MATRIX_ARGS|no"
     "IC invariance|ic_invariance.sh||no"
-    "CPU/GPU equality|cpu_gpu_equality.sh||yes"
+    "bitwise reproducibility|bitwise_equality.sh|$EQ_ARGS|no"
     "hydro convergence|run_convergence.sh|$CONV_ARGS|no"
 )
 
@@ -64,9 +69,9 @@ if [ "$LIST" -eq 1 ]; then
     for entry in "${SUITES[@]}"; do
         IFS='|' read -r name script args gpu <<< "$entry"
         if [ "$NO_CUDA" -eq 1 ] && [ "$gpu" = yes ]; then
-            printf '  %-20s \033[33mskipped\033[0m  (--no-cuda)\n' "$name"
+            printf '  %-23s \033[33mskipped\033[0m  (--no-cuda)\n' "$name"
         else
-            printf '  %-20s tests/%s %s\n' "$name" "$script" "$args"
+            printf '  %-23s tests/%s %s\n' "$name" "$script" "$args"
         fi
     done
     exit 0
