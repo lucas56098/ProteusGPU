@@ -13,6 +13,14 @@
 //       truncated. Report the failure up to the caller and exit there.
 namespace h5 {
 
+    // hsize_t is HDF5's own 64-bit unsigned type, but *which* 64-bit type it aliases varies by
+    // HDF5 version -- uint64_t on 1.14, unsigned long long on older ones. Values convert freely
+    // between the two; pointers and references do not. So nothing here may hand a caller an
+    // `hsize_t*` or `hsize_t&` to fill: the caller thinks in uint64_t (the mesh index type) and
+    // the two only bind on the HDF5 versions where they happen to be the same type. Passing
+    // hsize_t *by value* is fine and is what the dimension arguments below do.
+    static_assert(sizeof(hsize_t) == sizeof(uint64_t), "hsize_t is expected to be 64 bits wide");
+
     template <herr_t (*CLOSE)(hid_t)> class Handle {
       public:
         Handle() : m_id(H5I_INVALID_HID) {}
@@ -127,7 +135,7 @@ namespace h5 {
 
     // Whole 2D dataset, flattened row-major. `out_rows` optionally receives the row count.
     template <typename T>
-    inline bool read_dataset_2d(hid_t parent, const char* name, std::vector<T>& out, hsize_t* out_rows = NULL) {
+    inline bool read_dataset_2d(hid_t parent, const char* name, std::vector<T>& out, uint64_t* out_rows = NULL) {
         const hid_t type = native<T>::id();
         Dataset     dset(H5Dopen(parent, name, H5P_DEFAULT));
         if (!dset.valid()) {
@@ -139,7 +147,7 @@ namespace h5 {
         H5Sget_simple_extent_dims(space, dims, NULL);
         out.resize(dims[0] * dims[1]);
         H5Dread(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data());
-        if (out_rows) { *out_rows = dims[0]; }
+        if (out_rows) { *out_rows = (uint64_t)dims[0]; }
         return true;
     }
 
