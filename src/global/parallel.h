@@ -153,4 +153,90 @@ inline void parallel_exclusive_scan(const char* name, size_t n, const T* in, T* 
 #endif
 }
 
+template <typename T> inline T* reduce_scratch(size_t need) {
+    static T*     buf = nullptr;
+    static size_t cap = 0;
+    if (need > cap) {
+        if (buf) gpu_free(buf);
+        buf = gpu_alloc<T>(need);
+        cap = need;
+    }
+    return buf;
+}
+
+#ifndef CPU_DEBUG
+template <int BLOCK, typename T, typename Op, typename F>
+GLOBAL void kernel_reduce_level(size_t n, T identity, Op op, F f, T* out) {
+    __shared__ T buf[BLOCK];
+    const int    tid = threadIdx.x;
+    const size_t i   = (size_t)blockIdx.x * BLOCK + (size_t)tid;
+
+    buf[tid] = (i < n) ? f(i) : identity;
+    __syncthreads();
+
+    for (int s = BLOCK / 2; s > 0; s >>= 1) {
+        if (tid < s) buf[tid] = op(buf[tid], buf[tid + s]);
+        __syncthreads();
+    }
+    if (tid == 0) out[blockIdx.x] = buf[0];
+}
+#endif // !CPU_DEBUG
+
+template <int BLOCK, typename T, typename Op, typename F>
+inline void reduce_level(size_t n, T identity, Op op, F f, T* out) {
+    const size_t nb = (n + BLOCK - 1) / BLOCK;
+#ifndef CPU_DEBUG
+    kernel_reduce_level<BLOCK, T><<<(unsigned int)nb, BLOCK>>>(n, identity, op, f, out);
+    GPU_SYNC();
+#else
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t b = 0; b < nb; b++) {
+        T buf[BLOCK];
+        for (int t = 0; t < BLOCK; t++) {
+            const size_t i = b * (size_t)BLOCK + (size_t)t;
+            buf[t]         = (i < n) ? f(i) : identity;
+        }
+        for (int s = BLOCK / 2; s > 0; s >>= 1) {
+            for (int t = 0; t < s; t++) {
+                buf[t] = op(buf[t], buf[t + s]);
+            }
+        }
+        out[b] = buf[0];
+    }
+#endif
+}
+
+template <int BLOCK, typename T, typename Op, typename F>
+inline T parallel_reduce(const char* name, size_t n, T identity, Op op, F f) {
+    static_assert(BLOCK >= 2 && (BLOCK & (BLOCK - 1)) == 0, "parallel_reduce needs a power-of-two BLOCK >= 2");
+    (void)name;
+    if (n == 0) return identity;
+
+#ifndef CPU_DEBUG
+    PROFILE_KERNEL(name);
+#else
+    PROFILE(name);
+#endif
+
+    T* out = reduce_scratch<T>(scan_scratch_size(n, BLOCK));
+
+    reduce_level<BLOCK, T>(n, identity, op, f, out);
+    size_t cur = (n + BLOCK - 1) / BLOCK;
+
+    while (cur > 1) {
+        const T* in   = out;
+        T*       next = out + cur;
+        reduce_level<BLOCK, T>(cur, identity, op, [in] HD(size_t i) { return in[i]; }, next);
+        out = next;
+        cur = (cur + BLOCK - 1) / BLOCK;
+    }
+    return out[0];
+}
+
+template <int BLOCK, typename T, typename F> inline T parallel_reduce_sum(const char* name, size_t n, F f) {
+    return parallel_reduce<BLOCK, T>(name, n, (T)0, [] HD(T a, T b) { return a + b; }, f);
+}
+
 #endif // PARALLEL_H

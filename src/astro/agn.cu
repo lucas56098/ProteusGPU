@@ -22,14 +22,8 @@ namespace astro {
                                double           de,
                                double           dm,
                                double           dm_jet);
-#ifndef CPU_DEBUG
-    GLOBAL void
-    kernel_cold_mass(hsize_t n_hydro, const VMesh* mesh, const hydro::primvars* primvar, AgnParams p, double* acc);
-#endif
-
     static AgnParams g_agn;
-    static double*   g_mcold         = nullptr; // device-visible accumulator for the cold-mass reduction
-    static double    s_m_cold_cached = 0.0;     // last agn_prepare() result; reused by CFL and both agn_apply halves
+    static double    s_m_cold_cached = 0.0; // last agn_prepare() result; reused by CFL and both agn_apply halves
 
     const AgnParams& agn_params() {
         return g_agn;
@@ -88,8 +82,6 @@ namespace astro {
         g_agn.v_cap      = input.getParameterDouble("v_cap") * c_c;
 #endif
 
-        g_mcold = gpu_alloc<double>(1);
-
         logging::root() << "AGN: cold-accretion trigger (R_acc=" << R_acc << " code)"
 #ifdef AGN_THERMAL
                         << ", thermal f_T=" << g_agn.f_T
@@ -114,25 +106,10 @@ namespace astro {
         hydro::primvars* primvar = sim.primvar;
         const hsize_t    n       = mesh->n_hydro;
 
-        double m_local = 0.0;
-#ifndef CPU_DEBUG
-        *g_mcold         = 0.0;
-        const int tpb    = _HYDRO_BLOCK_SIZE_;
-        const int blocks = ((int)n + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("AGN_COLDMASS");
-            kernel_cold_mass<<<blocks, tpb>>>(n, mesh, primvar, g_agn, g_mcold);
-            GPU_SYNC();
-        }
-        m_local = *g_mcold;
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for reduction(+ : m_local) schedule(static)
-#endif
-        for (hsize_t i = 0; i < n; i++) {
-            m_local += cold_mass_contrib(i, mesh, primvar, g_agn);
-        }
-#endif
+        // g_agn is a namespace-scope static, so it cannot be captured: copy it first
+        const AgnParams p       = g_agn;
+        const double    m_local = parallel_reduce_sum<_HYDRO_BLOCK_SIZE_, double>(
+            "AGN_COLDMASS", n, [=] HD(size_t i) { return cold_mass_contrib(i, mesh, primvar, p); });
 
         double m_cold = m_local;
         proteus_mpi::halo_sum_allreduce(&m_cold);
@@ -186,16 +163,6 @@ namespace astro {
         parallel_for<_HYDRO_BLOCK_SIZE_>(
             "AGN_DEPOSIT", n, [=] HD(size_t i) { agn_deposit_cell(i, mesh, primvar, p, f_drain, de, dm, dm_jet); });
     }
-
-#ifndef CPU_DEBUG
-    GLOBAL void
-    kernel_cold_mass(hsize_t n_hydro, const VMesh* mesh, const hydro::primvars* primvar, AgnParams p, double* acc) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        const double c = cold_mass_contrib(i, mesh, primvar, p);
-        if (c > 0.0) atomicAdd(acc, c);
-    }
-#endif
 
     // ============================================================
     // Per-cell work

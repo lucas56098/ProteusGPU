@@ -55,14 +55,6 @@ namespace hydro {
     // flux_t: alias for prim when used for fluxes
     using flux_t = prim;
 
-    // unphysical primvar-state check
-    enum UnphysCount {
-        UNPHYS_RHO = 0, // rho <= 0
-        UNPHYS_E   = 1, // E <= 0
-        UNPHYS_NAN = 2, // any field NaN
-        UNPHYS_N   = 3
-    };
-
 } // namespace hydro
 
 // per cell array sizing for MPI ghosts and migration

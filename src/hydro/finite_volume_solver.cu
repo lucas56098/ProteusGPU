@@ -28,12 +28,6 @@ namespace hydro {
     // kernels
     GLOBAL void
     kernel_copy_primvars(hsize_t, const double*, const POINT_TYPE*, const double*, double*, POINT_TYPE*, double*);
-#ifdef AGN_ENABLED
-    GLOBAL void kernel_dt_CFL(double, hsize_t, const VMesh*, const primvars*, double*, bool, astro::AgnParams);
-#else
-    GLOBAL void kernel_dt_CFL(double, hsize_t, const VMesh*, const primvars*, double*);
-#endif
-    GLOBAL void kernel_check_unphysical(hsize_t, const primvars*, int*);
 #endif
 
     // ============================================================
@@ -166,40 +160,25 @@ namespace hydro {
             // per rank CFL timestep (min over all cells)
             PROFILE("CFL");
 
-            double* min_dt = sim.dt;
-            *min_dt        = 1e100;
 #ifdef AGN_ENABLED
-            // hoisted out of the per-cell loop: these read agn.cu statics on the host, and
-            // calling them per cell inside the OpenMP loop is a silent per-cell cost
+            // hoisted out of the per-cell body: these read agn.cu statics on the host, so
+            // calling them per cell would be a silent per-cell cost
             const bool             agn_firing = astro::agn_is_firing();
             const astro::AgnParams p_agn      = astro::agn_params();
 #endif
-
-#ifndef CPU_DEBUG
-            int tpb    = _HYDRO_BLOCK_SIZE_;
-            int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-            {
-                PROFILE_KERNEL("DT_CFL");
+            // identity 1e100 also covers a rank that owns no cells
+            *sim.dt = parallel_reduce<_HYDRO_BLOCK_SIZE_, double>(
+                "DT_CFL",
+                mesh->n_hydro,
+                1e100,
+                [] HD(double a, double b) { return a < b ? a : b; },
+                [=] HD(size_t i) {
 #ifdef AGN_ENABLED
-                kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, min_dt, agn_firing, p_agn);
+                    return dt_CFL_for_cell(i, CFL, mesh, primvar, agn_firing, p_agn);
 #else
-                kernel_dt_CFL<<<blocks, tpb>>>(CFL, mesh->n_hydro, mesh, primvar, min_dt);
+                    return dt_CFL_for_cell(i, CFL, mesh, primvar);
 #endif
-            }
-            GPU_SYNC();
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for reduction(min : min_dt[0])
-#endif
-            for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-#ifdef AGN_ENABLED
-                double dt_i = dt_CFL_for_cell(i, CFL, mesh, primvar, agn_firing, p_agn);
-#else
-                double dt_i = dt_CFL_for_cell(i, CFL, mesh, primvar);
-#endif
-                if (dt_i < *min_dt) { *min_dt = dt_i; }
-            }
-#endif
+                });
         }
 
         // global all rank minimum dt
@@ -245,50 +224,42 @@ namespace hydro {
         std::swap(primvar->E, prim_new->E);
     }
 
+    // the three counters travel together so one sweep serves all of them: the loop is
+    // bandwidth-bound on rho/E/v, and three separate reductions would read them three times
+    struct UnphysCounts {
+        int rho_bad, E_bad, nan_bad;
+    };
+
     // scan primvar for unphysical values
     static void check_unphysical_state(VMesh* mesh, const primvars* primvar) {
         PROFILE("UNPHYS_CHECK");
-        int counts[UNPHYS_N] = {0, 0, 0};
-#ifndef CPU_DEBUG
-        static int* d_counts = nullptr;
-        if (!d_counts) d_counts = gpu_alloc<int>(UNPHYS_N);
-        for (int k = 0; k < UNPHYS_N; k++)
-            d_counts[k] = 0;
-        const int tpb    = _HYDRO_BLOCK_SIZE_;
-        const int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("UNPHYS_KERNEL");
-            kernel_check_unphysical<<<blocks, tpb>>>(mesh->n_hydro, primvar, d_counts);
-        }
-        GPU_SYNC();
-        for (int k = 0; k < UNPHYS_N; k++)
-            counts[k] = d_counts[k];
-#else
-        int n_rho_bad = 0, n_E_bad = 0, n_nan = 0;
-#ifdef USE_OPENMP
-#pragma omp parallel for reduction(+ : n_rho_bad, n_E_bad, n_nan)
-#endif
-        for (hsize_t i = 0; i < mesh->n_hydro; i++) {
-            const double rho = primvar->rho[i];
-            const double E   = primvar->E[i];
-            if (rho <= 0.0) n_rho_bad++; // NaN <= 0 is false, so NaN doesn't double-count here
-            if (E <= 0.0) n_E_bad++;
-            const bool has_nan = std::isnan(rho) || std::isnan(E) || std::isnan(primvar->v[i].x) ||
-                                 std::isnan(primvar->v[i].y)
+
+        const UnphysCounts counts = parallel_reduce<_HYDRO_BLOCK_SIZE_, UnphysCounts>(
+            "UNPHYS_KERNEL",
+            mesh->n_hydro,
+            UnphysCounts{0, 0, 0},
+            [] HD(UnphysCounts a, UnphysCounts b) {
+                return UnphysCounts{a.rho_bad + b.rho_bad, a.E_bad + b.E_bad, a.nan_bad + b.nan_bad};
+            },
+            [=] HD(size_t i) {
+                const double rho = primvar->rho[i];
+                const double E   = primvar->E[i];
+                // x != x is the NaN test that behaves the same on both backends (math_utils.h
+                // uses the same idiom); std::isnan is host-only and isnan() is device-only
+                const bool has_nan = !(rho == rho) || !(E == E) || !(primvar->v[i].x == primvar->v[i].x) ||
+                                     !(primvar->v[i].y == primvar->v[i].y)
 #ifdef dim_3D
-                                 || std::isnan(primvar->v[i].z)
+                                     || !(primvar->v[i].z == primvar->v[i].z)
 #endif
-                ;
-            if (has_nan) n_nan++;
-        }
-        counts[UNPHYS_RHO] = n_rho_bad;
-        counts[UNPHYS_E]   = n_E_bad;
-        counts[UNPHYS_NAN] = n_nan;
-#endif
+                    ;
+                // NaN <= 0 is false, so a NaN never double-counts as rho<=0
+                return UnphysCounts{rho <= 0.0 ? 1 : 0, E <= 0.0 ? 1 : 0, has_nan ? 1 : 0};
+            });
+
         // global reduce; abort the run if anything fired
-        const int rho_bad = logging::sum_global(counts[UNPHYS_RHO]);
-        const int E_bad   = logging::sum_global(counts[UNPHYS_E]);
-        const int nan_bad = logging::sum_global(counts[UNPHYS_NAN]);
+        const int rho_bad = logging::sum_global(counts.rho_bad);
+        const int E_bad   = logging::sum_global(counts.E_bad);
+        const int nan_bad = logging::sum_global(counts.nan_bad);
         if (rho_bad == 0 && E_bad == 0 && nan_bad == 0) return;
 
         if (rho_bad > 0) logging::root() << "HYDRO: WARNING: " << rho_bad << " cells with rho<=0" << std::endl;
@@ -315,62 +286,6 @@ namespace hydro {
         rho_dst[i] = rho_src[i];
         v_dst[i]   = v_src[i];
         E_dst[i]   = E_src[i];
-    }
-
-    // for each cell calc CFL and then do warp-level reduction and lane 0 atomicMin
-    GLOBAL void
-#ifdef AGN_ENABLED
-    kernel_dt_CFL(double           CFL,
-                  hsize_t          n_hydro,
-                  const VMesh*     mesh,
-                  const primvars*  primvar,
-                  double*          d_min_dt,
-                  bool             agn_firing,
-                  astro::AgnParams p_agn) {
-#else
-    kernel_dt_CFL(double CFL, hsize_t n_hydro, const VMesh* mesh, const primvars* primvar, double* d_min_dt) {
-#endif
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-
-        double dt_local = 1e100;
-#ifdef AGN_ENABLED
-        if (i < n_hydro) { dt_local = dt_CFL_for_cell(i, CFL, mesh, primvar, agn_firing, p_agn); }
-#else
-        if (i < n_hydro) { dt_local = dt_CFL_for_cell(i, CFL, mesh, primvar); }
-#endif
-
-        // warp-level reduction
-        for (int offset = 16; offset > 0; offset >>= 1) {
-            double other = __shfl_down_sync(0xFFFFFFFF, dt_local, offset);
-            dt_local     = fmin(dt_local, other);
-        }
-
-        // lane 0 of each warp does atomicMin via bit reinterpretation
-        if ((threadIdx.x & 31) == 0) {
-            unsigned long long val = __double_as_longlong(dt_local);
-            atomicMin((unsigned long long*)d_min_dt, val);
-        }
-    }
-
-    // per-cell sanity check
-    // counters: [n_rho<=0, n_E<=0, n_NaN]
-    GLOBAL void kernel_check_unphysical(hsize_t n_hydro, const primvars* p, int* counters) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-
-        const double rho = p->rho[i];
-        const double E   = p->E[i];
-
-        // sanity checks
-        if (rho <= 0.0) portable_atomicAdd(&counters[UNPHYS_RHO], 1); // NaN<=0 is false → no double-count
-        if (E <= 0.0) portable_atomicAdd(&counters[UNPHYS_E], 1);
-        if (isnan(rho) || isnan(E) || isnan(p->v[i].x) || isnan(p->v[i].y)
-#ifdef dim_3D
-            || isnan(p->v[i].z)
-#endif
-        ) {
-            portable_atomicAdd(&counters[UNPHYS_NAN], 1);
-        }
     }
 
 #endif // !CPU_DEBUG

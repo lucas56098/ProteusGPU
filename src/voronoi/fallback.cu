@@ -91,10 +91,6 @@ namespace voronoi {
     static double        compute_max_security_d2(const VMesh* mesh);
 
 #ifndef CPU_DEBUG
-    GLOBAL void                kernel_count_failures(int n, const Status* stat, int* fail_count);
-    GLOBAL void                kernel_max_security_d2(int n, const double* sec, unsigned long long* out_bits);
-    static int*                d_fail_count   = nullptr;
-    static unsigned long long* d_max_sec_bits = nullptr;
 #endif
 
     // cells escalated to the wide tier during one cpu_fallback_failed_cells call; reported
@@ -201,27 +197,17 @@ namespace voronoi {
 
     // count cells whose status is not success; on GPU also pull cell_status to host
     static int count_failed_and_prefetch_status(VMesh* mesh) {
-#ifndef CPU_DEBUG
-        // GPU: launch the count kernel and read the result back
-        if (!d_fail_count) d_fail_count = gpu_calloc<int>(1);
-        gpu_memset(d_fail_count, 0, sizeof(int));
-        const int n_hydro = (int)mesh->n_hydro;
-        const int tpb     = _MESH_BLOCK_SIZE_;
-        const int blocks  = (n_hydro + tpb - 1) / tpb;
-        kernel_count_failures<<<blocks, tpb>>>(n_hydro, mesh->cell_status, d_fail_count);
-        GPU_SYNC();
-        const int n_failed = *d_fail_count;
+        const int     n_hydro = (int)mesh->n_hydro;
+        const Status* stat    = mesh->cell_status;
 
+        const int n_failed = parallel_reduce_sum<_MESH_BLOCK_SIZE_, int>(
+            "COUNT_FAILED", n_hydro, [=] HD(size_t k) { return (stat[k] != success) ? 1 : 0; });
+
+#ifndef CPU_DEBUG
         // pull cell_status to host so the fallback loop can read it
         if (n_failed > 0) gpu_prefetch_to_cpu(mesh->cell_status, n_hydro * sizeof(Status));
-        return n_failed;
-#else
-        // CPU: serial scan
-        int n_failed = 0;
-        for (hsize_t k = 0; k < mesh->n_hydro; k++)
-            if (mesh->cell_status[k] != success) n_failed++;
-        return n_failed;
 #endif
+        return n_failed;
     }
 
     // Build a sparse cell->sids lookup containing entries only for the given target cells.
@@ -847,27 +833,14 @@ namespace voronoi {
     // reduction is one pass over n_hydro doubles on the device (the array is GPU-resident
     // after a build) and repair events are rare, so simple beats clever here.
     static double compute_max_security_d2(const VMesh* mesh) {
-#ifndef CPU_DEBUG
-        if (!d_max_sec_bits) d_max_sec_bits = gpu_calloc<unsigned long long>(1);
-        gpu_memset(d_max_sec_bits, 0, sizeof(unsigned long long));
-        const int n      = (int)mesh->n_hydro;
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = std::min(256, (n + tpb - 1) / tpb);
-        kernel_max_security_d2<<<blocks, tpb>>>(n, mesh->security_d2, d_max_sec_bits);
-        GPU_SYNC();
-        const unsigned long long bits = *d_max_sec_bits;
-        double                   out;
-        std::memcpy(&out, &bits, sizeof(double));
-        return out;
-#else
-        double m = 0.0;
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static) reduction(max : m)
-#endif
-        for (hsize_t k = 0; k < mesh->n_hydro; k++)
-            m = std::max(m, mesh->security_d2[k]);
-        return m;
-#endif
+        const double* sec = mesh->security_d2;
+        // security_d2 is non-negative, so 0.0 is a true identity here
+        return parallel_reduce<_MESH_BLOCK_SIZE_, double>(
+            "MAX_SEC_D2",
+            mesh->n_hydro,
+            0.0,
+            [] HD(double a, double b) { return a > b ? a : b; },
+            [=] HD(size_t k) { return sec[k]; });
     }
 
     // Collect every real cell a ghost move from g_old to g_new can influence, by walking the
@@ -1021,25 +994,5 @@ namespace voronoi {
         }
         return result.rebuilt;
     }
-
-    // ============================================================
-    // CUDA kernels
-    // ============================================================
-#ifndef CPU_DEBUG
-    // count cells whose status is not success via per-thread atomic add
-    GLOBAL void kernel_count_failures(int n, const Status* stat, int* fail_count) {
-        const int i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i < n && stat[i] != success) portable_atomicAdd(fail_count, 1);
-    }
-
-    // grid-stride max over the non-negative security_d2 array. Non-negativity makes the IEEE
-    // bit pattern monotone, so a 64-bit integer atomicMax implements the double max.
-    GLOBAL void kernel_max_security_d2(int n, const double* sec, unsigned long long* out_bits) {
-        double local_max = 0.0;
-        for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x)
-            local_max = fmax(local_max, sec[i]);
-        atomicMax(out_bits, (unsigned long long)__double_as_longlong(local_max));
-    }
-#endif
 
 } // namespace voronoi

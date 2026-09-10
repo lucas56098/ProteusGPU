@@ -475,27 +475,18 @@ namespace voronoi {
     // count cells whose status is not success (host-side scan). All failure modes counted.
     // Used to decide whether to fall through to the perturbation cascade after the widen loop.
     static int count_local_failed_cells(const VMesh* mesh) {
-        int n_failed = 0;
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static) reduction(+ : n_failed)
-#endif
-        for (hsize_t k = 0; k < mesh->n_hydro; k++) {
-            if (mesh->cell_status[k] != success) n_failed++;
-        }
-        return n_failed;
+        const Status* stat = mesh->cell_status;
+        return parallel_reduce_sum<_MESH_BLOCK_SIZE_, int>(
+            "COUNT_FAILED", mesh->n_hydro, [=] HD(size_t k) { return (stat[k] != success) ? 1 : 0; });
     }
 
     // count cells the build could not certify against this rank's data extent — the only
     // failure a wider halo can repair, and hence the widen-loop convergence criterion.
     static int count_local_beyond_data_cells(const VMesh* mesh) {
-        int n_failed = 0;
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static) reduction(+ : n_failed)
-#endif
-        for (hsize_t k = 0; k < mesh->n_hydro; k++) {
-            if (mesh->cell_status[k] == security_radius_beyond_data) n_failed++;
-        }
-        return n_failed;
+        const Status* stat = mesh->cell_status;
+        return parallel_reduce_sum<_MESH_BLOCK_SIZE_, int>("COUNT_BEYOND", mesh->n_hydro, [=] HD(size_t k) {
+            return (stat[k] == security_radius_beyond_data) ? 1 : 0;
+        });
     }
 
     // MPI_Allreduce SUM wrapper; no-op when MPI is off
