@@ -51,6 +51,7 @@ namespace h5 {
     using Dataset = Handle<H5Dclose>;
     using Attr    = Handle<H5Aclose>;
     using Plist   = Handle<H5Pclose>;
+    using Type    = Handle<H5Tclose>;
 
     template <typename T> struct native;
     template <> struct native<double> {

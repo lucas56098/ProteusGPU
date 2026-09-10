@@ -1,4 +1,5 @@
 #include "../global/allvars.h"
+#include "../io/h5.h"
 #include "../mpi/mpi_compat.h"
 #include "hdf5.h"
 #include "profiler.h"
@@ -117,15 +118,12 @@ namespace {
 
     static void write_kind_attr(hid_t dset, char kind) {
         const char* s = kind_str(kind);
-        hid_t       t = H5Tcopy(H5T_C_S1);
+        h5::Type    t(H5Tcopy(H5T_C_S1));
         H5Tset_size(t, std::strlen(s));
         H5Tset_strpad(t, H5T_STR_NULLTERM);
-        hid_t space = H5Screate(H5S_SCALAR);
-        hid_t attr  = H5Acreate(dset, "kind", t, space, H5P_DEFAULT, H5P_DEFAULT);
+        h5::Space space(H5Screate(H5S_SCALAR));
+        h5::Attr  attr(H5Acreate(dset, "kind", t, space, H5P_DEFAULT, H5P_DEFAULT));
         H5Awrite(attr, t, s);
-        H5Aclose(attr);
-        H5Sclose(space);
-        H5Tclose(t);
     }
 
 } // namespace
@@ -700,27 +698,22 @@ namespace {
 
     // Create one extensible 1D double dataset inside `group`. Collective in parallel HDF5.
     hid_t create_dataset(hid_t group, const std::string& name) {
-        hsize_t initial[1] = {0};
-        hsize_t maxdims[1] = {H5S_UNLIMITED};
-        hid_t   space      = H5Screate_simple(1, initial, maxdims);
-        hid_t   plist      = H5Pcreate(H5P_DATASET_CREATE);
-        hsize_t chunk[1]   = {64};
+        hsize_t   initial[1] = {0};
+        hsize_t   maxdims[1] = {H5S_UNLIMITED};
+        h5::Space space(H5Screate_simple(1, initial, maxdims));
+        h5::Plist plist(H5Pcreate(H5P_DATASET_CREATE));
+        hsize_t   chunk[1] = {64};
         H5Pset_chunk(plist, 1, chunk);
-        hid_t dset = H5Dcreate(group, name.c_str(), H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, plist, H5P_DEFAULT);
-        H5Pclose(plist);
-        H5Sclose(space);
-        return dset;
+        return H5Dcreate(group, name.c_str(), H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, plist, H5P_DEFAULT);
     }
 
     void write_row(hid_t dset, hsize_t row_idx, double value) {
-        hid_t   fspace   = H5Dget_space(dset);
-        hsize_t start[1] = {row_idx};
-        hsize_t count[1] = {1};
+        h5::Space fspace(H5Dget_space(dset));
+        hsize_t   start[1] = {row_idx};
+        hsize_t   count[1] = {1};
         H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        hid_t mspace = H5Screate_simple(1, count, NULL);
+        h5::Space mspace(H5Screate_simple(1, count, NULL));
         H5Dwrite(dset, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, &value);
-        H5Sclose(mspace);
-        H5Sclose(fspace);
     }
 
 } // namespace
@@ -733,49 +726,41 @@ void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
     // Only rank 0 owns the file; every other rank ships rows to it and never touches HDF5.
     if (s_my_rank != 0) return;
 
-    hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
-
-    if (restart_step < 0) {
-        s_file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
-    } else {
-        s_file = H5Fopen(path.c_str(), H5F_ACC_RDWR, fapl);
-        if (s_file < 0) {
-            s_file       = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
-            restart_step = -1;
+    {
+        h5::Plist fapl(H5Pcreate(H5P_FILE_ACCESS));
+        if (restart_step < 0) {
+            s_file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
+        } else {
+            s_file = H5Fopen(path.c_str(), H5F_ACC_RDWR, fapl);
+            if (s_file < 0) {
+                s_file       = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
+                restart_step = -1;
+            }
         }
     }
-    H5Pclose(fapl);
 
     const auto rg_path = [](int r) { return "/rank_" + std::to_string(r); };
     for (int r = 0; r < s_nranks; r++) {
         const std::string rg = rg_path(r);
         if (H5Lexists(s_file, rg.c_str(), H5P_DEFAULT) <= 0) {
-            hid_t g = H5Gcreate(s_file, rg.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-            H5Gclose(g);
+            h5::Group g(H5Gcreate(s_file, rg.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         }
         const std::string pg = rg + "/per_step";
         const std::string cg = rg + "/cumulative";
         if (H5Lexists(s_file, pg.c_str(), H5P_DEFAULT) <= 0) {
-            hid_t g = H5Gcreate(s_file, pg.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-            H5Gclose(g);
+            h5::Group g(H5Gcreate(s_file, pg.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         }
         if (H5Lexists(s_file, cg.c_str(), H5P_DEFAULT) <= 0) {
-            hid_t g = H5Gcreate(s_file, cg.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-            H5Gclose(g);
+            h5::Group g(H5Gcreate(s_file, cg.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         }
     }
 
     if (restart_step >= 0) {
-        // Truncate to `restart_step` rows (not restart_step+1). The snapshot was
-        // taken inside iteration N AFTER hydro_step ran but BEFORE LogTimestep(N)
-        // was called, so the original profile.hdf5 had rows 0..N-1 at that point.
-        // Dropping row N gives the same shape, lets us read row [restart_step-1]
-        // for prev_step_cum seeding (so per_step diffs telescope across the
-        // restart boundary), and avoids a costly H5Dread of a stale row.
+
         const hsize_t target = (hsize_t)restart_step;
         for (int r = 0; r < s_nranks; r++) {
-            hid_t      gp = H5Gopen(s_file, (rg_path(r) + "/per_step").c_str(), H5P_DEFAULT);
-            hid_t      gc = H5Gopen(s_file, (rg_path(r) + "/cumulative").c_str(), H5P_DEFAULT);
+            h5::Group  gp(H5Gopen(s_file, (rg_path(r) + "/per_step").c_str(), H5P_DEFAULT));
+            h5::Group  gc(H5Gopen(s_file, (rg_path(r) + "/cumulative").c_str(), H5P_DEFAULT));
             H5G_info_t info;
             H5Gget_info(gp, &info);
             for (hsize_t i = 0; i < info.nlinks; i++) {
@@ -784,47 +769,33 @@ void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
                     H5Lget_name_by_idx(gp, ".", H5_INDEX_NAME, H5_ITER_INC, i, nbuf, sizeof(nbuf), H5P_DEFAULT);
                 if (nlen <= 0) continue;
                 std::string name(nbuf);
-                // Truncate, then close-and-reopen the dataset handle. Without the
-                // reopen, the in-memory dataspace cache still reflects the pre-
-                // truncate extent in parallel mode and subsequent H5Dwrites
-                // silently miss for the first ~5 rows past the truncate boundary.
-                // Caught by an explicit cum[restart_step+1..] == 0 invariant.
-                hid_t d_ps = H5Dopen(gp, name.c_str(), H5P_DEFAULT);
-                hid_t d_c  = H5Dopen(gc, name.c_str(), H5P_DEFAULT);
-                H5Dset_extent(d_ps, &target);
-                H5Dset_extent(d_c, &target);
-                H5Dclose(d_ps);
-                H5Dclose(d_c);
+
+                {
+                    h5::Dataset d_ps(H5Dopen(gp, name.c_str(), H5P_DEFAULT));
+                    h5::Dataset d_c(H5Dopen(gc, name.c_str(), H5P_DEFAULT));
+                    H5Dset_extent(d_ps, &target);
+                    H5Dset_extent(d_c, &target);
+                }
                 DSetPair dp;
                 dp.per_step        = H5Dopen(gp, name.c_str(), H5P_DEFAULT);
                 dp.cum             = H5Dopen(gc, name.c_str(), H5P_DEFAULT);
                 s_dsets[{r, name}] = dp;
             }
-            H5Gclose(gp);
-            H5Gclose(gc);
         }
-        // Flush the truncation to file before subsequent extends/writes, so
-        // dataset metadata is fully persisted and not just in the local cache.
+
         H5Fflush(s_file, H5F_SCOPE_GLOBAL);
         s_current_len = target;
 
-        // Seed s_prev_step_cum from the file. SeedFromCumulative set it to
-        // snap.attr[name], which equals the LIVE cum at snapshot time (mid-
-        // iteration N). The cumulative dataset's last row holds the cum at
-        // LogTimestep(N-1), which differs by iter_N's in-progress work. The
-        // per-step diff telescopes only if prev_step_cum equals dataset row N-1.
         if (restart_step > 0) {
             const hsize_t prev_idx = (hsize_t)(restart_step - 1);
             for (auto& kv : s_dsets) {
-                hid_t   fs     = H5Dget_space(kv.second.cum);
-                hsize_t sel[1] = {prev_idx};
-                hsize_t cnt[1] = {1};
+                h5::Space fs(H5Dget_space(kv.second.cum));
+                hsize_t   sel[1] = {prev_idx};
+                hsize_t   cnt[1] = {1};
                 H5Sselect_hyperslab(fs, H5S_SELECT_SET, sel, NULL, cnt, NULL);
-                hid_t  mspace = H5Screate_simple(1, cnt, NULL);
-                double v      = 0.0;
+                h5::Space mspace(H5Screate_simple(1, cnt, NULL));
+                double    v = 0.0;
                 H5Dread(kv.second.cum, H5T_NATIVE_DOUBLE, mspace, fs, H5P_DEFAULT, &v);
-                H5Sclose(mspace);
-                H5Sclose(fs);
                 s_prev_step_cum[kv.first] = (long long)(v * 1e6 + 0.5);
             }
         } else {
@@ -881,8 +852,6 @@ void Profiler::LogTimestep(int step) {
 
     if (s_my_rank != 0 || s_file < 0) return; // only rank 0 writes the file
 
-    // Prefer any non-'c' tag: a rank that actually fired the scope (e.g. PROFILE_MPI("WAIT"))
-    // overrides ranks that defaulted to 'c', so @kind is identical across ranks.
     std::set<std::pair<int, std::string>> needed;
     std::unordered_map<std::string, char> canonical_kind;
     for (int r = 0; r < s_nranks; r++) {
@@ -898,10 +867,10 @@ void Profiler::LogTimestep(int step) {
 
     for (const auto& key : needed) {
         if (s_dsets.count(key)) continue;
-        const int          r  = key.first;
-        const std::string& n  = key.second;
-        hid_t              gp = H5Gopen(s_file, ("/rank_" + std::to_string(r) + "/per_step").c_str(), H5P_DEFAULT);
-        hid_t              gc = H5Gopen(s_file, ("/rank_" + std::to_string(r) + "/cumulative").c_str(), H5P_DEFAULT);
+        const int          r = key.first;
+        const std::string& n = key.second;
+        h5::Group          gp(H5Gopen(s_file, ("/rank_" + std::to_string(r) + "/per_step").c_str(), H5P_DEFAULT));
+        h5::Group          gc(H5Gopen(s_file, ("/rank_" + std::to_string(r) + "/cumulative").c_str(), H5P_DEFAULT));
         DSetPair           dp;
         dp.per_step = create_dataset(gp, n);
         dp.cum      = create_dataset(gc, n);
@@ -914,8 +883,6 @@ void Profiler::LogTimestep(int step) {
             H5Dset_extent(dp.cum, &s_current_len);
         }
         s_dsets[key] = dp;
-        H5Gclose(gp);
-        H5Gclose(gc);
     }
 
     const hsize_t target = (hsize_t)(step + 1);
