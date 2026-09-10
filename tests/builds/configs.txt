@@ -93,6 +93,7 @@ full     3D_output_mesh_mpi             dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP 
 basic    3D_profiling                   dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP ENABLE_PROFILING
 full     3D_profiling_mpi               dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI ENABLE_PROFILING
 
+full     2D_custom_constants            dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP _K_=40 _MAX_P_=32 _MAX_T_=64 _FAST_K_=18 _FAST_MAX_P_=22 _FAST_MAX_T_=24 _FACE_CAPACITY_MULT_=10
 full     3D_custom_constants            dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP _K_=150 _MAX_P_=48 _MAX_T_=92 _FAST_K_=30 _FAST_MAX_P_=28 _FAST_MAX_T_=56 _FACE_CAPACITY_MULT_=15 _BIG_MAX_P_=512 _BIG_MAX_T_=1024 _GAMMA_EOS_=1.4 _CELL_SHAPING_SPEED_=0.5 _CELL_SHAPING_FACTOR_=0.3 _VOL_SHAPING_SPEED_=0.6
 
 ################################################################
