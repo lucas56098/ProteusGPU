@@ -7,13 +7,13 @@ namespace voronoi {
     static void build_index_maps(VMesh* mesh, int iter);
     static void compute_gather_perm(VMesh* mesh);
     static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* primvar_aux);
-    template <typename T> static void permute_inplace(T*& live, T*& scratch, hsize_t n, const unsigned int* perm);
+    template <typename T> static void permute_inplace(T*& live, T*& scratch, uint64_t n, const unsigned int* perm);
     static void                       compute_cells(VMesh* mesh);
 
-    static void allocate_cell_scratch(hsize_t n_hydro);
+    static void allocate_cell_scratch(uint64_t n_hydro);
     static void run_fast_cell_kernel(VMesh* mesh);
     static int  collect_failed_cells(VMesh* mesh);
-    static void print_cell_build_summary(hsize_t n_hydro, int n_failed);
+    static void print_cell_build_summary(uint64_t n_hydro, int n_failed);
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed);
     static void read_face_count_from_gpu(VMesh* mesh);
 
@@ -25,8 +25,8 @@ namespace voronoi {
     static int* d_failed_indices          = nullptr;
     static int  d_failed_indices_capacity = 0;
 #ifndef CPU_DEBUG
-    static hsize_t* d_face_offset   = nullptr;
-    static int*     d_overflow_flag = nullptr;
+    static uint64_t* d_face_offset   = nullptr;
+    static int*      d_overflow_flag = nullptr;
 #else
     static unsigned long long s_cpu_face_offset   = 0; // running face offset across fast + slow tiers
     static int                s_cpu_overflow_flag = 0; // set if face writes exceed pre-allocated capacity
@@ -56,7 +56,7 @@ namespace voronoi {
 
         // commit augmented seed count + reset face counter
         check_seed_capacity(mesh, n_total);
-        mesh->n_seeds   = (hsize_t)n_total;
+        mesh->n_seeds   = (uint64_t)n_total;
         mesh->num_faces = 0;
 
         // build orig <-> k <-> sid index maps; iter 0 also permutes primvar into new-k order
@@ -84,7 +84,7 @@ namespace voronoi {
 
     // abort if the augmented seed count exceeds the pre-allocated capacity
     static void check_seed_capacity(const VMesh* mesh, int n_total) {
-        if ((hsize_t)n_total > mesh->total_capacity) {
+        if ((uint64_t)n_total > mesh->total_capacity) {
             proteus_mpi::exit_failure("VORONOI: Error! point count %d exceeds pre-allocated capacity %llu. "
                                       "Increase ghost headroom.\n",
                                       n_total,
@@ -94,15 +94,15 @@ namespace voronoi {
 
     // snapshot pass-1's orig_to_k mapping so iter > 0 can reproduce the same k assignment
     static void save_orig_to_k_for_lookup(VMesh* mesh) {
-        const hsize_t n_hydro = mesh->n_hydro;
+        const uint64_t n_hydro = mesh->n_hydro;
         gpu_memcpy(mesh->orig_to_k_save, mesh->scratch_uint, n_hydro * sizeof(unsigned int));
     }
 
     // clear per-cell arrays and reset cell_status to security_radius_not_reached
     static void clear_cell_arrays(VMesh* mesh) {
-        const hsize_t n_hydro = mesh->n_hydro;
-        gpu_memset(mesh->face_counts, 0, n_hydro * sizeof(hsize_t));
-        gpu_memset(mesh->face_ptr, 0, n_hydro * sizeof(hsize_t));
+        const uint64_t n_hydro = mesh->n_hydro;
+        gpu_memset(mesh->face_counts, 0, n_hydro * sizeof(uint64_t));
+        gpu_memset(mesh->face_ptr, 0, n_hydro * sizeof(uint64_t));
         Status* stat = mesh->cell_status;
         parallel_for<_MESH_BLOCK_SIZE_>("INIT", n_hydro, [=] HD(size_t i) { stat[i] = security_radius_not_reached; });
     }
@@ -110,8 +110,8 @@ namespace voronoi {
     // build real_sorted_ids[k] -> sid and sid_to_neighbor[sid] -> k (both passes).
     // The pass-1 orig->k map is stashed in scratch_uint so pass 2 can resolve periodic ghosts.
     static void build_index_maps(VMesh* mesh, int iter) {
-        const int     n_total = (int)mesh->n_seeds;
-        const hsize_t n_hydro = mesh->n_hydro;
+        const int      n_total = (int)mesh->n_seeds;
+        const uint64_t n_hydro = mesh->n_hydro;
 
         const unsigned int* dperm           = mesh->knn->d_permutation;
         unsigned int*       real_sorted_ids = mesh->real_sorted_ids;
@@ -124,13 +124,13 @@ namespace voronoi {
             unsigned int* scratch = mesh->scan_scratch;
 
             parallel_for<_MESH_BLOCK_SIZE_>(
-                "INDEX_FLAG", n_total, [=] HD(int sid) { flags[sid] = ((hsize_t)dperm[sid] < n_hydro) ? 1u : 0u; });
+                "INDEX_FLAG", n_total, [=] HD(int sid) { flags[sid] = ((uint64_t)dperm[sid] < n_hydro) ? 1u : 0u; });
 
             parallel_exclusive_scan<_MESH_BLOCK_SIZE_>("INDEX_SCAN", (size_t)n_total, flags, flags, scratch);
 
             parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P1", n_total, [=] HD(int sid) {
                 const unsigned int orig = dperm[sid];
-                if ((hsize_t)orig < n_hydro) {
+                if ((uint64_t)orig < n_hydro) {
                     const unsigned int k = flags[sid];
                     real_sorted_ids[k]   = (unsigned int)sid;
                     sid_to_neighbor[sid] = k;
@@ -139,8 +139,8 @@ namespace voronoi {
             });
 
             // exclusive scan, so the total is the last slot plus whether the last sid was real
-            const hsize_t n_reals =
-                (n_total > 0) ? (hsize_t)flags[n_total - 1] + (((hsize_t)dperm[n_total - 1] < n_hydro) ? 1 : 0) : 0;
+            const uint64_t n_reals =
+                (n_total > 0) ? (uint64_t)flags[n_total - 1] + (((uint64_t)dperm[n_total - 1] < n_hydro) ? 1 : 0) : 0;
 
             if (n_reals != n_hydro) {
                 proteus_mpi::exit_failure(
@@ -153,7 +153,7 @@ namespace voronoi {
             const unsigned int* orig_to_k_save = mesh->orig_to_k_save;
             parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P1", n_total, [=] HD(int sid) {
                 const unsigned int orig = dperm[sid];
-                if ((hsize_t)orig < n_hydro) {
+                if ((uint64_t)orig < n_hydro) {
                     const unsigned int k = orig_to_k_save[orig];
                     real_sorted_ids[k]   = (unsigned int)sid;
                     sid_to_neighbor[sid] = k;
@@ -163,11 +163,11 @@ namespace voronoi {
         }
 
         // pass 2: resolve ghost sids — MPI ghosts hold ext-array indices, periodic ghosts hold source orig
-        const hsize_t* ghost_ids = mesh->ghost_ids;
+        const uint64_t* ghost_ids = mesh->ghost_ids;
         parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P2", n_total, [=] HD(int sid) {
             const unsigned int orig = dperm[sid];
-            if ((hsize_t)orig >= n_hydro) {
-                const hsize_t      g = (hsize_t)orig - n_hydro;
+            if ((uint64_t)orig >= n_hydro) {
+                const uint64_t     g = (uint64_t)orig - n_hydro;
                 const unsigned int v = (unsigned int)ghost_ids[g];
                 sid_to_neighbor[sid] = (v >= (unsigned int)n_hydro) ? v : orig_to_k[v];
             }
@@ -177,7 +177,7 @@ namespace voronoi {
     // gather_perm[new_k] = d_permutation[real_sorted_ids[new_k]] = old_k
     // (step N's k IS step N+1's input orig, hence "new_k -> old_k")
     static void compute_gather_perm(VMesh* mesh) {
-        const hsize_t       n        = mesh->n_hydro;
+        const uint64_t      n        = mesh->n_hydro;
         const unsigned int* perm     = mesh->knn->d_permutation;
         const unsigned int* sorted   = mesh->real_sorted_ids;
         unsigned int*       gathered = mesh->gather_perm;
@@ -187,10 +187,10 @@ namespace voronoi {
 
     // out-of-place gather then pointer swap. The permutation only touches [0, n);
     // the MPI-ghost-slot region [n, ext) is copied verbatim so it survives the swap.
-    template <typename T> static void permute_inplace(T*& live, T*& scratch, hsize_t n, const unsigned int* perm) {
-        const hsize_t ext = (hsize_t)proteus_mpi::extended_size((int)n);
-        T*            src = live;
-        T*            dst = scratch;
+    template <typename T> static void permute_inplace(T*& live, T*& scratch, uint64_t n, const unsigned int* perm) {
+        const uint64_t ext = (uint64_t)proteus_mpi::extended_size((int)n);
+        T*             src = live;
+        T*             dst = scratch;
         parallel_for<_MESH_BLOCK_SIZE_>("PERMUTE", n, [=] HD(size_t k) { dst[k] = src[perm[k]]; });
 
         // the MPI-ghost-slot region [n, ext) carries over untouched
@@ -200,7 +200,7 @@ namespace voronoi {
 
     // permute every per-cell array that must carry across the rebuild into new-k order
     static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
-        const hsize_t       n    = mesh->n_hydro;
+        const uint64_t      n    = mesh->n_hydro;
         const unsigned int* perm = mesh->gather_perm;
 
         permute_inplace(mesh->cell_to_original, mesh->scratch_uint, n, perm);
@@ -255,7 +255,7 @@ namespace voronoi {
     }
 
     // allocate / resize the per-step scratch buffers used by the cell-construction kernels
-    static void allocate_cell_scratch(hsize_t n_hydro) {
+    static void allocate_cell_scratch(uint64_t n_hydro) {
         // grow the failed-indices buffer if n_hydro outgrew it (one-shot per growth)
         if (d_failed_indices_capacity < (int)n_hydro) {
             if (d_failed_indices) gpu_free(d_failed_indices);
@@ -265,11 +265,11 @@ namespace voronoi {
 #ifndef CPU_DEBUG
         // first call: allocate the singleton scratch slots
         if (!d_face_offset) {
-            d_face_offset   = gpu_calloc<hsize_t>(1);
+            d_face_offset   = gpu_calloc<uint64_t>(1);
             d_overflow_flag = gpu_calloc<int>(1);
         }
         // zero the per-step counters
-        gpu_memset(d_face_offset, 0, sizeof(hsize_t));
+        gpu_memset(d_face_offset, 0, sizeof(uint64_t));
         gpu_memset(d_overflow_flag, 0, sizeof(int));
 #else
         s_cpu_face_offset   = 0;
@@ -336,7 +336,7 @@ namespace voronoi {
     }
 
     // print "Generated N cells. (X% slow tier)" for the current build
-    static void print_cell_build_summary(hsize_t n_hydro, int n_failed) {
+    static void print_cell_build_summary(uint64_t n_hydro, int n_failed) {
         const int n_global        = logging::sum_global((int)n_hydro);
         const int n_failed_global = logging::sum_global(n_failed);
         logging::root() << "VORONOI: Generated " << n_global << " cells. ("
@@ -367,7 +367,7 @@ namespace voronoi {
         mesh->num_faces         = *d_face_offset;
         const int overflow_flag = *d_overflow_flag;
 #else
-        mesh->num_faces         = (hsize_t)s_cpu_face_offset;
+        mesh->num_faces         = (uint64_t)s_cpu_face_offset;
         const int overflow_flag = s_cpu_overflow_flag;
 #endif
         if (overflow_flag) {

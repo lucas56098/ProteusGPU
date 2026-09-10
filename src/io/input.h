@@ -1,7 +1,6 @@
 #ifndef INPUT_H
 #define INPUT_H
 
-#include "hdf5.h"
 #include <cstdint>
 #include <map>
 #include <string>
@@ -14,8 +13,8 @@ struct ICHeader {
     bool        restart_flag = false;
     int         dimension    = 0;
 
-    hsize_t n_seeds  = 0;
-    int64_t n_global = 0;
+    uint64_t n_seeds  = 0;
+    int64_t  n_global = 0;
 };
 
 struct ICData {
@@ -57,13 +56,13 @@ class InputHandler {
 
     // peek IC header + total particle count without reading the bulk arrays (serial, sub-kB).
     // Used so begrun can size the decomposition before the field read in load_IC_fields.
-    bool readICHeader(const std::string& filename, ICHeader& header, hsize_t& n_total);
+    bool readICHeader(const std::string& filename, ICHeader& header, uint64_t& n_total);
 
 #ifdef USE_MPI
     // collective parallel-HDF5 read of rows [row_lo, row_lo + n_local) for pos/vel/rho/energy.
     // Every rank in MPI_COMM_WORLD must call with identical filename. Fills icData with this
     // rank's chunk only; global IDs assigned as row_lo + i (input-order).
-    bool readICChunkParallel(const std::string& filename, ICData& icData, hsize_t row_lo, hsize_t n_local);
+    bool readICChunkParallel(const std::string& filename, ICData& icData, uint64_t row_lo, uint64_t n_local);
 #endif
 
     // load snapshot

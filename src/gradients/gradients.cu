@@ -5,7 +5,7 @@
 namespace gradients {
 
     // forward declarations
-    HD void                 compute_gradient_for_cell(hsize_t, const VMesh*, const hydro::primvars*, PrimGradients*);
+    HD void                 compute_gradient_for_cell(uint64_t, const VMesh*, const hydro::primvars*, PrimGradients*);
     HD static inline double limit_single_gradient(const double      value,
                                                   const double      min_value,
                                                   const double      max_value,
@@ -81,7 +81,7 @@ namespace gradients {
     // ============================================================
 
     HD void
-    compute_gradient_for_cell(hsize_t i, const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
+    compute_gradient_for_cell(uint64_t i, const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
 
         hydro::prim state_i = get_state(i, primvar);
 
@@ -111,13 +111,13 @@ namespace gradients {
         double min_E = state_i.E, max_E = state_i.E;
 
         // accumulate over each face/neighbour
-        hsize_t   face_count  = mesh->face_counts[i];
-        hsize_t   face_start  = mesh->face_ptr[i];
+        uint64_t  face_count  = mesh->face_counts[i];
+        uint64_t  face_start  = mesh->face_ptr[i];
         const int n_hydro_int = (int)mesh->n_hydro;
 
-        for (hsize_t fj = 0; fj < face_count; fj++) {
-            hsize_t face_idx = face_start + fj;
-            int     neighbor = mesh->neighbor_cell[face_idx];
+        for (uint64_t fj = 0; fj < face_count; fj++) {
+            uint64_t face_idx = face_start + fj;
+            int      neighbor = mesh->neighbor_cell[face_idx];
 
             // separation vector and inverse-distance weighting
             POINT_TYPE dx    = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
@@ -198,8 +198,8 @@ namespace gradients {
 #ifdef dim_3D
         double alpha_vz = 1.0;
 #endif
-        for (hsize_t fj = 0; fj < face_count; fj++) {
-            hsize_t    face_idx = face_start + fj;
+        for (uint64_t fj = 0; fj < face_count; fj++) {
+            uint64_t   face_idx = face_start + fj;
             int        neighbor = mesh->neighbor_cell[face_idx];
             POINT_TYPE dx       = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
             POINT_TYPE d        = point_mul(0.5, dx);
@@ -229,8 +229,8 @@ namespace gradients {
         const double p_floor       = 1e-12;
         PrimGradient grad_i_scaled = grads->load(i);
         double       alpha_p       = 1.0;
-        for (hsize_t fj = 0; fj < face_count; fj++) {
-            hsize_t    face_idx = face_start + fj;
+        for (uint64_t fj = 0; fj < face_count; fj++) {
+            uint64_t   face_idx = face_start + fj;
             int        neighbor = mesh->neighbor_cell[face_idx];
             POINT_TYPE dx       = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
             POINT_TYPE d        = point_mul(0.5, dx);

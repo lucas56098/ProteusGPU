@@ -230,7 +230,7 @@ namespace proteus_mpi {
             ic.energy[j]    = m.energy;
             ic.global_id[j] = m.global_id;
         }
-        ic.header.n_seeds = (hsize_t)n_local_out;
+        ic.header.n_seeds = (uint64_t)n_local_out;
 
         printf("DECOMP: rank %d routed IC: read %d, kept %d (self %d, recv %d, sent %d)\n",
                my_rank,

@@ -25,20 +25,20 @@ namespace voronoi {
     } // namespace
 
     // ---- forward declarations ----
-    HD void compute_mesh_velocity_for_cell(hsize_t, VMesh*, const hydro::primvars*, const gradients::PrimGradients*);
-    HD void move_mesh_for_cell(hsize_t, const VMesh*, double, POINT_TYPE*);
+    HD void compute_mesh_velocity_for_cell(uint64_t, VMesh*, const hydro::primvars*, const gradients::PrimGradients*);
+    HD void move_mesh_for_cell(uint64_t, const VMesh*, double, POINT_TYPE*);
     HD void
-    volume_correct_for_cell(hsize_t i, const double* old_volumes, const double* new_volumes, double* rho, double* E);
+    volume_correct_for_cell(uint64_t i, const double* old_volumes, const double* new_volumes, double* rho, double* E);
 
     static void                 advance_seeds_by_dt(VMesh* mesh, double dt, POINT_TYPE* pts);
     static void                 correct_for_volume_change(VMesh* mesh, hydro::primvars* primvar);
-    static HD POINT_TYPE        gas_velocity_for_cell(hsize_t i, const hydro::primvars* primvar);
-    static HD LloydDisplacement lloyd_correction_for_cell(hsize_t                         i,
+    static HD POINT_TYPE        gas_velocity_for_cell(uint64_t i, const hydro::primvars* primvar);
+    static HD LloydDisplacement lloyd_correction_for_cell(uint64_t                        i,
                                                           const VMesh*                    mesh,
                                                           const hydro::primvars*          primvar,
                                                           const gradients::PrimGradients* grads);
     static HD void              blend_into_mesh_velocity(
-                     hsize_t i, VMesh* mesh, POINT_TYPE v_gas, LloydDisplacement L, const hydro::primvars* primvar);
+                     uint64_t i, VMesh* mesh, POINT_TYPE v_gas, LloydDisplacement L, const hydro::primvars* primvar);
 
     // ============================================================
     // Main routines
@@ -89,18 +89,18 @@ namespace voronoi {
     // ============================================================
 
     static void advance_seeds_by_dt(VMesh* mesh, double dt, POINT_TYPE* pts) {
-        const hsize_t n_hydro = mesh->n_hydro;
+        const uint64_t n_hydro = mesh->n_hydro;
         parallel_for<_MESH_BLOCK_SIZE_>(
             "MOVE_MESH", n_hydro, [=] HD(size_t i) { move_mesh_for_cell(i, mesh, dt, pts); });
         GPU_SYNC(); // migrate_seeds reads pts on the host below
     }
 
     static void correct_for_volume_change(VMesh* mesh, hydro::primvars* primvar) {
-        const hsize_t n_hydro     = mesh->n_hydro;
-        const double* old_volumes = mesh->old_volumes;
-        const double* new_volumes = mesh->volumes;
-        double*       rho         = primvar->rho;
-        double*       E           = primvar->E;
+        const uint64_t n_hydro     = mesh->n_hydro;
+        const double*  old_volumes = mesh->old_volumes;
+        const double*  new_volumes = mesh->volumes;
+        double*        rho         = primvar->rho;
+        double*        E           = primvar->E;
 
         parallel_for<_MESH_BLOCK_SIZE_>(
             "VOL_CORRECT", n_hydro, [=] HD(size_t i) { volume_correct_for_cell(i, old_volumes, new_volumes, rho, E); });
@@ -111,7 +111,7 @@ namespace voronoi {
     // ============================================================
 
     // mesh-point velocity = gas velocity + Lloyd regularization, both scaled by sound speed
-    HD void compute_mesh_velocity_for_cell(hsize_t                         i,
+    HD void compute_mesh_velocity_for_cell(uint64_t                        i,
                                            VMesh*                          mesh,
                                            const hydro::primvars*          primvar,
                                            const gradients::PrimGradients* grads) {
@@ -121,7 +121,7 @@ namespace voronoi {
     }
 
     // advance one seed by v_mesh * dt with periodic wrap into [0, 1)
-    HD void move_mesh_for_cell(hsize_t i, const VMesh* mesh, double dt, POINT_TYPE* pts) {
+    HD void move_mesh_for_cell(uint64_t i, const VMesh* mesh, double dt, POINT_TYPE* pts) {
         pts[i].x = fmod((mesh->seeds[i].x + dt * mesh->v_mesh[i].x) + 1.0, 1.0);
         pts[i].y = fmod((mesh->seeds[i].y + dt * mesh->v_mesh[i].y) + 1.0, 1.0);
 #ifdef dim_3D
@@ -132,14 +132,14 @@ namespace voronoi {
     // scale rho and E by old/new cell-volume ratio so total mass / energy stay conserved
     // when cell volume changes during the mesh move
     HD void
-    volume_correct_for_cell(hsize_t i, const double* old_volumes, const double* new_volumes, double* rho, double* E) {
+    volume_correct_for_cell(uint64_t i, const double* old_volumes, const double* new_volumes, double* rho, double* E) {
         const double ratio = old_volumes[i] / new_volumes[i];
         rho[i] *= ratio;
         E[i] *= ratio;
     }
 
     // read primvar->v[i] into a POINT_TYPE; the seed's gas velocity component
-    HD static POINT_TYPE gas_velocity_for_cell(hsize_t i, const hydro::primvars* primvar) {
+    HD static POINT_TYPE gas_velocity_for_cell(uint64_t i, const hydro::primvars* primvar) {
         POINT_TYPE v;
         v.x = primvar->v[i].x;
         v.y = primvar->v[i].y;
@@ -151,7 +151,7 @@ namespace voronoi {
 
     // seed-to-centroid offset + density-gradient bias toward the steeper side (capped at
     // Ri/4 and smoothly clamped so small fluctuations near the cap don't flip the bias)
-    HD static LloydDisplacement lloyd_correction_for_cell(hsize_t                         i,
+    HD static LloydDisplacement lloyd_correction_for_cell(uint64_t                        i,
                                                           const VMesh*                    mesh,
                                                           const hydro::primvars*          primvar,
                                                           const gradients::PrimGradients* grads) {
@@ -207,7 +207,7 @@ namespace voronoi {
     // distorted), scaled by local sound speed so the correction respects local time scales.
     // Writes the final mesh velocity for cell i.
     HD static void blend_into_mesh_velocity(
-        hsize_t i, VMesh* mesh, POINT_TYPE v_gas, LloydDisplacement L, const hydro::primvars* primvar) {
+        uint64_t i, VMesh* mesh, POINT_TYPE v_gas, LloydDisplacement L, const hydro::primvars* primvar) {
         if (L.di > 0.0 && L.Ri > 0.0) {
             // ramp factor: 0 below 0.75 * threshold, up to CellShapingSpeed at threshold
             const double threshold = CellShapingFactor * L.Ri;
@@ -249,15 +249,15 @@ namespace voronoi {
                 const double p       = fmax(0.0, hydro::get_P_ideal_gas(&state_i));
                 if (rho > 0.0 && p > 0.0) {
                     // discrete size-gradient: sum_j area_j * (V_j - V_i) * unit(seed_i -> seed_j)
-                    const int     n_hydro_int = (int)mesh->n_hydro;
-                    const double  Vi          = mesh->volumes[i];
-                    const hsize_t fp          = mesh->face_ptr[i];
-                    const hsize_t fc          = mesh->face_counts[i];
-                    double        gx = 0.0, gy = 0.0;
+                    const int      n_hydro_int = (int)mesh->n_hydro;
+                    const double   Vi          = mesh->volumes[i];
+                    const uint64_t fp          = mesh->face_ptr[i];
+                    const uint64_t fc          = mesh->face_counts[i];
+                    double         gx = 0.0, gy = 0.0;
 #ifdef dim_3D
                     double gz = 0.0;
 #endif
-                    for (hsize_t fj = 0; fj < fc; fj++) {
+                    for (uint64_t fj = 0; fj < fc; fj++) {
                         const int nb = mesh->neighbor_cell[fp + fj];
                         if (nb < 0) continue; // box boundary
                         const double3 sj = get_seed_at(nb, n_hydro_int, mesh);

@@ -12,7 +12,7 @@ namespace astro {
 #ifdef LIMITERS
 
     // forward declarations
-    HD void limiter_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, LimiterParams p);
+    HD void limiter_cell(uint64_t i, const VMesh* mesh, hydro::primvars* primvar, LimiterParams p);
 
     static LimiterParams g_lim;
 
@@ -63,7 +63,7 @@ namespace astro {
     // ============================================================
 
     // clamp T (via internal energy) and |v| (via momentum) inside r < R_lim
-    HD void limiter_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, LimiterParams p) {
+    HD void limiter_cell(uint64_t i, const VMesh* mesh, hydro::primvars* primvar, LimiterParams p) {
         const double dx = mesh->seeds[i].x - p.cx;
         const double dy = mesh->seeds[i].y - p.cy;
 #ifdef dim_3D

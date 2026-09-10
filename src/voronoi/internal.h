@@ -47,8 +47,8 @@ namespace voronoi {
     // emit periodic ghost copies for cells whose seeds lie within `buff_val` of the box
     // boundary in any dimension. Writes to `pts` (reals first, ghosts after) and
     // `original_ids` (ghost slot -> source real index). Returns the ghost count.
-    hsize_t regenerate_periodic_ghosts(
-        hsize_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts, hsize_t* original_ids, double buff_val);
+    uint64_t regenerate_periodic_ghosts(
+        uint64_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts, uint64_t* original_ids, double buff_val);
 
 } // namespace voronoi
 

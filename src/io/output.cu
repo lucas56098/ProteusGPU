@@ -195,10 +195,10 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
 
     int64_t run = 0;
     for (int k = 0; k < n_hydro; k++) {
-        const hsize_t cnt = m->face_counts[k];
-        const hsize_t ptr = m->face_ptr[k];
-        n_faces[k]        = (int)cnt;
-        face_offset[k]    = run;
+        const uint64_t cnt = m->face_counts[k];
+        const uint64_t ptr = m->face_ptr[k];
+        n_faces[k]         = (int)cnt;
+        face_offset[k]     = run;
 
         const double3 sk                    = m->seeds[k];
         com_flat[(size_t)k * DIMENSION + 0] = m->com[k].x;
@@ -206,10 +206,10 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
 #ifdef dim_3D
         com_flat[(size_t)k * DIMENSION + 2] = m->com[k].z;
 #endif
-        for (hsize_t f = 0; f < cnt; f++) {
-            const hsize_t src  = ptr + f;
-            const int     nbr  = m->neighbor_cell[src];
-            const size_t  dst  = (size_t)(run + (int64_t)f);
+        for (uint64_t f = 0; f < cnt; f++) {
+            const uint64_t src = ptr + f;
+            const int      nbr = m->neighbor_cell[src];
+            const size_t   dst = (size_t)(run + (int64_t)f);
             face_neighbor[dst] = nbr;
             face_area[dst]     = m->face_area[src];
 

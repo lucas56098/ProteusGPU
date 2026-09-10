@@ -19,7 +19,7 @@ namespace astro {
     // forward declarations
     HD double   tef_Y(double T, const CoolingTable& t);
     HD double   tef_Yinv(double Yt, const CoolingTable& t);
-    HD void     cool_cell(hsize_t i, hydro::primvars* primvar, CoolingTable t, double dt_half);
+    HD void     cool_cell(uint64_t i, hydro::primvars* primvar, CoolingTable t, double dt_half);
     static void load_table(const std::string& path, CoolingTable& t);
 
     static CoolingTable g_cool;
@@ -68,7 +68,7 @@ namespace astro {
     // ============================================================
 
     // Townsend update of one cell's internal energy; rho and velocity are untouched.
-    HD void cool_cell(hsize_t i, hydro::primvars* primvar, CoolingTable t, double dt_half) {
+    HD void cool_cell(uint64_t i, hydro::primvars* primvar, CoolingTable t, double dt_half) {
         const double rho = primvar->rho[i];
         POINT_TYPE   v   = primvar->v[i];
 

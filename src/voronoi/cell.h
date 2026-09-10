@@ -128,7 +128,7 @@ namespace voronoi {
     using BigConvexCell = BasicConvexCell<_BIG_MAX_P_, _BIG_MAX_T_, int, BIG_VERT_TYPE>;
 
     // grow mesh's face buffer if `needed` exceeds the current face_capacity
-    void ensure_face_capacity(VMesh* mesh, hsize_t needed);
+    void ensure_face_capacity(VMesh* mesh, uint64_t needed);
 
     // walk the boundary of face p in dual-graph order, writing primal vertices into face_verts[].
     // Returns false if the face has fewer than DIMENSION vertices (= not a real face).
@@ -148,7 +148,9 @@ namespace voronoi {
     // returns the number of faces actually written at mesh->face_ptr[cell_index]; may be less
     // than count_cell_faces(cell) on degenerate cells. Callers must store this in
     // face_counts[cell_index] -- see the definition in cell.cu for why.
-    HD hsize_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell, VMesh* mesh, hsize_t cell_index);
+    HD uint64_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
+                                 VMesh*                                          mesh,
+                                 uint64_t                                        cell_index);
 
     // True iff no seed outside [data_lo, data_hi] can clip a cell centred on `seed` whose
     // bounding-sphere radius squared is r2_num / r2_denom. See the definition in cell.cu for

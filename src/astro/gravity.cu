@@ -14,7 +14,7 @@ namespace astro {
     // forward declarations
     HD double     gravity_magnitude(double r, const GravityParams& p);
     HD POINT_TYPE gravity_accel(double3 pos, const GravityParams& p);
-    HD void gravity_kick_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half);
+    HD void gravity_kick_cell(uint64_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half);
 
     static GravityParams g_grav;
 
@@ -78,7 +78,8 @@ namespace astro {
     // ============================================================
 
     // kick: v += a*dt_half; update E by the kinetic-energy change so internal energy is untouched
-    HD void gravity_kick_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half) {
+    HD void
+    gravity_kick_cell(uint64_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half) {
         const POINT_TYPE a   = gravity_accel(mesh->seeds[i], p);
         const double     rho = primvar->rho[i];
         POINT_TYPE       v   = primvar->v[i];

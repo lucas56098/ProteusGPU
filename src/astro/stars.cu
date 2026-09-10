@@ -12,7 +12,7 @@ namespace astro {
 #ifdef SF_FEEDBACK
 
     // forward declarations
-    HD void stars_source_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, StarParams p, double dt_half);
+    HD void stars_source_cell(uint64_t i, const VMesh* mesh, hydro::primvars* primvar, StarParams p, double dt_half);
 
     static StarParams g_star;
 
@@ -80,7 +80,7 @@ namespace astro {
     // ============================================================
 
     // SNIa injection (weighted by the BCG stellar density, everywhere) + SF heating (cold dense off-center gas)
-    HD void stars_source_cell(hsize_t i, const VMesh* mesh, hydro::primvars* primvar, StarParams p, double dt_half) {
+    HD void stars_source_cell(uint64_t i, const VMesh* mesh, hydro::primvars* primvar, StarParams p, double dt_half) {
         const double dx = mesh->seeds[i].x - p.cx;
         const double dy = mesh->seeds[i].y - p.cy;
 #ifdef dim_3D

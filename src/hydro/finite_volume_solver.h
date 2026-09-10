@@ -33,8 +33,8 @@ namespace hydro {
     HD void rotate_to_face(prim* state, geom* g);
     HD void rotate_from_face(prim* state, geom* g);
 #ifdef MOVING_MESH
-    HD void get_vel_face(hsize_t       i,
-                         hsize_t       index_j,
+    HD void get_vel_face(uint64_t      i,
+                         uint64_t      index_j,
                          POINT_TYPE    v_mesh_i,
                          POINT_TYPE    v_mesh_j,
                          const double* f_mid_local,
@@ -49,11 +49,11 @@ namespace hydro {
     // allocate per-cell SoA + (optionally) MPI ghost SoA. with_ghosts=true sizes the
     // _g arrays from proteus_mpi::n_mpi_capacity; flip to false for buffers like prim_new
     // that are never read at neighbor indices and so never need ghost slots.
-    inline void allocate_prim_buffer(hsize_t n_hydro, primvars* primvar, bool with_ghosts) {
-        const hsize_t ext = (hsize_t)proteus_mpi::alloc_per_cell_size((int)n_hydro);
-        primvar->rho      = gpu_alloc<double>(ext);
-        primvar->v        = gpu_alloc<POINT_TYPE>(ext);
-        primvar->E        = gpu_alloc<double>(ext);
+    inline void allocate_prim_buffer(uint64_t n_hydro, primvars* primvar, bool with_ghosts) {
+        const uint64_t ext = (uint64_t)proteus_mpi::alloc_per_cell_size((int)n_hydro);
+        primvar->rho       = gpu_alloc<double>(ext);
+        primvar->v         = gpu_alloc<POINT_TYPE>(ext);
+        primvar->E         = gpu_alloc<double>(ext);
 
         gpu_advise_gpu_preferred(primvar->rho, ext * sizeof(double));
         gpu_advise_gpu_preferred(primvar->v, ext * sizeof(POINT_TYPE));

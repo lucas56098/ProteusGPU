@@ -61,12 +61,12 @@ namespace voronoi {
 #ifdef MOVING_MESH
     static void apply_vmesh_perturbation_correction(VMesh* mesh, int k, double3 delta, double dt);
 #endif
-    static void                           retire_face_range(VMesh* mesh, hsize_t first, hsize_t count);
+    static void                           retire_face_range(VMesh* mesh, uint64_t first, uint64_t count);
     template <typename CellT> static void write_cell_to_mesh(VMesh* mesh, int k, const CellT& cell);
     static void                           reclaim_appended_slice(VMesh*              mesh,
                                                                  int                 k,
-                                                                 hsize_t             fp_old,
-                                                                 hsize_t             fc_old,
+                                                                 uint64_t            fp_old,
+                                                                 uint64_t            fc_old,
                                                                  unsigned long long* face_offset,
                                                                  unsigned long long  off_before);
     static std::vector<int>               collect_unique_neighbors(const VMesh* mesh, const std::vector<int>& sources);
@@ -483,7 +483,7 @@ namespace voronoi {
         double r2_num, r2_denom;
         cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
 #ifdef USE_MPI
-        store_security_d2(mesh, (hsize_t)k, r2_num, r2_denom);
+        store_security_d2(mesh, (uint64_t)k, r2_num, r2_denom);
 #endif
         if (security_reached &&
             !cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi)) {
@@ -628,8 +628,8 @@ namespace voronoi {
     // buys nothing the inert-entry invariant doesn't already provide.
 
     // mark [first, first + count) as retired/inert
-    static void retire_face_range(VMesh* mesh, hsize_t first, hsize_t count) {
-        for (hsize_t i = first; i < first + count; i++) {
+    static void retire_face_range(VMesh* mesh, uint64_t first, uint64_t count) {
+        for (uint64_t i = first; i < first + count; i++) {
             mesh->neighbor_cell[i] = -1;
             mesh->face_area[i]     = 0.0;
 #ifdef MOVING_MESH
@@ -648,19 +648,19 @@ namespace voronoi {
     // its live slice. This path is serial, so unlike the atomic build there is no reservation
     // to give back — the append advances by the true count.
     template <typename CellT> static void write_cell_to_mesh(VMesh* mesh, int k, const CellT& cell) {
-        const hsize_t fc_max = (hsize_t)count_cell_faces(cell);
-        const hsize_t fp_old = mesh->face_ptr[k];
-        const hsize_t fc_old = mesh->face_counts[k];
+        const uint64_t fc_max = (uint64_t)count_cell_faces(cell);
+        const uint64_t fp_old = mesh->face_ptr[k];
+        const uint64_t fc_old = mesh->face_counts[k];
         if (fc_max <= fc_old) {
-            const hsize_t written = extract_cell_all(cell, mesh, (hsize_t)k);
-            mesh->face_counts[k]  = written;
+            const uint64_t written = extract_cell_all(cell, mesh, (uint64_t)k);
+            mesh->face_counts[k]   = written;
             retire_face_range(mesh, fp_old + written, fc_old - written);
         } else {
             retire_face_range(mesh, fp_old, fc_old);
             ensure_face_capacity(mesh, mesh->num_faces + fc_max);
-            mesh->face_ptr[k]     = mesh->num_faces;
-            const hsize_t written = extract_cell_all(cell, mesh, (hsize_t)k);
-            mesh->face_counts[k]  = written;
+            mesh->face_ptr[k]      = mesh->num_faces;
+            const uint64_t written = extract_cell_all(cell, mesh, (uint64_t)k);
+            mesh->face_counts[k]   = written;
             mesh->num_faces += written;
         }
     }
@@ -677,14 +677,14 @@ namespace voronoi {
     // wrote, so subtracting the latter would leave the reservation's slack behind forever.
     static void reclaim_appended_slice(VMesh*              mesh,
                                        int                 k,
-                                       hsize_t             fp_old,
-                                       hsize_t             fc_old,
+                                       uint64_t            fp_old,
+                                       uint64_t            fc_old,
                                        unsigned long long* face_offset,
                                        unsigned long long  off_before) {
-        const hsize_t fp_new = mesh->face_ptr[k];
-        const hsize_t fc_new = mesh->face_counts[k];
+        const uint64_t fp_new = mesh->face_ptr[k];
+        const uint64_t fc_new = mesh->face_counts[k];
         if (fc_new <= fc_old) {
-            for (hsize_t i = 0; i < fc_new; i++) {
+            for (uint64_t i = 0; i < fc_new; i++) {
                 mesh->neighbor_cell[fp_old + i] = mesh->neighbor_cell[fp_new + i];
                 mesh->face_area[fp_old + i]     = mesh->face_area[fp_new + i];
 #ifdef MOVING_MESH
@@ -707,9 +707,9 @@ namespace voronoi {
         std::vector<bool> seen(n_hydro, false);
         std::vector<int>  result;
         for (int k : sources) {
-            const hsize_t fp = mesh->face_ptr[k];
-            const hsize_t fc = mesh->face_counts[k];
-            for (hsize_t f = 0; f < fc; f++) {
+            const uint64_t fp = mesh->face_ptr[k];
+            const uint64_t fc = mesh->face_counts[k];
+            for (uint64_t f = 0; f < fc; f++) {
                 const int kn = mesh->neighbor_cell[fp + f];
                 if (kn < 0 || kn >= n_hydro) continue; // box-boundary face
                 if (seen[kn]) continue;
@@ -761,8 +761,8 @@ namespace voronoi {
                 // snapshot the cell's live slot; on success the appended rebuild is folded
                 // back into it (affected cells were built successfully this step, so the
                 // slot is valid — unlike the initial failed set)
-                const hsize_t            fp_old     = mesh->face_ptr[kn];
-                const hsize_t            fc_old     = mesh->face_counts[kn];
+                const uint64_t           fp_old     = mesh->face_ptr[kn];
+                const uint64_t           fc_old     = mesh->face_counts[kn];
                 const unsigned long long off_before = face_offset;
                 // deliberately the 8-bit tier: cascade neighbours are ordinary cells and this is
                 // the cheap common case. One that genuinely needs more capacity fails here and
@@ -780,7 +780,7 @@ namespace voronoi {
 
                 // KNN rebuild failed for this neighbour: fall through to the perturb path
                 if (mesh->cell_status[kn] != success) {
-                    mesh->num_faces             = (hsize_t)face_offset;
+                    mesh->num_faces             = (uint64_t)face_offset;
                     Status          last_status = success;
                     FallbackOutcome outcome =
                         rebuild_cell_with_perturb_retry(mesh, kn, d_stored_points, cell_sids, dt, last_status);
@@ -801,7 +801,7 @@ namespace voronoi {
                     newly_perturbed_out->end(), perturbed_this_round.begin(), perturbed_this_round.end());
             work_affected = collect_unique_neighbors(mesh, perturbed_this_round);
         }
-        mesh->num_faces = (hsize_t)face_offset;
+        mesh->num_faces = (uint64_t)face_offset;
         return result;
     }
 

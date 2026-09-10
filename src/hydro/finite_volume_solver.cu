@@ -2,6 +2,7 @@
 #include "../astro/agn.h"
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
+#include "../io/input.h"
 #include "../mpi/decomp.h"
 #include "../mpi/halo.h"
 #include "../mpi/mpi_compat.h"
@@ -14,11 +15,11 @@ namespace hydro {
 
     // forward declarations
     HD void flux_update_for_cell(
-        hsize_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
+        uint64_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
 #ifdef AGN_ENABLED
-    HD double dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*, bool, const astro::AgnParams&);
+    HD double dt_CFL_for_cell(uint64_t, double, const VMesh*, const primvars*, bool, const astro::AgnParams&);
 #else
-    HD double dt_CFL_for_cell(hsize_t, double, const VMesh*, const primvars*);
+    HD double dt_CFL_for_cell(uint64_t, double, const VMesh*, const primvars*);
 #endif
     static void check_unphysical_state(VMesh*, const primvars*);
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new);
@@ -256,7 +257,7 @@ namespace hydro {
     // ============================================================
 
     // sum face fluxes around cell i and apply the conservative update to prim_new[i]
-    HD void flux_update_for_cell(hsize_t                         i,
+    HD void flux_update_for_cell(uint64_t                        i,
                                  double                          dt_update,
                                  bool                            do_time_extrap,
                                  double                          dt_extrap,
@@ -265,7 +266,7 @@ namespace hydro {
                                  const gradients::PrimGradients* grads,
                                  primvars*                       prim_new) {
 
-        const hsize_t face_base = mesh->face_ptr[i];
+        const uint64_t face_base = mesh->face_ptr[i];
 
         // own state and gradient
         prim                    state_i = get_state(i, prim_old);
@@ -274,11 +275,11 @@ namespace hydro {
         prim      total_flux;
         const int n_hydro_int = (int)mesh->n_hydro;
 
-        // accumulate flux contribution from each face. face_idx must be hsize_t — at
+        // accumulate flux contribution from each face. face_idx must be uint64_t — at
         // 2e8 cells/rank with _FACE_CAPACITY_MULT_=17, max_faces ~ 5e9 and an int
         // would silently wrap, reading garbage from neighbor_cell / face_area.
-        for (hsize_t j = 0; j < mesh->face_counts[i]; j++) {
-            hsize_t                 face_idx = face_base + j;
+        for (uint64_t j = 0; j < mesh->face_counts[i]; j++) {
+            uint64_t                face_idx = face_base + j;
             int                     index_j  = mesh->neighbor_cell[face_idx];
             prim                    state_j  = get_state_at(index_j, n_hydro_int, prim_old);
             gradients::PrimGradient grad_j   = grads->load_at(index_j, n_hydro_int);
@@ -296,7 +297,7 @@ namespace hydro {
             POINT_TYPE vm_i = mesh->v_mesh[i];
             POINT_TYPE vm_j = get_vmesh_at(index_j, n_hydro_int, mesh);
             get_vel_face(i,
-                         (hsize_t)index_j,
+                         (uint64_t)index_j,
                          vm_i,
                          vm_j,
                          &mesh->f_mid_local[face_idx * (DIMENSION - 1)],
@@ -401,14 +402,14 @@ namespace hydro {
 
     // CFL timestep for cell i
 #ifdef AGN_ENABLED
-    HD double dt_CFL_for_cell(hsize_t                 i,
+    HD double dt_CFL_for_cell(uint64_t                i,
                               double                  CFL,
                               const VMesh*            mesh,
                               const primvars*         primvar,
                               bool                    agn_firing,
                               const astro::AgnParams& p_agn) {
 #else
-    HD double dt_CFL_for_cell(hsize_t i, double CFL, const VMesh* mesh, const primvars* primvar) {
+    HD double dt_CFL_for_cell(uint64_t i, double CFL, const VMesh* mesh, const primvars* primvar) {
 #endif
 
         // get state
@@ -634,8 +635,8 @@ namespace hydro {
 
 #ifdef MOVING_MESH
     // face velocity
-    HD void get_vel_face(hsize_t       i,
-                         hsize_t       index_j,
+    HD void get_vel_face(uint64_t      i,
+                         uint64_t      index_j,
                          POINT_TYPE    v_mesh_i,
                          POINT_TYPE    v_mesh_j,
                          const double* f_mid_local,

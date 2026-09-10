@@ -13,8 +13,8 @@ namespace astro {
 #ifdef AGN_ENABLED
 
     // forward declarations
-    HD double cold_mass_contrib(hsize_t i, const VMesh* mesh, const hydro::primvars* primvar, const AgnParams& p);
-    HD void   agn_deposit_cell(hsize_t          i,
+    HD double cold_mass_contrib(uint64_t i, const VMesh* mesh, const hydro::primvars* primvar, const AgnParams& p);
+    HD void   agn_deposit_cell(uint64_t         i,
                                const VMesh*     mesh,
                                hydro::primvars* primvar,
                                AgnParams        p,
@@ -104,7 +104,7 @@ namespace astro {
         PROFILE("AGN_PREPARE");
         VMesh*           mesh    = sim.mesh;
         hydro::primvars* primvar = sim.primvar;
-        const hsize_t    n       = mesh->n_hydro;
+        const uint64_t   n       = mesh->n_hydro;
 
         // g_agn is a namespace-scope static, so it cannot be captured: copy it first
         const AgnParams p       = g_agn;
@@ -120,7 +120,7 @@ namespace astro {
         PROFILE("AGN");
         VMesh*           mesh    = sim.mesh;
         hydro::primvars* primvar = sim.primvar;
-        const hsize_t    n       = mesh->n_hydro;
+        const uint64_t   n       = mesh->n_hydro;
 
         // read cached cold mass (populated by agn_prepare at the top of the step)
         const double m_cold = s_m_cold_cached;
@@ -169,7 +169,7 @@ namespace astro {
     // ============================================================
 
     // cell mass if it is cold gas inside the accretion radius, else 0
-    HD double cold_mass_contrib(hsize_t i, const VMesh* mesh, const hydro::primvars* primvar, const AgnParams& p) {
+    HD double cold_mass_contrib(uint64_t i, const VMesh* mesh, const hydro::primvars* primvar, const AgnParams& p) {
         const double dx = mesh->seeds[i].x - p.cx;
         const double dy = mesh->seeds[i].y - p.cy;
 #ifdef dim_3D
@@ -193,7 +193,7 @@ namespace astro {
     }
 
     // drain accreted cold gas (R_acc), deposit thermal energy+mass (R_T), and load the kinetic jets
-    HD void agn_deposit_cell(hsize_t          i,
+    HD void agn_deposit_cell(uint64_t         i,
                              const VMesh*     mesh,
                              hydro::primvars* primvar,
                              AgnParams        p,

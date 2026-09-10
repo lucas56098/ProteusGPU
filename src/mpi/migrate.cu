@@ -221,7 +221,7 @@ namespace proteus_mpi {
         }
 
         append_incoming_migrants(mesh, primvar, prim_new, pts, n_after_remove, total_recv, my_rank);
-        mesh->n_hydro = (hsize_t)n_new;
+        mesh->n_hydro = (uint64_t)n_new;
 
         check_conservation(n_new);
 #endif
@@ -276,7 +276,7 @@ namespace proteus_mpi {
         }
 
         append_incoming_migrants(mesh, primvar, prim_new, pts, n_after_remove, total_recv, my_rank);
-        mesh->n_hydro = (hsize_t)n_new;
+        mesh->n_hydro = (uint64_t)n_new;
 
         check_conservation(n_new);
 #endif

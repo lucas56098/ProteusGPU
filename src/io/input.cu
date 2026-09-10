@@ -142,7 +142,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
 
 // peek IC file header + global particle count without reading the bulk arrays.
 // Opens serially on every rank (independent, no MPIIO setup) since it's a few bytes.
-bool InputHandler::readICHeader(const std::string& filename, ICHeader& header, hsize_t& n_total) {
+bool InputHandler::readICHeader(const std::string& filename, ICHeader& header, uint64_t& n_total) {
 
     std::ifstream f(filename);
     if (!f.good()) {
@@ -179,7 +179,7 @@ bool InputHandler::readICHeader(const std::string& filename, ICHeader& header, h
 #ifdef USE_MPI
 
 // collective parallel-HDF5 read of rows [row_lo, row_lo + n_local) for this rank.
-bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icData, hsize_t row_lo, hsize_t n_local) {
+bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icData, uint64_t row_lo, uint64_t n_local) {
 
     // collective open via MPIIO
     h5::File file;
@@ -226,7 +226,7 @@ bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icDa
 
     // global IDs in input order: row_lo + i
     icData.global_id.resize(n_local);
-    for (hsize_t i = 0; i < n_local; i++)
+    for (uint64_t i = 0; i < n_local; i++)
         icData.global_id[i] = (uint64_t)(row_lo + i);
 
     logging::root() << "INPUT: IC file " << filename << " loaded in parallel (per-rank chunked read)." << std::endl;

@@ -20,7 +20,7 @@ namespace voronoi {
     template <typename VERT, typename IDXP>
     HD static inline bool vert_references_plane(const VERT* triangles, int t_idx, IDXP p);
     HD static void        write_face(VMesh*           mesh,
-                                     hsize_t          fi,
+                                     uint64_t         fi,
                                      int              neighbor_id,
                                      double           face_measure,
                                      const double4_t* face_verts,
@@ -42,7 +42,7 @@ namespace voronoi {
     // already-computed value costs one global write. Clamped to the extended-domain diameter
     // as a defensive bound: a degenerate homogeneous vertex (w ~ 0) would otherwise store
     // inf/nan and poison the repair's search-radius max.
-    HD inline void store_security_d2(VMesh* mesh, hsize_t k, double r2_num, double r2_denom) {
+    HD inline void store_security_d2(VMesh* mesh, uint64_t k, double r2_num, double r2_denom) {
         const double s      = 1.0 + 2.0 * mesh->buff;
         const double d2_cap = 12.0 * s * s; // (2 * box diagonal)^2 >= any real (2R)^2
         double       d2     = (r2_denom > 0.0) ? 4.0 * r2_num / r2_denom : d2_cap;
@@ -116,7 +116,7 @@ namespace voronoi {
             cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
             // the same pair feeds the stored per-cell security diameter — the emit is gated
             // on success below, so a cell this block re-flags never publishes a stale value
-            store_security_d2(mesh, (hsize_t)k, r2_num, r2_denom);
+            store_security_d2(mesh, (uint64_t)k, r2_num, r2_denom);
             if (!cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi)) {
                 stat[k] = security_radius_beyond_data;
             }
@@ -131,14 +131,14 @@ namespace voronoi {
         // gets the number actually written. Any difference is slack that sits between cells'
         // slices and is never read as a face by the slice-based consumers.
         if (stat[k] == success) {
-            const int     fc        = count_cell_faces(cell);
-            const hsize_t my_offset = (hsize_t)portable_atomicAdd(face_offset, (unsigned long long)fc);
-            if (my_offset + (hsize_t)fc > mesh->face_capacity) {
+            const int      fc        = count_cell_faces(cell);
+            const uint64_t my_offset = (uint64_t)portable_atomicAdd(face_offset, (unsigned long long)fc);
+            if (my_offset + (uint64_t)fc > mesh->face_capacity) {
                 portable_atomicExch(overflow_flag, 1);
                 return;
             }
             mesh->face_ptr[k]    = my_offset;
-            mesh->face_counts[k] = extract_cell_all(cell, mesh, (hsize_t)k);
+            mesh->face_counts[k] = extract_cell_all(cell, mesh, (uint64_t)k);
         }
     }
 
@@ -173,7 +173,9 @@ namespace voronoi {
     // count_cell_faces estimate instead leaves unwritten entries inside the cell's live
     // face slice, which the flux loop then reads as real faces.
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
-    HD hsize_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell, VMesh* mesh, hsize_t cell_index) {
+    HD uint64_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
+                                 VMesh*                                          mesh,
+                                 uint64_t                                        cell_index) {
         const double3 seed      = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
         mesh->seeds[cell_index] = seed;
 
@@ -193,7 +195,7 @@ namespace voronoi {
         mesh->com[cell_index]     = {cx, cy, 0.0};
 
         // emit one edge per plane that reached the polygon
-        hsize_t   fi = mesh->face_ptr[cell_index];
+        uint64_t  fi = mesh->face_ptr[cell_index];
         double4_t face_verts[2];
         int       n_fv;
         for (int p = 0; p < cell.nb_v; p++) {
@@ -210,7 +212,7 @@ namespace voronoi {
         // 3D: fan-triangulate each face; volume via divergence theorem on (seed,v0,vi,vi+1) tets
         double    total_volume = 0.0;
         double    wx = 0.0, wy = 0.0, wz = 0.0;
-        hsize_t   fi = mesh->face_ptr[cell_index];
+        uint64_t  fi = mesh->face_ptr[cell_index];
         double4_t face_verts[MAX_T];
 
         for (int p = 0; p < cell.nb_v; p++) {
@@ -322,7 +324,7 @@ namespace voronoi {
     }
 
     // abort if `needed` exceeds the pre-allocated face buffer capacity
-    void ensure_face_capacity(VMesh* mesh, hsize_t needed) {
+    void ensure_face_capacity(VMesh* mesh, uint64_t needed) {
         if (needed <= mesh->face_capacity) return;
         proteus_mpi::exit_failure("VORONOI: Error! face count %llu exceeds pre-allocated face capacity %llu. "
                                   "Increase _FACE_CAPACITY_MULT_ in Config.sh.\n",
@@ -853,7 +855,7 @@ namespace voronoi {
     // write a single face into mesh's SoA arrays (neighbour id, area, and moving-mesh face midpoint
     // expressed in the local rotated frame of the face)
     HD static void write_face(VMesh*           mesh,
-                              hsize_t          fi,
+                              uint64_t         fi,
                               int              neighbor_id,
                               double           face_measure,
                               const double4_t* face_verts,

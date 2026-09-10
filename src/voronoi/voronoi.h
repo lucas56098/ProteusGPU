@@ -2,8 +2,8 @@
 #define VORONOI_H
 
 #include "../global/allvars.h"
-#include "../io/input.h"
 #include "../knn/knn.h"
+#include <cstdint>
 
 namespace hydro {
     struct primvars;
@@ -18,25 +18,25 @@ namespace hydro {
 struct VMesh {
 
     // current counts
-    hsize_t n_seeds; // n_total = reals + ghosts fed to KNN this build
-    hsize_t n_hydro; // number of real cells; size of every per-cell array below
+    uint64_t n_seeds; // n_total = reals + ghosts fed to KNN this build
+    uint64_t n_hydro; // number of real cells; size of every per-cell array below
     // face array entries in use this build. The CPU fallback reuses a rebuilt cell's slot
     // where it fits and retires the old slice in place, so this range can contain inert
     // holes (neighbor_cell = -1, zero area). Slice-based consumers never see them; a flat
     // scan over [0, num_faces) must skip negative neighbour ids.
-    hsize_t num_faces;
+    uint64_t num_faces;
 
     // fixed capacities (set in allocate_mesh)
-    hsize_t face_capacity;
-    hsize_t ghost_capacity;
-    hsize_t total_capacity; // max n_seeds = n_hydro + max_ghosts
+    uint64_t face_capacity;
+    uint64_t ghost_capacity;
+    uint64_t total_capacity; // max n_seeds = n_hydro + max_ghosts
 
     // per-cell arrays (size n_hydro, indexed by k)
     double3*         seeds;
     double3*         com;
     double*          volumes;
-    hsize_t*         face_counts;
-    hsize_t*         face_ptr;
+    uint64_t*        face_counts;
+    uint64_t*        face_ptr;
     voronoi::Status* cell_status;
 #ifdef MOVING_MESH
     POINT_TYPE* v_mesh;
@@ -77,7 +77,7 @@ struct VMesh {
 #endif
 
     // ghost slot -> source-real previous-step k  (size ghost_capacity)
-    hsize_t* ghost_ids;
+    uint64_t* ghost_ids;
 
     // index maps rebuilt every step
     unsigned int* real_sorted_ids;  // [k] -> sid;       size n_hydro
@@ -131,7 +131,7 @@ struct VMesh {
 
 namespace voronoi {
 
-    VMesh* allocate_mesh(hsize_t n_hydro);
+    VMesh* allocate_mesh(uint64_t n_hydro);
     void   free_mesh(VMesh* mesh);
 
     // resize MPI ghost arrays (seeds_g, v_mesh_g) to new_cap. Contents discarded;
@@ -150,7 +150,7 @@ namespace voronoi {
     // where no v_mesh correction applies.
     void compute_periodic_mesh(VMesh*           mesh,
                                POINT_TYPE*      pts_data,
-                               hsize_t          num_points,
+                               uint64_t         num_points,
                                hydro::primvars* primvar,
                                hydro::primvars* primvar_aux,
                                double           dt);
@@ -164,7 +164,7 @@ namespace voronoi {
 } // namespace voronoi
 
 // own-cell read: k strictly < n_hydro guaranteed by callers.
-HD inline hydro::prim get_state(hsize_t k, const hydro::primvars* primvar) {
+HD inline hydro::prim get_state(uint64_t k, const hydro::primvars* primvar) {
     hydro::prim s;
     s.rho = primvar->rho[k];
     s.v.x = primvar->v[k].x;

@@ -1,5 +1,6 @@
 #include "../global/allvars.h"
 #include "../global/structs.h"
+#include "../io/input.h"
 #include "../knn/knn.h"
 #include "../mpi/decomp.h"
 #include "../mpi/halo.h"
@@ -43,26 +44,26 @@ namespace voronoi {
 
     // ---- forward declarations ----
     static BuildStats build_mesh_growing_halo(
-        VMesh* mesh, POINT_TYPE* pts_data, hsize_t n_hydro, hydro::primvars* primvar, hydro::primvars* primvar_aux);
+        VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro, hydro::primvars* primvar, hydro::primvars* primvar_aux);
     static void cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt);
     static void exchange_used_ghost_primvars(VMesh* mesh, hydro::primvars* primvar);
     static void adapt_halo_width(const BuildStats& stats);
     static void print_step_summary(const BuildStats& stats);
 
-    static hsize_t exchange_seeds_across_ranks(VMesh*       mesh,
-                                               POINT_TYPE*  pts_data,
-                                               POINT_TYPE*& pts,
-                                               hsize_t*&    original_ids,
-                                               hsize_t      n_hydro,
-                                               hsize_t      n_ghosts,
-                                               int          W);
-    static void    record_mpi_ghost_indices(hsize_t* original_ids, hsize_t n_hydro, hsize_t n_ghosts);
-    static void    remap_exports_and_pts(VMesh* mesh, POINT_TYPE* pts_data, hsize_t n_hydro);
+    static uint64_t exchange_seeds_across_ranks(VMesh*       mesh,
+                                                POINT_TYPE*  pts_data,
+                                                POINT_TYPE*& pts,
+                                                uint64_t*&   original_ids,
+                                                uint64_t     n_hydro,
+                                                uint64_t     n_ghosts,
+                                                int          W);
+    static void     record_mpi_ghost_indices(uint64_t* original_ids, uint64_t n_hydro, uint64_t n_ghosts);
+    static void     remap_exports_and_pts(VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro);
     static bool widen_converged_across_ranks(VMesh* mesh, bool have_mpi, int* local_failed_out, int* global_beyond_out);
     static int  count_local_failed_cells(const VMesh* mesh);
     static int  count_local_beyond_data_cells(const VMesh* mesh);
     static void sum_ints_across_ranks(const int* local, int* global, int n);
-    static void check_ghost_count(hsize_t n_ghosts, hsize_t max_ghosts);
+    static void check_ghost_count(uint64_t n_ghosts, uint64_t max_ghosts);
     static int  default_starting_halo_width();
     static void set_data_extent_for_build(VMesh* mesh, int W, bool have_mpi);
 
@@ -78,7 +79,7 @@ namespace voronoi {
     // build the Voronoi mesh on the [-buff, 1+buff]^d domain
     void compute_periodic_mesh(VMesh*           mesh,
                                POINT_TYPE*      pts_data,
-                               hsize_t          num_points,
+                               uint64_t         num_points,
                                hydro::primvars* primvar,
                                hydro::primvars* primvar_aux,
                                double           dt) {
@@ -110,13 +111,13 @@ namespace voronoi {
 
     // rebuild the mesh, growing the halo each iter until no cells fail (across ranks)
     static BuildStats build_mesh_growing_halo(
-        VMesh* mesh, POINT_TYPE* pts_data, hsize_t n_hydro, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
+        VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
         constexpr int MAX_WIDEN_ITERS = 4;
 
         // setup: ghost cap, mpi flag, starting halo width
-        const double  ghost_frac = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-        const hsize_t max_ghosts = (hsize_t)(2.0 * ghost_frac * n_hydro) + 1;
-        const bool    have_mpi   = proteus_mpi::halo.n_neighbors > 0;
+        const double   ghost_frac = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
+        const uint64_t max_ghosts = (uint64_t)(2.0 * ghost_frac * n_hydro) + 1;
+        const bool     have_mpi   = proteus_mpi::halo.n_neighbors > 0;
 
         BuildStats stats{};
         stats.have_mpi_neighbors = have_mpi;
@@ -129,16 +130,16 @@ namespace voronoi {
             // re-read scratch_pts / ghost_ids each iter: halo_build_exports inside
             // exchange_seeds_across_ranks may grow the halo capacity and reallocate them.
             POINT_TYPE* pts          = mesh->scratch_pts;
-            hsize_t*    original_ids = mesh->ghost_ids;
+            uint64_t*   original_ids = mesh->ghost_ids;
 
             // generate periodic ghosts + (if MPI) exchange seeds with neighbour ranks
-            hsize_t n_ghosts;
+            uint64_t n_ghosts;
             {
                 PROFILE("GHOSTS");
                 n_ghosts = regenerate_periodic_ghosts(n_hydro, pts_data, pts, original_ids, buff);
             }
             check_ghost_count(n_ghosts, max_ghosts);
-            const hsize_t n_mpi =
+            const uint64_t n_mpi =
                 have_mpi ? exchange_seeds_across_ranks(
                                mesh, pts_data, pts, original_ids, n_hydro, n_ghosts, stats.final_halo_width)
                          : 0;
@@ -372,13 +373,13 @@ namespace voronoi {
     }
 
     // build the MPI export list, exchange seeds, record indices of freshly-arrived ghost slots
-    static hsize_t exchange_seeds_across_ranks(VMesh*       mesh,
-                                               POINT_TYPE*  pts_data,
-                                               POINT_TYPE*& pts,
-                                               hsize_t*&    original_ids,
-                                               hsize_t      n_hydro,
-                                               hsize_t      n_ghosts,
-                                               int          W) {
+    static uint64_t exchange_seeds_across_ranks(VMesh*       mesh,
+                                                POINT_TYPE*  pts_data,
+                                                POINT_TYPE*& pts,
+                                                uint64_t*&   original_ids,
+                                                uint64_t     n_hydro,
+                                                uint64_t     n_ghosts,
+                                                int          W) {
         proteus_mpi::halo_build_exports(pts_data, (int)n_hydro, buff, W);
         // halo_build_exports may have grown n_mpi_capacity, which reallocates mesh->scratch_pts
         // and mesh->ghost_ids inside halo_grow_capacity, freeing the old buffers. Re-read the
@@ -388,17 +389,17 @@ namespace voronoi {
         original_ids = mesh->ghost_ids;
         proteus_mpi::halo_exchange_seeds(mesh, pts, (int)(n_hydro + n_ghosts));
         record_mpi_ghost_indices(original_ids, n_hydro, n_ghosts);
-        return (hsize_t)proteus_mpi::halo.n_mpi_ghosts;
+        return (uint64_t)proteus_mpi::halo.n_mpi_ghosts;
     }
 
     // stamp the extended-array indices into original_ids[] for the MPI ghost slots
-    static void record_mpi_ghost_indices(hsize_t* original_ids, hsize_t n_hydro, hsize_t n_ghosts) {
+    static void record_mpi_ghost_indices(uint64_t* original_ids, uint64_t n_hydro, uint64_t n_ghosts) {
         for (int n = 0; n < proteus_mpi::halo.n_neighbors; n++) {
             const int ghost_off = proteus_mpi::halo.ghost_offset[n];
             for (int j = 0; j < proteus_mpi::halo.recv_count[n]; j++) {
-                const int slot                         = ghost_off + j;
-                const int ext_k                        = (int)n_hydro + slot;
-                original_ids[n_ghosts + (hsize_t)slot] = (hsize_t)ext_k;
+                const int slot                          = ghost_off + j;
+                const int ext_k                         = (int)n_hydro + slot;
+                original_ids[n_ghosts + (uint64_t)slot] = (uint64_t)ext_k;
             }
         }
     }
@@ -406,7 +407,7 @@ namespace voronoi {
     // iter 0 permuted primvar into new-k order, but export_indices and pts_data are still in
     // old-k order. Remap both, and reset orig_to_k_save to identity so subsequent lookup-mode
     // pass1s give k = orig.
-    static void remap_exports_and_pts(VMesh* mesh, POINT_TYPE* pts_data, hsize_t n_hydro) {
+    static void remap_exports_and_pts(VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro) {
         PROFILE("REMAP");
 
         // build inverse permutation new_k -> old_k -> inv[old_k] = new_k
@@ -415,7 +416,7 @@ namespace voronoi {
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-        for (hsize_t new_k = 0; new_k < n_hydro; new_k++) {
+        for (uint64_t new_k = 0; new_k < n_hydro; new_k++) {
             inv_gather[mesh->gather_perm[new_k]] = (unsigned int)new_k;
         }
         proteus_mpi::halo_remap_export_indices(inv_gather.data(), (int)n_hydro);
@@ -426,7 +427,7 @@ namespace voronoi {
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-        for (hsize_t new_k = 0; new_k < n_hydro; new_k++) {
+        for (uint64_t new_k = 0; new_k < n_hydro; new_k++) {
             pts_scratch[new_k] = pts_data[mesh->gather_perm[new_k]];
         }
         std::memcpy(pts_data, pts_scratch.data(), (size_t)n_hydro * sizeof(POINT_TYPE));
@@ -435,7 +436,7 @@ namespace voronoi {
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-        for (hsize_t k = 0; k < n_hydro; k++)
+        for (uint64_t k = 0; k < n_hydro; k++)
             mesh->orig_to_k_save[k] = (unsigned int)k;
     }
 
@@ -501,7 +502,7 @@ namespace voronoi {
     }
 
     // abort if the periodic-ghost count overflows the pre-allocated cap
-    static void check_ghost_count(hsize_t n_ghosts, hsize_t max_ghosts) {
+    static void check_ghost_count(uint64_t n_ghosts, uint64_t max_ghosts) {
         if (n_ghosts > max_ghosts) {
             proteus_mpi::exit_failure("VORONOI: Error! ghost count %llu exceeds estimated max %llu. Distribution "
                                       "is highly non-uniform.\n",

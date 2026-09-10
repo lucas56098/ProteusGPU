@@ -2,44 +2,44 @@ namespace voronoi {
 
     // ---- forward declarations ----
 #ifdef CPU_DEBUG
-    static hsize_t cpu_generate_periodic_ghosts(hsize_t           n_hydro,
-                                                const POINT_TYPE* pts_data,
-                                                POINT_TYPE*       pts,
-                                                hsize_t*          original_ids,
-                                                double            buff_val,
-                                                int               wx,
-                                                int               wy,
-                                                int               wz);
+    static uint64_t cpu_generate_periodic_ghosts(uint64_t          n_hydro,
+                                                 const POINT_TYPE* pts_data,
+                                                 POINT_TYPE*       pts,
+                                                 uint64_t*         original_ids,
+                                                 double            buff_val,
+                                                 int               wx,
+                                                 int               wy,
+                                                 int               wz);
 #endif // CPU_DEBUG
     HD static inline bool
     ghost_box_contains(POINT_TYPE pt, double xa, double xb, double ya, double yb, double za = 0.0, double zb = 1.0);
-    static inline void append_ghost_copy(POINT_TYPE*    pts,
-                                         hsize_t        index,
-                                         hsize_t*       n_ghosts,
-                                         const hsize_t* n_hydro,
-                                         hsize_t*       original_ids,
-                                         double         shift_x,
-                                         double         shift_y,
-                                         double         shift_z = 0.0);
+    static inline void append_ghost_copy(POINT_TYPE*     pts,
+                                         uint64_t        index,
+                                         uint64_t*       n_ghosts,
+                                         const uint64_t* n_hydro,
+                                         uint64_t*       original_ids,
+                                         double          shift_x,
+                                         double          shift_y,
+                                         double          shift_z = 0.0);
 
 #ifndef CPU_DEBUG
-    static hsize_t launch_periodic_ghost_kernel(hsize_t           n_hydro,
-                                                const POINT_TYPE* pts_data,
-                                                POINT_TYPE*       pts,
-                                                hsize_t*          original_ids,
-                                                double            buff_val,
-                                                int               wx,
-                                                int               wy,
-                                                int               wz);
-    GLOBAL void    kernel_generate_ghosts(hsize_t n_hydro,
-                                          const POINT_TYPE* __restrict__ pts_data,
-                                          POINT_TYPE* __restrict__ pts,
-                                          hsize_t* __restrict__ original_ids,
-                                          int* __restrict__ d_ghost_count,
-                                          double buff_val,
-                                          int    wx,
-                                          int    wy,
-                                          int    wz);
+    static uint64_t launch_periodic_ghost_kernel(uint64_t          n_hydro,
+                                                 const POINT_TYPE* pts_data,
+                                                 POINT_TYPE*       pts,
+                                                 uint64_t*         original_ids,
+                                                 double            buff_val,
+                                                 int               wx,
+                                                 int               wy,
+                                                 int               wz);
+    GLOBAL void     kernel_generate_ghosts(uint64_t n_hydro,
+                                           const POINT_TYPE* __restrict__ pts_data,
+                                           POINT_TYPE* __restrict__ pts,
+                                           uint64_t* __restrict__ original_ids,
+                                           int* __restrict__ d_ghost_count,
+                                           double buff_val,
+                                           int    wx,
+                                           int    wy,
+                                           int    wz);
 #endif
 
     // ============================================================
@@ -52,8 +52,8 @@ namespace voronoi {
     // exactly 1 rank in that direction. For decomposed axes the halo exchange already
     // carries the periodic wrap (see halo_internal.cu neighbor_shift), so a local periodic
     // ghost would land outside this rank's brick and never be used.
-    hsize_t regenerate_periodic_ghosts(
-        hsize_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts, hsize_t* original_ids, double buff_val) {
+    uint64_t regenerate_periodic_ghosts(
+        uint64_t n_hydro, const POINT_TYPE* pts_data, POINT_TYPE* pts, uint64_t* original_ids, double buff_val) {
         // wrap flags per axis: 1 if undecomposed (single rank), else 0
         const int wx = (proteus_mpi::decomp.dims[0] == 1) ? 1 : 0;
         const int wy = (proteus_mpi::decomp.dims[1] == 1) ? 1 : 0;
@@ -72,16 +72,16 @@ namespace voronoi {
 
 #ifdef CPU_DEBUG
     // CPU path: per-real-cell loop over the 3^d - 1 periodic offsets
-    static hsize_t cpu_generate_periodic_ghosts(hsize_t           n_hydro,
-                                                const POINT_TYPE* pts_data,
-                                                POINT_TYPE*       pts,
-                                                hsize_t*          original_ids,
-                                                double            buff_val,
-                                                int               wx,
-                                                int               wy,
-                                                int               wz) {
-        hsize_t n_ghosts = 0;
-        for (hsize_t i = 0; i < n_hydro; i++) {
+    static uint64_t cpu_generate_periodic_ghosts(uint64_t          n_hydro,
+                                                 const POINT_TYPE* pts_data,
+                                                 POINT_TYPE*       pts,
+                                                 uint64_t*         original_ids,
+                                                 double            buff_val,
+                                                 int               wx,
+                                                 int               wy,
+                                                 int               wz) {
+        uint64_t n_ghosts = 0;
+        for (uint64_t i = 0; i < n_hydro; i++) {
             // copy the real cell into pts[]
             pts[i] = pts_data[i];
 
@@ -118,14 +118,14 @@ namespace voronoi {
 
 #ifndef CPU_DEBUG
     // GPU path: launch the warp-aggregated ghost kernel and read back the produced count
-    static hsize_t launch_periodic_ghost_kernel(hsize_t           n_hydro,
-                                                const POINT_TYPE* pts_data,
-                                                POINT_TYPE*       pts,
-                                                hsize_t*          original_ids,
-                                                double            buff_val,
-                                                int               wx,
-                                                int               wy,
-                                                int               wz) {
+    static uint64_t launch_periodic_ghost_kernel(uint64_t          n_hydro,
+                                                 const POINT_TYPE* pts_data,
+                                                 POINT_TYPE*       pts,
+                                                 uint64_t*         original_ids,
+                                                 double            buff_val,
+                                                 int               wx,
+                                                 int               wy,
+                                                 int               wz) {
         // device-side counter for ghost slots claimed by warps
         int* d_ghost_count = (int*)gpu_malloc(sizeof(int));
         gpu_memset(d_ghost_count, 0, sizeof(int));
@@ -138,7 +138,7 @@ namespace voronoi {
         GPU_SYNC();
 
         // read the total ghost count back and free the counter
-        const hsize_t n_ghosts = (hsize_t)(*d_ghost_count);
+        const uint64_t n_ghosts = (uint64_t)(*d_ghost_count);
         gpu_free(d_ghost_count);
         return n_ghosts;
     }
@@ -157,14 +157,14 @@ namespace voronoi {
     }
 
     // write one shifted copy of cell index into pts[n_hydro + n_ghosts]; bump n_ghosts
-    static inline void append_ghost_copy(POINT_TYPE*    pts,
-                                         hsize_t        index,
-                                         hsize_t*       n_ghosts,
-                                         const hsize_t* n_hydro,
-                                         hsize_t*       original_ids,
-                                         double         shift_x,
-                                         double         shift_y,
-                                         double         shift_z) {
+    static inline void append_ghost_copy(POINT_TYPE*     pts,
+                                         uint64_t        index,
+                                         uint64_t*       n_ghosts,
+                                         const uint64_t* n_hydro,
+                                         uint64_t*       original_ids,
+                                         double          shift_x,
+                                         double          shift_y,
+                                         double          shift_z) {
         POINT_TYPE pt;
         pt.x = pts[index].x + shift_x;
         pt.y = pts[index].y + shift_y;
@@ -189,17 +189,17 @@ namespace voronoi {
     // slot range. Each lane writes its ghosts at known offsets within that range. Replaces
     // up to 7 atomics per thread (3D corner cell) with 1 atomic per warp — critical when
     // post-spatial-sort threads in a warp are spatially clustered.
-    GLOBAL void kernel_generate_ghosts(hsize_t n_hydro,
+    GLOBAL void kernel_generate_ghosts(uint64_t n_hydro,
                                        const POINT_TYPE* __restrict__ pts_data,
                                        POINT_TYPE* __restrict__ pts,
-                                       hsize_t* __restrict__ original_ids,
+                                       uint64_t* __restrict__ original_ids,
                                        int* __restrict__ d_ghost_count,
                                        double buff_val,
                                        int    wx,
                                        int    wy,
                                        int    wz) {
-        const hsize_t i      = blockIdx.x * blockDim.x + threadIdx.x;
-        const bool    active = (i < n_hydro);
+        const uint64_t i      = blockIdx.x * blockDim.x + threadIdx.x;
+        const bool     active = (i < n_hydro);
 
         // copy real cell into scratch_pts (every thread does this; out-of-range threads
         // zero pi so the geometry test stays well-defined for warp prefix-sum)

@@ -64,7 +64,7 @@ namespace begrun {
             icData.header.ic_filename = input.getParameter("ic_file");
 
             // read IC header (fields are read after domain decomp)
-            hsize_t n_total = 0;
+            uint64_t n_total = 0;
             if (!input.readICHeader(icData.header.ic_filename, icData.header, n_total)) {
                 proteus_mpi::exit_failure("BEGRUN: could not read IC header from %s\n",
                                           icData.header.ic_filename.c_str());
@@ -284,8 +284,8 @@ namespace begrun {
         int64_t my_lo = 0, my_hi = 0;
         proteus_mpi::decomp_even_split(
             icData.header.n_global, proteus_mpi::nranks(), proteus_mpi::rank(), &my_lo, &my_hi);
-        const hsize_t row_lo  = (hsize_t)my_lo;
-        const hsize_t n_local = (hsize_t)(my_hi - my_lo);
+        const uint64_t row_lo  = (uint64_t)my_lo;
+        const uint64_t n_local = (uint64_t)(my_hi - my_lo);
 
         // each rank reads part of the IC
         if (!input.readICChunkParallel(icData.header.ic_filename, icData, row_lo, n_local)) {
