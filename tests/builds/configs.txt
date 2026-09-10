@@ -85,6 +85,8 @@ full     2D_volreg_mpi                  dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP 
 basic    3D_volreg                      dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP VOL_REGULARIZE=1
 full     3D_volreg_mpi                  dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI VOL_REGULARIZE=1
 
+full     2D_output_mesh                 dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP OUTPUT_MESH
+full     2D_output_mesh_mpi             dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI OUTPUT_MESH
 full     3D_output_mesh                 dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP OUTPUT_MESH
 full     3D_output_mesh_mpi             dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI OUTPUT_MESH
 
