@@ -218,13 +218,89 @@ run_audit() {
         holes=$((holes + 1))
     done
 
+    # ---- nested regions -------------------------------------------------------
+    local set
+    while read -r tier name rest; do
+        set=" "
+        for f in $rest; do set="$set${f%%=*} "; done
+        CFG_SETS+=("$set")
+    done < <(grep -vE '^[[:space:]]*(#|$)' "$CONFIGS")
+
+    declare -A PAIR_SEEN
+    local outer sense inner file c on off want nholes=0
+    while read -r _ outer sense inner file; do
+        [ -n "${COVERED[$outer]:-}" ] || continue     # only flags the matrix controls
+        [ -n "${COVERED[$inner]:-}" ] || continue
+        [ -n "${PAIR_SEEN[$outer/$sense/$inner]:-}" ] && continue
+        PAIR_SEEN["$outer/$sense/$inner"]=1
+        on=0; off=0
+        for c in "${CFG_SETS[@]}"; do
+            if [ "$sense" -eq 1 ]; then
+                case "$c" in *" $outer "*) ;; *) continue ;; esac
+            else
+                case "$c" in *" $outer "*) continue ;; esac
+            fi
+            case "$c" in *" $inner "*) on=1 ;; *) off=1 ;; esac
+        done
+        [ "$on" -eq 1 ] && [ "$off" -eq 1 ] && continue
+        want=$([ "$on" -eq 0 ] && echo "with $inner" || echo "without $inner")
+        if [ "$nholes" -eq 0 ]; then
+            printf '\n\033[31mcoverage audit failed\033[0m -- these code regions exist in src/ but no\n'
+            printf 'configuration in tests/builds/configs.txt ever compiles them:\n\n'
+        fi
+        printf '  \033[31m%-34s\033[0m %s\n' \
+            "$([ "$sense" -eq 1 ] && echo "$outer" || echo "!$outer") > $inner" \
+            "needs a config $want  ($file)"
+        nholes=$((nholes + 1))
+    done < <(find src -name '*.cu' -o -name '*.h' | sort | xargs awk '
+        # Emit "PAIR <outer> <sense> <inner> <file>" for every #if block nested in another.
+        # sense 1 = the inner block sits in the outer flag'"'"'s defined branch, 0 = its #else.
+        # Conditions we cannot evaluate (#if with && / ||, and #elif) push an unnamed frame,
+        # so nothing under them is claimed -- silence beats a guess.
+        FNR == 1 { depth = 0 }
+        /^[ \t]*#[ \t]*(ifdef|ifndef|if|elif|else|endif)([ \t]|$)/ {
+            d = $0
+            sub(/^[ \t]*#[ \t]*/, "", d)
+            kind = d
+            sub(/[^A-Za-z].*$/, "", kind)
+            if (kind == "ifdef" || kind == "ifndef" || kind == "if") {
+                nm = ""; sn = -1
+                rest = d
+                sub(/^[A-Za-z]+[ \t]*/, "", rest)
+                if (kind == "ifdef" || kind == "ifndef") {
+                    nm = rest; sub(/[^A-Za-z0-9_].*$/, "", nm)
+                    sn = (kind == "ifdef") ? 1 : 0
+                } else if (rest ~ /^!?[ \t]*defined[ \t]*\([ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\)[ \t]*$/) {
+                    sn = (rest ~ /^!/) ? 0 : 1
+                    nm = rest
+                    sub(/^!?[ \t]*defined[ \t]*\([ \t]*/, "", nm)
+                    sub(/[^A-Za-z0-9_].*$/, "", nm)
+                }
+                if (nm != "")
+                    for (i = 1; i <= depth; i++)
+                        if (st_nm[i] != "" && st_sn[i] >= 0 && st_nm[i] != nm)
+                            print "PAIR " st_nm[i] " " st_sn[i] " " nm " " FILENAME
+                depth++; st_nm[depth] = nm; st_sn[depth] = sn
+            } else if (kind == "else") {
+                if (depth > 0 && st_sn[depth] >= 0) st_sn[depth] = 1 - st_sn[depth]
+            } else if (kind == "elif") {
+                if (depth > 0) { st_nm[depth] = ""; st_sn[depth] = -1 }
+            } else if (kind == "endif") {
+                if (depth > 0) depth--
+            }
+        }')
+    holes=$((holes + nholes))
+
     if [ "$holes" -gt 0 ]; then
-        printf '\nCode behind an uncompiled flag is never checked, so the matrix would report\n'
-        printf 'success while src/ does not build. Add a line to tests/builds/configs.txt covering\n'
-        printf 'each flag above, or --no-audit to bypass.\n\n'
+        printf '\nCode that no configuration compiles is never checked, so the matrix would\n'
+        printf 'report success while that code does not build. Add lines to\n'
+        printf 'tests/builds/configs.txt covering what is listed above, or --no-audit to bypass.\n'
+        printf 'A "flag > flag" entry means the region exists only when the outer flag is set and\n'
+        printf 'the inner one is (or is not) -- one configuration setting each alone misses it.\n\n'
         return 1
     fi
-    printf '\ncoverage audit: \033[32mok\033[0m (every #ifdef flag in src/ is built by some configuration)\n'
+    printf '\ncoverage audit: \033[32mok\033[0m (every #ifdef flag built, and every nested region\n'
+    printf '                    compiled both with and without its inner flag)\n'
     return 0
 }
 
