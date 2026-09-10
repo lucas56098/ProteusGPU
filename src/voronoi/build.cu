@@ -18,7 +18,6 @@ namespace voronoi {
     static void read_face_count_from_gpu(VMesh* mesh);
 
 #ifndef CPU_DEBUG
-    GLOBAL void kernel_collect_failed_cells(int n, const Status* stat, int* failed_indices, int* failed_count);
     GLOBAL void kernel_compute_voronoi_cells_fast(int                n_hydro,
                                                   double*            d_stored_points,
                                                   const knn_problem* knn,
@@ -36,13 +35,13 @@ namespace voronoi {
                                                   int*               overflow_flag);
 #endif
 
-    // ---- per-step GPU scratch (GPU) / accumulators (CPU) for cell construction ----
+    // ---- per-step scratch for cell construction ----
+    // the failed-cell list is built on both backends, so it lives outside the split
+    static int* d_failed_indices          = nullptr;
+    static int  d_failed_indices_capacity = 0;
 #ifndef CPU_DEBUG
-    static hsize_t* d_face_offset             = nullptr;
-    static int*     d_overflow_flag           = nullptr;
-    static int*     d_failed_indices          = nullptr;
-    static int*     d_failed_count            = nullptr;
-    static int      d_failed_indices_capacity = 0;
+    static hsize_t* d_face_offset   = nullptr;
+    static int*     d_overflow_flag = nullptr;
 #else
     static unsigned long long s_cpu_face_offset   = 0; // running face offset across fast + slow tiers
     static int                s_cpu_overflow_flag = 0; // set if face writes exceed pre-allocated capacity
@@ -270,25 +269,22 @@ namespace voronoi {
 
     // allocate / resize the per-step scratch buffers used by the cell-construction kernels
     static void allocate_cell_scratch(hsize_t n_hydro) {
-#ifndef CPU_DEBUG
-        // first call: allocate the singleton scratch slots
-        if (!d_face_offset) {
-            d_face_offset   = gpu_calloc<hsize_t>(1);
-            d_overflow_flag = gpu_calloc<int>(1);
-            d_failed_count  = gpu_calloc<int>(1);
-        }
         // grow the failed-indices buffer if n_hydro outgrew it (one-shot per growth)
         if (d_failed_indices_capacity < (int)n_hydro) {
             if (d_failed_indices) gpu_free(d_failed_indices);
             d_failed_indices          = gpu_alloc<int>((int)n_hydro);
             d_failed_indices_capacity = (int)n_hydro;
         }
+#ifndef CPU_DEBUG
+        // first call: allocate the singleton scratch slots
+        if (!d_face_offset) {
+            d_face_offset   = gpu_calloc<hsize_t>(1);
+            d_overflow_flag = gpu_calloc<int>(1);
+        }
         // zero the per-step counters
         gpu_memset(d_face_offset, 0, sizeof(hsize_t));
         gpu_memset(d_overflow_flag, 0, sizeof(int));
-        gpu_memset(d_failed_count, 0, sizeof(int));
 #else
-        (void)n_hydro;
         s_cpu_face_offset   = 0;
         s_cpu_overflow_flag = 0;
 #endif
@@ -331,24 +327,31 @@ namespace voronoi {
 #endif
     }
 
-    // count cells that did not finish under the fast kernel and (GPU) emit their k indices
+    // List the cells that did not finish under the fast kernel, in index order, on both
+    // backends. The slot used to come from an atomic cursor, so the slow tier's work list was
+    // ordered by which thread got there first; and the CPU built no list at all, leaving its
+    // slow tier to rescan all n_hydro looking for the few failures.
     static int collect_failed_cells(VMesh* mesh) {
         const int n_hydro = (int)mesh->n_hydro;
-#ifndef CPU_DEBUG
-        const int tpb    = _MESH_BLOCK_SIZE_;
-        const int blocks = (n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("COLLECT");
-            kernel_collect_failed_cells<<<blocks, tpb>>>(n_hydro, mesh->cell_status, d_failed_indices, d_failed_count);
-        }
-        GPU_SYNC();
-        return *d_failed_count;
-#else
-        int n_failed = 0;
-        for (int k = 0; k < n_hydro; k++)
-            if (mesh->cell_status[k] != success) n_failed++;
-        return n_failed;
-#endif
+        if (n_hydro == 0) return 0;
+
+        PROFILE("COLLECT");
+        const Status* stat    = mesh->cell_status;
+        unsigned int* flags   = mesh->scan_flags;
+        unsigned int* scratch = mesh->scan_scratch;
+        int*          out     = d_failed_indices;
+
+        parallel_for<_MESH_BLOCK_SIZE_>(
+            "COLLECT_FLAG", n_hydro, [=] HD(int k) { flags[k] = (stat[k] != success) ? 1u : 0u; });
+
+        parallel_exclusive_scan<_MESH_BLOCK_SIZE_>("COLLECT_SCAN", (size_t)n_hydro, flags, flags, scratch);
+
+        parallel_for<_MESH_BLOCK_SIZE_>("COLLECT_SCATTER", n_hydro, [=] HD(int k) {
+            if (stat[k] != success) out[flags[k]] = k;
+        });
+
+        // exclusive scan, so the total is the last offset plus whether the last cell failed
+        return (int)flags[n_hydro - 1] + ((stat[n_hydro - 1] != success) ? 1 : 0);
     }
 
     // print "Generated N cells. (X% slow tier)" for the current build
@@ -377,14 +380,12 @@ namespace voronoi {
             GPU_SYNC();
         }
 #else
-        (void)n_failed;
-        const int n_hydro = (int)mesh->n_hydro;
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(dynamic)
 #endif
-        for (int k = 0; k < n_hydro; k++) {
+        for (int i = 0; i < n_failed; i++) {
             if (s_cpu_overflow_flag) continue;
-            if (mesh->cell_status[k] == success) continue;
+            const int k       = d_failed_indices[i];
             const int seed_id = (int)mesh->real_sorted_ids[k];
             compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(k,
                                                                                  seed_id,
@@ -419,16 +420,6 @@ namespace voronoi {
     // CUDA kernels
     // ============================================================
 #ifndef CPU_DEBUG
-
-    // gather: out[k] = in[perm[k]] for k in [0, n)
-    // collect indices of cells whose status is not success into failed_indices[0 .. *failed_count)
-    GLOBAL void kernel_collect_failed_cells(int n, const Status* stat, int* failed_indices, int* failed_count) {
-        const int i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i < n && stat[i] != success) {
-            const int slot       = portable_atomicAdd(failed_count, 1);
-            failed_indices[slot] = i;
-        }
-    }
 
     // fast-tier per-cell kernel: small K, small face capacity
     GLOBAL LAUNCH_BOUNDS(_VORO_BLOCK_SIZE_, 16) void kernel_compute_voronoi_cells_fast(int     n_hydro,
