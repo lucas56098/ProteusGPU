@@ -2,7 +2,6 @@
 #define OUTPUT_H
 
 #include "../global/allvars.h"
-#include "hdf5.h"
 #include <chrono>
 #include <string>
 

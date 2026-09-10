@@ -2,6 +2,7 @@
 #include "../mpi/mpi_compat.h"
 #include "../mpi/rebalance.h"
 #include "../voronoi/voronoi.h"
+#include "h5.h"
 #include "output.h"
 #include "profiler/profiler.h"
 #include <iostream>
@@ -9,15 +10,8 @@
 #include <sys/types.h>
 #include <vector>
 
-static void write_attr_int(hid_t group, const char* name, int value);
-static void write_attr_int64(hid_t group, const char* name, int64_t value);
-static void write_attr_double(hid_t group, const char* name, double value);
-static bool write_dataset_1d(hid_t parent, const char* name, const double* data, hsize_t n);
-static bool write_dataset_2d(hid_t parent, const char* name, const double* data, hsize_t n, hsize_t dim);
 #ifdef OUTPUT_MESH
-static bool write_dataset_1d_i32(hid_t parent, const char* name, const int* data, hsize_t n);
-static bool write_dataset_1d_i64(hid_t parent, const char* name, const int64_t* data, hsize_t n);
-static void write_mesh_geometry(hid_t mesh_group, int n_hydro);
+static bool write_mesh_geometry(hid_t mesh_group, int n_hydro);
 #endif
 
 OutputHandler::OutputHandler(const std::string& outputDir) : outputDirectory(outputDir) {}
@@ -54,6 +48,70 @@ bool OutputHandler::initialize() {
 // write snapshot
 // ============================================================
 
+static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks, int rank, int64_t n_global) {
+
+    h5::File file(H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT));
+    if (!file.valid()) {
+        std::cerr << "OUTPUT: Error! Could not create HDF5 file: " << path << std::endl;
+        return false;
+    }
+
+    // write header
+    {
+        h5::Group header_group(H5Gcreate(file, "header", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
+        h5::write_attr(header_group, "dimension", DIMENSION);
+        h5::write_attr(header_group, "time", sim.t_sim);
+        h5::write_attr(header_group, "step", sim.step);
+        h5::write_attr(header_group, "n_global", n_global);
+        h5::write_attr(header_group, "nranks", nranks);
+        h5::write_attr(header_group, "rank", rank);
+
+#ifdef ASTRO_PHYSICS
+        h5::write_attr(header_group, "UnitLength_in_cm", units.UnitLength_in_cm);
+        h5::write_attr(header_group, "UnitMass_in_g", units.UnitMass_in_g);
+        h5::write_attr(header_group, "UnitVelocity_in_cm_per_s", units.UnitVelocity_in_cm_per_s);
+#endif
+
+        h5::Group prof_group(H5Gcreate(header_group, "profiler", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
+        for (const auto& kv : Profiler::CurrentCumulative()) {
+            h5::write_attr(prof_group, kv.first.c_str(), kv.second);
+        }
+    }
+
+    std::vector<double> pos_flat(n_hydro * DIMENSION);
+    for (int i = 0; i < n_hydro; i++) {
+        pos_flat[i * DIMENSION + 0] = sim.mesh->seeds[i].x;
+        pos_flat[i * DIMENSION + 1] = sim.mesh->seeds[i].y;
+#ifdef dim_3D
+        pos_flat[i * DIMENSION + 2] = sim.mesh->seeds[i].z;
+#endif
+    }
+
+    // write mesh/pos
+    {
+        h5::Group mesh_group(H5Gcreate(file, "mesh", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
+        if (!h5::write_dataset_2d(mesh_group, "pos", pos_flat.data(), n_hydro, DIMENSION)) { return false; }
+
+#ifdef OUTPUT_MESH
+
+        if (!h5::write_dataset_1d(mesh_group, "volume", sim.mesh->volumes, n_hydro)) { return false; }
+        if (!write_mesh_geometry(mesh_group, n_hydro)) { return false; }
+#endif
+    }
+
+    {
+        h5::Group hydro_group(H5Gcreate(file, "hydro", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
+        if (!h5::write_dataset_1d(hydro_group, "rho", sim.primvar->rho, n_hydro) ||
+            !h5::write_dataset_2d(
+                hydro_group, "vel", reinterpret_cast<const double*>(sim.primvar->v), n_hydro, DIMENSION) ||
+            !h5::write_dataset_1d(hydro_group, "energy", sim.primvar->E, n_hydro)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void OutputHandler::write_snapshot() {
     PROFILE("IO_SNAPSHOT");
 
@@ -74,86 +132,7 @@ void OutputHandler::write_snapshot() {
         logging::root() << "OUTPUT: Writing snapshot to: " << fullPath << std::endl;
     }
 
-    hid_t file_id = H5Fcreate(fullPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-    if (file_id < 0) {
-        std::cerr << "OUTPUT: Error! Could not create HDF5 file: " << fullPath << std::endl;
-        exit(EXIT_FAILURE);
-    }
-
-    // write header
-    hid_t header_group = H5Gcreate(file_id, "header", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    write_attr_int(header_group, "dimension", DIMENSION);
-    write_attr_double(header_group, "time", sim.t_sim);
-    write_attr_int(header_group, "step", sim.step);
-    write_attr_int64(header_group, "n_global", n_global);
-    write_attr_int(header_group, "nranks", nranks);
-    write_attr_int(header_group, "rank", rank);
-
-#ifdef ASTRO_PHYSICS
-    // code-unit base factors, so analysis can convert snapshots back to cgs
-    write_attr_double(header_group, "UnitLength_in_cm", units.UnitLength_in_cm);
-    write_attr_double(header_group, "UnitMass_in_g", units.UnitMass_in_g);
-    write_attr_double(header_group, "UnitVelocity_in_cm_per_s", units.UnitVelocity_in_cm_per_s);
-#endif
-
-    // /header/profiler: one double attr per timer with this rank's cum seconds.
-    // Restart reads these to seed Profiler::m_Timings directly — no more reliance
-    // on a text profile log for restart state.
-    hid_t prof_group = H5Gcreate(header_group, "profiler", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    for (const auto& kv : Profiler::CurrentCumulative()) {
-        write_attr_double(prof_group, kv.first.c_str(), kv.second);
-    }
-    H5Gclose(prof_group);
-
-    H5Gclose(header_group);
-
-    // flatten seeds (mesh->seeds always 3D, we store 2D/3D depending on DIMENSION)
-    std::vector<double> pos_flat(n_hydro * DIMENSION);
-    for (int i = 0; i < n_hydro; i++) {
-        pos_flat[i * DIMENSION + 0] = sim.mesh->seeds[i].x;
-        pos_flat[i * DIMENSION + 1] = sim.mesh->seeds[i].y;
-#ifdef dim_3D
-        pos_flat[i * DIMENSION + 2] = sim.mesh->seeds[i].z;
-#endif
-    }
-
-    // write mesh/pos
-    hid_t mesh_group = H5Gcreate(file_id, "mesh", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (!write_dataset_2d(mesh_group, "pos", pos_flat.data(), n_hydro, DIMENSION)) {
-        H5Gclose(mesh_group);
-        H5Fclose(file_id);
-        exit(EXIT_FAILURE);
-    }
-
-#ifdef OUTPUT_MESH
-    // cell volumes alongside the seeds. The tessellation is a deterministic function of the
-    // seed positions, so this is recoverable after the fact, but storing it saves analysis
-    // code from rebuilding the mesh or approximating volumes with a k-NN estimator.
-    if (!write_dataset_1d(mesh_group, "volume", sim.mesh->volumes, n_hydro)) {
-        H5Gclose(mesh_group);
-        H5Fclose(file_id);
-        exit(EXIT_FAILURE);
-    }
-
-    // Full Voronoi-geometry dump for the mesh-generation verification test (compared against
-    // an independent tessellation). Read host-side from the managed VMesh arrays — no
-    // Voronoi-kernel change, so the build codegen is untouched.
-    write_mesh_geometry(mesh_group, n_hydro);
-#endif
-
-    H5Gclose(mesh_group);
-
-    // write hydro/{rho,vel,energy}
-    hid_t hydro_group = H5Gcreate(file_id, "hydro", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (!write_dataset_1d(hydro_group, "rho", sim.primvar->rho, n_hydro) ||
-        !write_dataset_2d(hydro_group, "vel", reinterpret_cast<const double*>(sim.primvar->v), n_hydro, DIMENSION) ||
-        !write_dataset_1d(hydro_group, "energy", sim.primvar->E, n_hydro)) {
-        H5Gclose(hydro_group);
-        H5Fclose(file_id);
-        exit(EXIT_FAILURE);
-    }
-    H5Gclose(hydro_group);
-    H5Fclose(file_id);
+    if (!write_snapshot_file(fullPath, n_hydro, nranks, rank, n_global)) { exit(EXIT_FAILURE); }
 
     sim.snap_num += 1;
     // Skip the advance for the initial t=0 snapshot: begrun already set
@@ -181,98 +160,10 @@ void print_log() {
 }
 
 // ============================================================
-// helpers
-// ============================================================
-
-// HDF5 write operations
-static void write_attr_int(hid_t group, const char* name, int value) {
-    hid_t space = H5Screate(H5S_SCALAR);
-    hid_t a     = H5Acreate(group, name, H5T_NATIVE_INT, space, H5P_DEFAULT, H5P_DEFAULT);
-    H5Awrite(a, H5T_NATIVE_INT, &value);
-    H5Aclose(a);
-    H5Sclose(space);
-}
-
-static void write_attr_int64(hid_t group, const char* name, int64_t value) {
-    hid_t space = H5Screate(H5S_SCALAR);
-    hid_t a     = H5Acreate(group, name, H5T_NATIVE_INT64, space, H5P_DEFAULT, H5P_DEFAULT);
-    H5Awrite(a, H5T_NATIVE_INT64, &value);
-    H5Aclose(a);
-    H5Sclose(space);
-}
-
-static void write_attr_double(hid_t group, const char* name, double value) {
-    hid_t space = H5Screate(H5S_SCALAR);
-    hid_t a     = H5Acreate(group, name, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT);
-    H5Awrite(a, H5T_NATIVE_DOUBLE, &value);
-    H5Aclose(a);
-    H5Sclose(space);
-}
-
-static bool write_dataset_1d(hid_t parent, const char* name, const double* data, hsize_t n) {
-    hsize_t dims[1] = {n};
-    hid_t   space   = H5Screate_simple(1, dims, NULL);
-    hid_t   dset    = H5Dcreate(parent, name, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (dset < 0) {
-        std::cerr << "OUTPUT: Error! Could not create dataset '" << name << "'" << std::endl;
-        H5Sclose(space);
-        return false;
-    }
-    H5Dwrite(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-    H5Dclose(dset);
-    H5Sclose(space);
-    return true;
-}
-
-static bool write_dataset_2d(hid_t parent, const char* name, const double* data, hsize_t n, hsize_t dim) {
-    hsize_t dims[2] = {n, dim};
-    hid_t   space   = H5Screate_simple(2, dims, NULL);
-    hid_t   dset    = H5Dcreate(parent, name, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (dset < 0) {
-        std::cerr << "OUTPUT: Error! Could not create dataset '" << name << "'" << std::endl;
-        H5Sclose(space);
-        return false;
-    }
-    H5Dwrite(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-    H5Dclose(dset);
-    H5Sclose(space);
-    return true;
-}
-
 // OUTPUT_MESH: full Voronoi-geometry dump (verification only)
 // ============================================================
 
 #ifdef OUTPUT_MESH
-
-static bool write_dataset_1d_i32(hid_t parent, const char* name, const int* data, hsize_t n) {
-    hsize_t dims[1] = {n};
-    hid_t   space   = H5Screate_simple(1, dims, NULL);
-    hid_t   dset    = H5Dcreate(parent, name, H5T_NATIVE_INT, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (dset < 0) {
-        std::cerr << "OUTPUT: Error! Could not create dataset '" << name << "'" << std::endl;
-        H5Sclose(space);
-        return false;
-    }
-    H5Dwrite(dset, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-    H5Dclose(dset);
-    H5Sclose(space);
-    return true;
-}
-
-static bool write_dataset_1d_i64(hid_t parent, const char* name, const int64_t* data, hsize_t n) {
-    hsize_t dims[1] = {n};
-    hid_t   space   = H5Screate_simple(1, dims, NULL);
-    hid_t   dset    = H5Dcreate(parent, name, H5T_NATIVE_INT64, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (dset < 0) {
-        std::cerr << "OUTPUT: Error! Could not create dataset '" << name << "'" << std::endl;
-        H5Sclose(space);
-        return false;
-    }
-    H5Dwrite(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-    H5Dclose(dset);
-    H5Sclose(space);
-    return true;
-}
 
 // Compact the ragged per-face SoA (neighbor_cell / face_area, sliced by face_ptr/face_counts)
 // into CSR arrays and write the whole mesh geometry into `mesh_group`, in ascending-k order:
@@ -285,7 +176,7 @@ static bool write_dataset_1d_i64(hid_t parent, const char* name, const int64_t* 
 // mesh/volume [N] and mesh/pos [N,D] are written by the caller. The face normal is the
 // minimum-image seed-to-seed direction on the unit box — exactly how the build defines a
 // face plane — reconstructed here so the register-heavy Voronoi kernel is left untouched.
-static void write_mesh_geometry(hid_t mesh_group, int n_hydro) {
+static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
     const VMesh* m = sim.mesh;
 
     int64_t F = 0;
@@ -350,18 +241,19 @@ static void write_mesh_geometry(hid_t mesh_group, int n_hydro) {
     face_offset[(size_t)n_hydro] = run;
 
     bool ok = true;
-    ok      = ok && write_dataset_1d_i32(mesh_group, "n_faces", n_faces.data(), (hsize_t)n_hydro);
-    ok      = ok && write_dataset_1d_i64(mesh_group, "face_offset", face_offset.data(), (hsize_t)n_hydro + 1);
-    ok      = ok && write_dataset_1d_i32(mesh_group, "face_neighbor", face_neighbor.data(), (hsize_t)F);
-    ok      = ok && write_dataset_1d(mesh_group, "face_area", face_area.data(), (hsize_t)F);
-    ok      = ok && write_dataset_2d(mesh_group, "face_normal", face_normal.data(), (hsize_t)F, DIMENSION);
-    ok      = ok && write_dataset_2d(mesh_group, "centroid", com_flat.data(), (hsize_t)n_hydro, DIMENSION);
+    ok      = ok && h5::write_dataset_1d(mesh_group, "n_faces", n_faces.data(), (hsize_t)n_hydro);
+    ok      = ok && h5::write_dataset_1d(mesh_group, "face_offset", face_offset.data(), (hsize_t)n_hydro + 1);
+    ok      = ok && h5::write_dataset_1d(mesh_group, "face_neighbor", face_neighbor.data(), (hsize_t)F);
+    ok      = ok && h5::write_dataset_1d(mesh_group, "face_area", face_area.data(), (hsize_t)F);
+    ok      = ok && h5::write_dataset_2d(mesh_group, "face_normal", face_normal.data(), (hsize_t)F, DIMENSION);
+    ok      = ok && h5::write_dataset_2d(mesh_group, "centroid", com_flat.data(), (hsize_t)n_hydro, DIMENSION);
     if (!ok) {
         std::cerr << "OUTPUT: Error! failed to write OUTPUT_MESH geometry" << std::endl;
-        exit(EXIT_FAILURE);
+        return false;
     }
 
     logging::root() << "OUTPUT: wrote full mesh geometry (" << n_hydro << " cells, " << F << " faces)" << std::endl;
+    return true;
 }
 
 #endif // OUTPUT_MESH
