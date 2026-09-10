@@ -46,7 +46,7 @@ namespace begrun {
         // init OutputHandler
         std::string out_dir = input.getParameter("output_directory");
         output              = OutputHandler(out_dir);
-        if (!output.initialize()) { exit(EXIT_FAILURE); }
+        if (!output.initialize()) { proteus_mpi::exit_failure("BEGRUN: output directory setup failed.\n"); }
 
         // find latest snap
         const int latest_snap_n = InputHandler::findLatestSnapshot(out_dir, proteus_mpi::nranks(), proteus_mpi::rank());
@@ -65,13 +65,15 @@ namespace begrun {
 
             // read IC header (fields are read after domain decomp)
             hsize_t n_total = 0;
-            if (!input.readICHeader(icData.header.ic_filename, icData.header, n_total)) { exit(EXIT_FAILURE); }
+            if (!input.readICHeader(icData.header.ic_filename, icData.header, n_total)) {
+                proteus_mpi::exit_failure("BEGRUN: could not read IC header from %s\n",
+                                          icData.header.ic_filename.c_str());
+            }
             icData.header.n_global = n_total;
 
             // refuse to silently overwrite existing snapshots
             if (latest_snap_n > 0) {
-                std::cerr << "RESTART: Stopping! Found existing snapshots but no restart-flag." << std::endl;
-                exit(EXIT_FAILURE);
+                proteus_mpi::exit_failure("RESTART: Stopping! Found existing snapshots but no restart-flag.\n");
             }
         }
 
@@ -211,9 +213,10 @@ namespace begrun {
 
         // is there a snapshot to restart from?
         if (latest_snap_n < 0) {
-            std::cerr << "RESTART: Error! No snapshots found in " << out_dir
-                      << " (matching this run's rank count = " << proteus_mpi::nranks() << ")" << std::endl;
-            exit(EXIT_FAILURE);
+            proteus_mpi::exit_failure("RESTART: Error! No snapshots found in %s (matching this run's rank "
+                                      "count = %d)\n",
+                                      out_dir.c_str(),
+                                      proteus_mpi::nranks());
         }
 
         // snapshot filepath belonging to this rank
@@ -225,20 +228,24 @@ namespace begrun {
 
         // read snapshot
         SnapshotHeader snap;
-        if (!input.readSnapshotFile(snap_path, icData, snap)) { exit(EXIT_FAILURE); }
+        if (!input.readSnapshotFile(snap_path, icData, snap)) {
+            proteus_mpi::exit_failure("RESTART: could not read snapshot %s\n", snap_path.c_str());
+        }
 
         // does nranks equal the snapshot one?
         if (snap.nranks != proteus_mpi::nranks()) {
-            std::cerr << "RESTART: Error! Snapshot was written with " << snap.nranks << " ranks, but this run has "
-                      << proteus_mpi::nranks() << ". Restart requires the same nranks." << std::endl;
-            exit(EXIT_FAILURE);
+            proteus_mpi::exit_failure("RESTART: Error! Snapshot was written with %d ranks, but this run has %d. "
+                                      "Restart requires the same nranks.\n",
+                                      snap.nranks,
+                                      proteus_mpi::nranks());
         }
 
         // does my rank equal the snapshot one?
         if (snap.rank != proteus_mpi::rank()) {
-            std::cerr << "RESTART: Error! Snapshot file claims rank " << snap.rank << " but this rank is "
-                      << proteus_mpi::rank() << " (filename / rank mismatch)." << std::endl;
-            exit(EXIT_FAILURE);
+            proteus_mpi::exit_failure("RESTART: Error! Snapshot file claims rank %d but this rank is %d "
+                                      "(filename / rank mismatch).\n",
+                                      snap.rank,
+                                      proteus_mpi::rank());
         }
 
         // read sim info from snap
@@ -281,13 +288,17 @@ namespace begrun {
         const hsize_t n_local = (hsize_t)(my_hi - my_lo);
 
         // each rank reads part of the IC
-        if (!input.readICChunkParallel(icData.header.ic_filename, icData, row_lo, n_local)) { exit(EXIT_FAILURE); }
+        if (!input.readICChunkParallel(icData.header.ic_filename, icData, row_lo, n_local)) {
+            proteus_mpi::exit_failure("BEGRUN: parallel IC read failed for %s\n", icData.header.ic_filename.c_str());
+        }
 
         // exch the seedpoints to the ranks where they belong
         proteus_mpi::distribute_ic_parallel(icData, buff);
 #else
         // read the whole file
-        if (!input.readICFile(icData.header.ic_filename, icData)) { exit(EXIT_FAILURE); }
+        if (!input.readICFile(icData.header.ic_filename, icData)) {
+            proteus_mpi::exit_failure("BEGRUN: IC read failed for %s\n", icData.header.ic_filename.c_str());
+        }
 #endif
         // local cell count
         sim.n_hydro = icData.header.n_seeds;
@@ -296,9 +307,10 @@ namespace begrun {
         if (icData.header.restart_flag) {
             const long long n_global_kept = logging::sum_global((long long)sim.n_hydro);
             if (n_global_kept != (long long)icData.header.n_global) {
-                std::cerr << "RESTART: FATAL cell-count mismatch — sum(per-rank n_local) = " << n_global_kept
-                          << ", expected " << icData.header.n_global << " (from snapshot header)." << std::endl;
-                exit(EXIT_FAILURE);
+                proteus_mpi::exit_failure("RESTART: FATAL cell-count mismatch — sum(per-rank n_local) = %lld, "
+                                          "expected %lld (from snapshot header).\n",
+                                          n_global_kept,
+                                          (long long)icData.header.n_global);
             }
         }
     }

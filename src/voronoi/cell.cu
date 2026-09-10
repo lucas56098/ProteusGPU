@@ -324,9 +324,10 @@ namespace voronoi {
     // abort if `needed` exceeds the pre-allocated face buffer capacity
     void ensure_face_capacity(VMesh* mesh, hsize_t needed) {
         if (needed <= mesh->face_capacity) return;
-        std::cerr << "VORONOI: Error! face count " << needed << " exceeds pre-allocated face capacity "
-                  << mesh->face_capacity << ". Increase _FACE_CAPACITY_MULT_ in Config.sh." << std::endl;
-        exit(EXIT_FAILURE);
+        proteus_mpi::exit_failure("VORONOI: Error! face count %llu exceeds pre-allocated face capacity %llu. "
+                                  "Increase _FACE_CAPACITY_MULT_ in Config.sh.\n",
+                                  (unsigned long long)needed,
+                                  (unsigned long long)mesh->face_capacity);
     }
 
     // ============================================================

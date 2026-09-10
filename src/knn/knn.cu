@@ -52,8 +52,7 @@ namespace knn {
 
         int N_max = 16;
         if (knn->N_grid < N_max) {
-            std::cerr << "KNN: We don't support meshes with less than approx 12700 cells (3D)." << std::endl;
-            exit(EXIT_FAILURE);
+            proteus_mpi::exit_failure("KNN: We don't support meshes with less than approx 12700 cells (3D).\n");
         }
 
         // ring-expansion offset table: grid-cell offsets ordered by Chebyshev ring distance.
@@ -183,9 +182,10 @@ namespace knn {
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
 
         if (len_pts > knn->pts_capacity) {
-            std::cerr << "KNN: Error! point count " << len_pts << " exceeds pre-allocated capacity "
-                      << knn->pts_capacity << ". Increase ghost headroom." << std::endl;
-            exit(EXIT_FAILURE);
+            proteus_mpi::exit_failure(
+                "KNN: Error! point count %d exceeds pre-allocated capacity %d. Increase ghost headroom.\n",
+                len_pts,
+                knn->pts_capacity);
         }
 
         knn->len_pts = len_pts;

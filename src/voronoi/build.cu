@@ -85,9 +85,10 @@ namespace voronoi {
     // abort if the augmented seed count exceeds the pre-allocated capacity
     static void check_seed_capacity(const VMesh* mesh, int n_total) {
         if ((hsize_t)n_total > mesh->total_capacity) {
-            std::cerr << "VORONOI: Error! point count " << n_total << " exceeds pre-allocated capacity "
-                      << mesh->total_capacity << ". Increase ghost headroom." << std::endl;
-            exit(EXIT_FAILURE);
+            proteus_mpi::exit_failure("VORONOI: Error! point count %d exceeds pre-allocated capacity %llu. "
+                                      "Increase ghost headroom.\n",
+                                      n_total,
+                                      (unsigned long long)mesh->total_capacity);
         }
     }
 
@@ -142,9 +143,10 @@ namespace voronoi {
                 (n_total > 0) ? (hsize_t)flags[n_total - 1] + (((hsize_t)dperm[n_total - 1] < n_hydro) ? 1 : 0) : 0;
 
             if (n_reals != n_hydro) {
-                std::cerr << "VORONOI: build_index_maps: counted " << n_reals << " reals but n_hydro = " << n_hydro
-                          << ". Aborting." << std::endl;
-                exit(EXIT_FAILURE);
+                proteus_mpi::exit_failure(
+                    "VORONOI: build_index_maps: counted %llu reals but n_hydro = %llu. Aborting.\n",
+                    (unsigned long long)n_reals,
+                    (unsigned long long)n_hydro);
             }
         } else {
             // iter > 0: reuse iter-0's orig_to_k_save for stable k assignment
@@ -369,9 +371,9 @@ namespace voronoi {
         const int overflow_flag = s_cpu_overflow_flag;
 #endif
         if (overflow_flag) {
-            std::cerr << "VORONOI: Error! face offset exceeds pre-allocated face capacity " << mesh->face_capacity
-                      << ". Increase _FACE_CAPACITY_MULT_ in Config.sh." << std::endl;
-            exit(EXIT_FAILURE);
+            proteus_mpi::exit_failure("VORONOI: Error! face offset exceeds pre-allocated face capacity %llu. "
+                                      "Increase _FACE_CAPACITY_MULT_ in Config.sh.\n",
+                                      (unsigned long long)mesh->face_capacity);
         }
     }
 

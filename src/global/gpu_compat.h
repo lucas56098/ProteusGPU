@@ -2,6 +2,7 @@
 #define GPU_COMPAT_H
 #pragma once
 
+#include "../mpi/mpi_compat.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -116,8 +117,7 @@ inline int3 make_int3(int x, int y, int z) {
     do {                                                                                                               \
         cudaError_t err = (call);                                                                                      \
         if (err != cudaSuccess) {                                                                                      \
-            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));                 \
-            exit(EXIT_FAILURE);                                                                                        \
+            proteus_mpi::exit_failure("CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));       \
         }                                                                                                              \
     } while (0)
 

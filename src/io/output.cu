@@ -132,7 +132,9 @@ void OutputHandler::write_snapshot() {
         logging::root() << "OUTPUT: Writing snapshot to: " << fullPath << std::endl;
     }
 
-    if (!write_snapshot_file(fullPath, n_hydro, nranks, rank, n_global)) { exit(EXIT_FAILURE); }
+    if (!write_snapshot_file(fullPath, n_hydro, nranks, rank, n_global)) {
+        proteus_mpi::exit_failure("OUTPUT: failed to write snapshot %s\n", fullPath.c_str());
+    }
 
     sim.snap_num += 1;
     // Skip the advance for the initial t=0 snapshot: begrun already set

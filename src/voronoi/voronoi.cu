@@ -503,9 +503,10 @@ namespace voronoi {
     // abort if the periodic-ghost count overflows the pre-allocated cap
     static void check_ghost_count(hsize_t n_ghosts, hsize_t max_ghosts) {
         if (n_ghosts > max_ghosts) {
-            std::cerr << "VORONOI: Error! ghost count " << n_ghosts << " exceeds estimated max " << max_ghosts
-                      << ". Distribution is highly non-uniform." << std::endl;
-            exit(EXIT_FAILURE);
+            proteus_mpi::exit_failure("VORONOI: Error! ghost count %llu exceeds estimated max %llu. Distribution "
+                                      "is highly non-uniform.\n",
+                                      (unsigned long long)n_ghosts,
+                                      (unsigned long long)max_ghosts);
         }
     }
 

@@ -749,9 +749,8 @@ namespace voronoi {
 
         while (!work_affected.empty()) {
             if (++result.rounds > MAX_ROUNDS) {
-                std::cerr << "VORONOI: symmetry cascade did not converge after " << MAX_ROUNDS << " rounds, aborting."
-                          << std::endl;
-                exit(EXIT_FAILURE);
+                proteus_mpi::exit_failure("VORONOI: symmetry cascade did not converge after %d rounds, aborting.\n",
+                                          MAX_ROUNDS);
             }
 
             // rebuild each affected cell; track which ones get perturbed for the next round
@@ -772,10 +771,8 @@ namespace voronoi {
                 compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(
                     kn, seed_id, d_stored_points, mesh->knn, mesh->cell_status, mesh, &face_offset, &overflow);
                 if (overflow) {
-                    std::cerr << "VORONOI: face overflow during symmetry rebuild — "
-                                 "increase _FACE_CAPACITY_MULT_ in Config.sh."
-                              << std::endl;
-                    exit(EXIT_FAILURE);
+                    proteus_mpi::exit_failure("VORONOI: face overflow during symmetry rebuild — increase "
+                                              "_FACE_CAPACITY_MULT_ in Config.sh.\n");
                 }
                 if (mesh->cell_status[kn] == success) {
                     reclaim_appended_slice(mesh, kn, fp_old, fc_old, &face_offset, off_before);
