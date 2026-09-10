@@ -250,7 +250,7 @@ namespace begrun {
 
         // read sim info from snap
         sim.t_sim              = snap.t_sim;
-        sim.step               = snap.step;
+        sim.step               = snap.step + (latest_snap_n > 0 ? 1 : 0);
         sim.snap_num           = latest_snap_n + 1;
         icData.header.n_global = snap.n_global;
         // load_IC_fields() is the only other writer of n_hydro and is skipped on restart
