@@ -5,20 +5,8 @@
 #include "../profiler/profiler.h"
 #include "gpu_compat.h"
 
-// Per-cell work is dispatched twice throughout the code — once as a CUDA kernel, once as
-// an OpenMP loop — and the two differ only in scaffolding. parallel_for holds that
-// scaffolding in one place: the caller passes the loop body as an HD lambda and it runs
-// on whichever backend was compiled in.
-//
-//     parallel_for<_GRAD_BLOCK_SIZE_, 2>("GRAD_KERNEL", mesh->n_hydro,
-//         [=] HD(size_t i) { compute_gradient_for_cell(i, mesh, primvar, grads); });
-//
-// The lambda's type is a template parameter, so the body inlines into the kernel exactly
-// as a hand-written one does. A function pointer would cost an indirect call per cell.
-//
-// BLOCK is threads per block, MIN_BLOCKS the occupancy target — the two arguments that
-// used to sit in LAUNCH_BOUNDS on each kernel. They are template parameters because
-// __launch_bounds__ needs them at compile time.
+// CPU scheduling policy
+enum class Sched { Static, Dynamic };
 
 #ifndef CPU_DEBUG
 
@@ -32,7 +20,26 @@ GLOBAL void LAUNCH_BOUNDS(BLOCK, MIN_BLOCKS) kernel_parallel_apply(size_t n, F f
 
 #endif // !CPU_DEBUG
 
-template <int BLOCK, int MIN_BLOCKS = 1, typename F> inline void parallel_for(const char* name, size_t n, F f) {
+template <typename F> inline void cpu_for_static(size_t n, F f) {
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t i = 0; i < n; i++) {
+        f(i);
+    }
+}
+
+template <typename F> inline void cpu_for_dynamic(size_t n, F f) {
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(dynamic)
+#endif
+    for (size_t i = 0; i < n; i++) {
+        f(i);
+    }
+}
+
+template <int BLOCK, int MIN_BLOCKS = 1, Sched SCHED = Sched::Static, typename F>
+inline void parallel_for(const char* name, size_t n, F f) {
     (void)name; // unused when profiling is compiled out
     if (n == 0) return;
 
@@ -43,11 +50,11 @@ template <int BLOCK, int MIN_BLOCKS = 1, typename F> inline void parallel_for(co
 #else
     // a CPU scope rather than a kernel one: same label, no GPU events to query
     PROFILE(name);
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < n; i++) {
-        f(i);
+
+    if (SCHED == Sched::Dynamic) {
+        cpu_for_dynamic(n, f);
+    } else {
+        cpu_for_static(n, f);
     }
 #endif
 }

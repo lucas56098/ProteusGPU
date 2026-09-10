@@ -18,21 +18,6 @@ namespace voronoi {
     static void read_face_count_from_gpu(VMesh* mesh);
 
 #ifndef CPU_DEBUG
-    GLOBAL void kernel_compute_voronoi_cells_fast(int                n_hydro,
-                                                  double*            d_stored_points,
-                                                  const knn_problem* knn,
-                                                  Status*            stat,
-                                                  VMesh*             mesh,
-                                                  hsize_t*           face_offset,
-                                                  int*               overflow_flag);
-    GLOBAL void kernel_compute_voronoi_cells_slow(int                n_failed,
-                                                  const int*         failed_ks,
-                                                  double*            d_stored_points,
-                                                  const knn_problem* knn,
-                                                  Status*            stat,
-                                                  VMesh*             mesh,
-                                                  hsize_t*           face_offset,
-                                                  int*               overflow_flag);
 #endif
 
     // ---- per-step scratch for cell construction ----
@@ -290,41 +275,35 @@ namespace voronoi {
 #endif
     }
 
+    static unsigned long long* cell_face_offset() {
+#ifndef CPU_DEBUG
+        return (unsigned long long*)d_face_offset;
+#else
+        return &s_cpu_face_offset;
+#endif
+    }
+
+    static int* cell_overflow_flag() {
+#ifndef CPU_DEBUG
+        return d_overflow_flag;
+#else
+        return &s_cpu_overflow_flag;
+#endif
+    }
+
     // dispatch the fast voronoi kernel over n_hydro cells
     static void run_fast_cell_kernel(VMesh* mesh) {
-        const int n_hydro = (int)mesh->n_hydro;
-#ifndef CPU_DEBUG
-        const int tpb    = _VORO_BLOCK_SIZE_;
-        const int blocks = (n_hydro + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("FAST");
-            kernel_compute_voronoi_cells_fast<<<blocks, tpb>>>(n_hydro,
-                                                               (double*)mesh->knn->d_stored_points,
-                                                               mesh->knn,
-                                                               mesh->cell_status,
-                                                               mesh,
-                                                               d_face_offset,
-                                                               d_overflow_flag);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(dynamic)
-#endif
-        for (int k = 0; k < n_hydro; k++) {
-            if (s_cpu_overflow_flag) continue;
+        double*             pts   = (double*)mesh->knn->d_stored_points;
+        const knn_problem*  knn   = mesh->knn;
+        Status*             stat  = mesh->cell_status;
+        unsigned long long* foff  = cell_face_offset();
+        int*                oflag = cell_overflow_flag();
+
+        parallel_for<_VORO_BLOCK_SIZE_, 16, Sched::Dynamic>("FAST", mesh->n_hydro, [=] HD(int k) {
             const int seed_id = (int)mesh->real_sorted_ids[k];
             compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_, uchar, VERT_TYPE>(
-                k,
-                seed_id,
-                (double*)mesh->knn->d_stored_points,
-                mesh->knn,
-                mesh->cell_status,
-                mesh,
-                &s_cpu_face_offset,
-                &s_cpu_overflow_flag);
-        }
-#endif
+                k, seed_id, pts, knn, stat, mesh, foff, oflag);
+        });
     }
 
     // List the cells that did not finish under the fast kernel, in index order, on both
@@ -364,39 +343,19 @@ namespace voronoi {
 
     // dispatch the slow voronoi kernel over the cells that failed the fast tier
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed) {
-#ifndef CPU_DEBUG
-        const int tpb    = _VORO_BLOCK_SIZE_;
-        const int blocks = (n_failed + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("SLOW");
-            kernel_compute_voronoi_cells_slow<<<blocks, tpb>>>(n_failed,
-                                                               d_failed_indices,
-                                                               (double*)mesh->knn->d_stored_points,
-                                                               mesh->knn,
-                                                               mesh->cell_status,
-                                                               mesh,
-                                                               d_face_offset,
-                                                               d_overflow_flag);
-            GPU_SYNC();
-        }
-#else
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(dynamic)
-#endif
-        for (int i = 0; i < n_failed; i++) {
-            if (s_cpu_overflow_flag) continue;
-            const int k       = d_failed_indices[i];
+        const int*          failed_ks = d_failed_indices;
+        double*             pts       = (double*)mesh->knn->d_stored_points;
+        const knn_problem*  knn       = mesh->knn;
+        Status*             stat      = mesh->cell_status;
+        unsigned long long* foff      = cell_face_offset();
+        int*                oflag     = cell_overflow_flag();
+
+        parallel_for<_VORO_BLOCK_SIZE_, 8, Sched::Dynamic>("SLOW", n_failed, [=] HD(int i) {
+            const int k       = failed_ks[i];
             const int seed_id = (int)mesh->real_sorted_ids[k];
-            compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(k,
-                                                                                 seed_id,
-                                                                                 (double*)mesh->knn->d_stored_points,
-                                                                                 mesh->knn,
-                                                                                 mesh->cell_status,
-                                                                                 mesh,
-                                                                                 &s_cpu_face_offset,
-                                                                                 &s_cpu_overflow_flag);
-        }
-#endif
+            compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(
+                k, seed_id, pts, knn, stat, mesh, foff, oflag);
+        });
     }
 
     // sync the device, copy num_faces back to host, abort on face-buffer overflow
@@ -415,44 +374,5 @@ namespace voronoi {
             exit(EXIT_FAILURE);
         }
     }
-
-    // ============================================================
-    // CUDA kernels
-    // ============================================================
-#ifndef CPU_DEBUG
-
-    // fast-tier per-cell kernel: small K, small face capacity
-    GLOBAL LAUNCH_BOUNDS(_VORO_BLOCK_SIZE_, 16) void kernel_compute_voronoi_cells_fast(int     n_hydro,
-                                                                                       double* d_stored_points,
-                                                                                       const knn_problem* knn,
-                                                                                       Status*            stat,
-                                                                                       VMesh*             mesh,
-                                                                                       hsize_t*           face_offset,
-                                                                                       int* overflow_flag) {
-        const int k = blockIdx.x * blockDim.x + threadIdx.x;
-        if (k >= n_hydro) return;
-        const int seed_id = (int)mesh->real_sorted_ids[k];
-        compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_, uchar, VERT_TYPE>(
-            k, seed_id, d_stored_points, knn, stat, mesh, (unsigned long long*)face_offset, overflow_flag);
-    }
-
-    // slow-tier per-cell kernel: bigger K + larger face capacity, run only on cells that failed fast tier
-    GLOBAL LAUNCH_BOUNDS(_VORO_BLOCK_SIZE_, 8) void kernel_compute_voronoi_cells_slow(int        n_failed,
-                                                                                      const int* failed_ks,
-                                                                                      double*    d_stored_points,
-                                                                                      const knn_problem* knn,
-                                                                                      Status*            stat,
-                                                                                      VMesh*             mesh,
-                                                                                      hsize_t*           face_offset,
-                                                                                      int* overflow_flag) {
-        const int i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_failed) return;
-        const int k       = failed_ks[i];
-        const int seed_id = (int)mesh->real_sorted_ids[k];
-        compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(
-            k, seed_id, d_stored_points, knn, stat, mesh, (unsigned long long*)face_offset, overflow_flag);
-    }
-
-#endif // !CPU_DEBUG
 
 } // namespace voronoi
