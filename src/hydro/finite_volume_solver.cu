@@ -24,12 +24,6 @@ namespace hydro {
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new);
     static void swap_primvars(primvars* primvar, primvars* prim_new);
 
-#ifndef CPU_DEBUG
-    // kernels
-    GLOBAL void
-    kernel_copy_primvars(hsize_t, const double*, const POINT_TYPE*, const double*, double*, POINT_TYPE*, double*);
-#endif
-
     // ============================================================
     // Allocation and initialization
     // ============================================================
@@ -197,28 +191,17 @@ namespace hydro {
 
     // set prim_new equal to prim
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new) {
-#ifndef CPU_DEBUG
-        {
-            PROFILE_KERNEL("COPY_PRIMVAR");
-            int tpb    = _HYDRO_BLOCK_SIZE_;
-            int blocks = ((int)mesh->n_hydro + tpb - 1) / tpb;
-            kernel_copy_primvars<<<blocks, tpb>>>(
-                mesh->n_hydro, primvar->rho, primvar->v, primvar->E, prim_new->rho, prim_new->v, prim_new->E);
-            GPU_SYNC();
-        }
-#else
+
+        PROFILE("COPY_PRIMVAR");
         gpu_memcpy(prim_new->rho, primvar->rho, mesh->n_hydro * sizeof(double));
         gpu_memcpy(prim_new->v, primvar->v, mesh->n_hydro * sizeof(POINT_TYPE));
         gpu_memcpy(prim_new->E, primvar->E, mesh->n_hydro * sizeof(double));
-#endif
     }
 
     // swap the rho / v / E SoA pointers between primvar and prim_new so primvar holds
     // the newly-computed state for the next step
     static void swap_primvars(primvars* primvar, primvars* prim_new) {
-#ifndef CPU_DEBUG
         GPU_SYNC(); // ensure all kernel writes to prim_new have landed before the swap
-#endif
         std::swap(primvar->rho, prim_new->rho);
         std::swap(primvar->v, prim_new->v);
         std::swap(primvar->E, prim_new->E);
@@ -267,28 +250,6 @@ namespace hydro {
         if (nan_bad > 0) logging::root() << "HYDRO: WARNING: " << nan_bad << " cells with NaN" << std::endl;
         proteus_mpi::exit_failure("HYDRO: ABORT: unphysical state detected — terminating run.\n");
     }
-
-    // ============================================================
-    // CUDA kernel wrappers
-    // ============================================================
-#ifndef CPU_DEBUG
-
-    // copy primvars from one to another
-    GLOBAL void kernel_copy_primvars(hsize_t           n_hydro,
-                                     const double*     rho_src,
-                                     const POINT_TYPE* v_src,
-                                     const double*     E_src,
-                                     double*           rho_dst,
-                                     POINT_TYPE*       v_dst,
-                                     double*           E_dst) {
-        hsize_t i = blockIdx.x * blockDim.x + threadIdx.x;
-        if (i >= n_hydro) return;
-        rho_dst[i] = rho_src[i];
-        v_dst[i]   = v_src[i];
-        E_dst[i]   = E_src[i];
-    }
-
-#endif // !CPU_DEBUG
 
     // ============================================================
     // Per-cell work functions (parallel_for bodies)
