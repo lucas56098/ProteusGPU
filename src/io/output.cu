@@ -213,7 +213,10 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
             face_neighbor[dst] = nbr;
             face_area[dst]     = m->face_area[src];
 
-            double nx = 0.0, ny = 0.0, nz = 0.0;
+            double nx = 0.0, ny = 0.0;
+#ifdef dim_3D
+            double nz = 0.0;
+#endif
             if (nbr >= 0) {
                 // nbr >= n_hydro is an MPI ghost living in seeds_g, not further along seeds
                 const double3 sn = get_seed_at(nbr, n_hydro, m);
@@ -230,7 +233,9 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
                 const double inv = (len > 0.0) ? 1.0 / len : 0.0;
                 nx               = dx * inv;
                 ny               = dy * inv;
-                nz               = dz * inv;
+#ifdef dim_3D
+                nz = dz * inv;
+#endif
             }
             face_normal[dst * DIMENSION + 0] = nx;
             face_normal[dst * DIMENSION + 1] = ny;
