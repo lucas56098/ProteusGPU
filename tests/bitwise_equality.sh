@@ -188,7 +188,8 @@ build_for() {   # dim backend use_mpi flags -> prints exec path, or nothing on f
         printf 'dim_%sD\n' "$dim"
         if [ "$backend" = gpu ]; then printf 'CUDA\n'; else printf 'CPU_DEBUG\n'; fi
         printf 'USE_OPENMP\n'    # the halo build is host-side OpenMP even in a CUDA build
-        printf 'OUTPUT_MESH\n'   # compares cell volumes and face data, not just hydro state
+        printf 'OUTPUT_MESH\n'      # compares cell volumes and face data, not just hydro state
+        printf 'ENABLE_PROFILING\n'
         [ "$use_mpi" -eq 1 ] && printf 'USE_MPI\n'
         for f in $flags; do printf '%s\n' "$f"; done
     } > "$cfg"
@@ -225,7 +226,7 @@ for case_name in "${CASES[@]}"; do
         g_label="$1"; g_ranks="$2"; g_mpi="$3"
 
         start=$SECONDS
-        ref_dir=""; ref_label=""; problem=""; compared=0; steps=""
+        ref_dir=""; ref_label=""; ref_backend=""; problem=""; compared=0; steps=""
 
         for variant in "${VARIANTS[@]}"; do
             set -- $variant
@@ -260,12 +261,15 @@ for case_name in "${CASES[@]}"; do
             fi
 
             if [ -z "$ref_dir" ]; then
-                ref_dir="$out"; ref_label="$v_label"
+                ref_dir="$out"; ref_label="$v_label"; ref_backend="$v_backend"
                 steps=$(grep -o 'Finished after [0-9]* steps' "$out/run.log" | grep -o '[0-9]*')
                 continue
             fi
+
+            cmp_opts=()
+            [ "$v_backend" = "$ref_backend" ] && cmp_opts=(--profile)
             if ! timeout 900 python3 "$CASES_DIR/compare.py" "$ref_dir" "$out" \
-                    >"$WORK/cmp.out" 2>&1; then
+                    ${cmp_opts[@]+"${cmp_opts[@]}"} >"$WORK/cmp.out" 2>&1; then
                 problem="$v_label != $ref_label"
                 cp "$WORK/cmp.out" "$WORK/$case_name/why"
                 break
