@@ -12,13 +12,11 @@ def totals_of(run_dir):
     path = os.path.join(run_dir, "profile.hdf5")
     out = {}
     with h5py.File(path, "r") as f:
-        for rank in f:
-            grp = f[rank].get("cumulative")
-            if grp is None:
-                continue
+        grp = f.get("cumulative")
+        if grp is not None:
+            # each dataset is [step, rank]; the last row is every rank's run total
             for scope, ds in grp.items():
-                v = float(ds[()][-1])
-                out[scope] = max(out.get(scope, 0.0), v)
+                out[scope] = float(max(ds[-1, :]))
     if not out:
         raise ValueError(f"no cumulative scopes in {path}")
     return out
