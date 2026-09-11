@@ -27,6 +27,9 @@ namespace begrun {
     static void init_exch_buffers();
     static void init_hydro_and_mesh();
     static void free_initial_conditions();
+#ifdef USE_MPI
+    static void restore_decomp_splits();
+#endif
 
     // ============================================================
     // setup / end a simulation run
@@ -91,6 +94,10 @@ namespace begrun {
         // decompose domain
         buff = (1. / pow((double)icData.header.n_global, 1. / ((double)DIMENSION))) * 4;
         proteus_mpi::decomp_init(icData.header.n_global, buff);
+
+#ifdef USE_MPI
+        if (icData.header.restart_flag) { restore_decomp_splits(); }
+#endif
 
         // load IC fields into icData
         if (!icData.header.restart_flag) { load_IC_fields(); };
@@ -207,6 +214,25 @@ namespace begrun {
                         << units.UnitVelocity_in_cm_per_s << " cm/s" << std::endl;
 #endif
     }
+
+#ifdef USE_MPI
+    static void restore_decomp_splits() {
+        const auto& dc = proteus_mpi::decomp;
+        for (int a = 0; a < 3; a++) {
+            const size_t want = (size_t)dc.dims[a] + 1;
+            if (icData.header.decomp_splits[a].size() != want) {
+                proteus_mpi::exit_failure("RESTART: Error! snapshot split table for axis %d has %zu entries, "
+                                          "this run's decomposition needs %zu.\n",
+                                          a,
+                                          icData.header.decomp_splits[a].size(),
+                                          want);
+            }
+        }
+        proteus_mpi::decomp_apply_splits(icData.header.decomp_splits[0].data(),
+                                         icData.header.decomp_splits[1].data(),
+                                         icData.header.decomp_splits[2].data());
+    }
+#endif
 
     // restarting from snapshots
     static void restart_from_snapshot(const int latest_snap_n, std::string out_dir) {
@@ -335,6 +361,18 @@ namespace begrun {
         // allocate mesh
         sim.mesh = voronoi::allocate_mesh(sim.n_hydro);
 
+#ifdef MOVING_MESH
+        if (!icData.v_mesh.empty()) {
+            for (uint64_t i = 0; i < sim.n_hydro; i++) {
+                sim.mesh->v_mesh[i].x = icData.v_mesh[DIMENSION * i];
+                sim.mesh->v_mesh[i].y = icData.v_mesh[DIMENSION * i + 1];
+#ifdef dim_3D
+                sim.mesh->v_mesh[i].z = icData.v_mesh[DIMENSION * i + 2];
+#endif
+            }
+        }
+#endif
+
         // initial build
         voronoi::compute_periodic_mesh(
             sim.mesh, (POINT_TYPE*)icData.pos.data(), sim.n_hydro, sim.primvar, sim.prim_new, 0.0);
@@ -359,6 +397,9 @@ namespace begrun {
         std::vector<double>().swap(icData.vel);
         std::vector<double>().swap(icData.energy);
         std::vector<uint64_t>().swap(icData.global_id);
+#ifdef MOVING_MESH
+        std::vector<double>().swap(icData.v_mesh);
+#endif
     }
 
 } // namespace begrun

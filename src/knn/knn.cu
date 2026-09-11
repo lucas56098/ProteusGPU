@@ -13,7 +13,7 @@ namespace knn {
     // init (once), prepare (per timestep), free (once)
     // ============================================================
 
-    knn_problem* init_once(int n_hydro) {
+    knn_problem* init_once(int n_hydro, int N_grid_restored) {
 
         // worst-case total points: max_n_local + periodic ghosts + MPI ghosts
         double ghost_frac  = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
@@ -25,8 +25,10 @@ namespace knn {
         // pick grid resolution: ~3 points per cell on average is the sweet spot for KNN
         knn->len_pts      = max_n_total;
         knn->pts_capacity = max_n_total;
-        knn->N_grid       = std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
-        knn->Npow         = (int)pow(knn->N_grid, DIMENSION);
+
+        knn->N_grid = (N_grid_restored > 0) ? N_grid_restored
+                                            : std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
+        knn->Npow   = (int)pow(knn->N_grid, DIMENSION);
         // bucket grid spans [-buff, 1+buff]^d; cellFromPoint uses inv_boxsize to index into it
         knn->buff        = buff;
         knn->inv_boxsize = 1.0 / (1.0 + 2.0 * buff);

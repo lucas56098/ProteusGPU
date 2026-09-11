@@ -30,7 +30,7 @@ typedef struct knn_problem {
 namespace knn {
 
     // computes offset grid and allocates buffers
-    knn_problem* init_once(int n_hydro);
+    knn_problem* init_once(int n_hydro, int N_grid_restored);
 
     // resets counters and sorts points into grid
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);

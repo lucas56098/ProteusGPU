@@ -293,6 +293,15 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
             return false;
         }
 
+        if (H5Aexists(header_group, "knn_N_grid") <= 0) {
+            std::cerr << "INPUT: Error! Snapshot " << filename
+                      << " has no header/knn_N_grid, so it predates reproducible restarts. Resuming from it "
+                         "would size the neighbour grid differently and reorder the cells."
+                      << std::endl;
+            return false;
+        }
+        if (!h5::read_attr(header_group, "knn_N_grid", icData.header.knn_N_grid)) { return false; }
+
         // /header/profiler: walk attrs to recover per-rank cumulative seconds. Snapshots
         // written by the legacy text-log code path lack this sub-group; leave map empty.
         if (H5Lexists(header_group, "profiler", H5P_DEFAULT) > 0) {
@@ -339,6 +348,32 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
             !h5::read_dataset_1d(hydro_group, "energy", icData.energy)) {
             return false;
         }
+
+#ifdef MOVING_MESH
+        // Refuse rather than fall back to zeros: a silently different first timestep is worse
+        // than a restart that stops.
+        if (H5Lexists(mesh_group, "v_mesh", H5P_DEFAULT) <= 0) {
+            std::cerr << "INPUT: Error! Snapshot " << filename
+                      << " has no mesh/v_mesh, so it predates moving-mesh restart support. "
+                         "Continuing from it would take a different first timestep."
+                      << std::endl;
+            return false;
+        }
+        if (!h5::read_dataset_2d(mesh_group, "v_mesh", icData.v_mesh)) { return false; }
+#endif
+
+#ifdef USE_MPI
+        if (H5Lexists(file, "decomp", H5P_DEFAULT) <= 0) {
+            std::cerr << "INPUT: Error! Snapshot " << filename
+                      << " has no /decomp group, so the split tables it ran with are unknown." << std::endl;
+            return false;
+        }
+        h5::Group   decomp_group(H5Gopen(file, "decomp", H5P_DEFAULT));
+        const char* axis_name[3] = {"splits_x", "splits_y", "splits_z"};
+        for (int a = 0; a < 3; a++) {
+            if (!h5::read_dataset_1d(decomp_group, axis_name[a], icData.header.decomp_splits[a])) { return false; }
+        }
+#endif
     }
 
     logging::root() << "INPUT: Snapshot loaded successfully! (" << icData.header.n_seeds << " cells, t = " << snap.t_sim

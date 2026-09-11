@@ -15,6 +15,12 @@ struct ICHeader {
 
     uint64_t n_seeds  = 0;
     int64_t  n_global = 0;
+
+    int knn_N_grid = 0;
+
+#ifdef USE_MPI
+    std::vector<int> decomp_splits[3];
+#endif
 };
 
 struct ICData {
@@ -22,6 +28,10 @@ struct ICData {
     std::vector<double> rho;    // n_seeds
     std::vector<double> vel;    // dimension * n_seeds
     std::vector<double> energy; // n_seeds
+
+#ifdef MOVING_MESH
+    std::vector<double> v_mesh; // dimension * n_seeds
+#endif
 
     // global cell ID
     std::vector<uint64_t> global_id;

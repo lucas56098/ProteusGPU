@@ -1,4 +1,5 @@
 #include "../global/allvars.h"
+#include "../mpi/decomp.h"
 #include "../mpi/mpi_compat.h"
 #include "../mpi/rebalance.h"
 #include "../voronoi/voronoi.h"
@@ -61,7 +62,8 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
         h5::Group header_group(H5Gcreate(file, "header", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         if (!h5::write_attr(header_group, "dimension", DIMENSION) || !h5::write_attr(header_group, "time", sim.t_sim) ||
             !h5::write_attr(header_group, "step", sim.step) || !h5::write_attr(header_group, "n_global", n_global) ||
-            !h5::write_attr(header_group, "nranks", nranks) || !h5::write_attr(header_group, "rank", rank)) {
+            !h5::write_attr(header_group, "nranks", nranks) || !h5::write_attr(header_group, "rank", rank) ||
+            !h5::write_attr(header_group, "knn_N_grid", sim.mesh->knn->N_grid)) {
             return false;
         }
 
@@ -79,6 +81,18 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
         }
     }
 
+#ifdef USE_MPI
+    {
+        const auto& dc = proteus_mpi::decomp;
+        h5::Group   decomp_group(H5Gcreate(file, "decomp", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
+        if (!h5::write_dataset_1d(decomp_group, "splits_x", dc.splits[0], (hsize_t)(dc.dims[0] + 1)) ||
+            !h5::write_dataset_1d(decomp_group, "splits_y", dc.splits[1], (hsize_t)(dc.dims[1] + 1)) ||
+            !h5::write_dataset_1d(decomp_group, "splits_z", dc.splits[2], (hsize_t)(dc.dims[2] + 1))) {
+            return false;
+        }
+    }
+#endif
+
     std::vector<double> pos_flat(n_hydro * DIMENSION);
     for (int i = 0; i < n_hydro; i++) {
         pos_flat[i * DIMENSION + 0] = sim.mesh->seeds[i].x;
@@ -92,6 +106,18 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
     {
         h5::Group mesh_group(H5Gcreate(file, "mesh", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         if (!h5::write_dataset_2d(mesh_group, "pos", pos_flat.data(), n_hydro, DIMENSION)) { return false; }
+
+#ifdef MOVING_MESH
+        std::vector<double> vmesh_flat(n_hydro * DIMENSION);
+        for (int i = 0; i < n_hydro; i++) {
+            vmesh_flat[i * DIMENSION + 0] = sim.mesh->v_mesh[i].x;
+            vmesh_flat[i * DIMENSION + 1] = sim.mesh->v_mesh[i].y;
+#ifdef dim_3D
+            vmesh_flat[i * DIMENSION + 2] = sim.mesh->v_mesh[i].z;
+#endif
+        }
+        if (!h5::write_dataset_2d(mesh_group, "v_mesh", vmesh_flat.data(), n_hydro, DIMENSION)) { return false; }
+#endif
 
 #ifdef OUTPUT_MESH
 

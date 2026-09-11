@@ -128,7 +128,7 @@ namespace voronoi {
         mesh->scratch_move = gpu_alloc<POINT_TYPE>(ext);
 
         // KNN cache
-        mesh->knn = knn::init_once((int)n_hydro);
+        mesh->knn = knn::init_once((int)n_hydro, icData.header.knn_N_grid);
 
         // hint GPU-preferred placement for hot arrays
         gpu_advise_gpu_preferred(mesh->seeds, ext * sizeof(double3));
