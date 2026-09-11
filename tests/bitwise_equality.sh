@@ -29,6 +29,7 @@ Within one launch configuration (a fixed rank count), these must all match:
   cpu/rerun    CPU_DEBUG, N threads, again       catches run-to-run races
   gpu/t1       CUDA, 1 host thread               catches backend divergence
   gpu/tN       CUDA, N host threads              the MPI halo build is host-side OpenMP
+  cpu/restart  CPU_DEBUG, resumed mid-run        catches state the snapshot fails to restore
 
 and that whole set is repeated per launch configuration:
 
@@ -135,6 +136,7 @@ done
 VARIANTS=("cpu/t1 cpu 1")
 [ "$THREADS_N" -gt 1 ] && VARIANTS+=("cpu/t$THREADS_N cpu $THREADS_N")
 VARIANTS+=("cpu/rerun cpu $THREADS_N")
+VARIANTS+=("cpu/restart cpu $THREADS_N restart")
 if [ "$CAP_NVCC" = yes ]; then
     VARIANTS+=("gpu/t1 gpu 1")
     [ "$THREADS_N" -gt 1 ] && VARIANTS+=("gpu/t$THREADS_N gpu $THREADS_N")
@@ -230,7 +232,7 @@ for case_name in "${CASES[@]}"; do
 
         for variant in "${VARIANTS[@]}"; do
             set -- $variant
-            v_label="$1"; v_backend="$2"; v_threads="$3"
+            v_label="$1"; v_backend="$2"; v_threads="$3"; v_mode="${4:-run}"
 
             exe="$(build_for "$CASE_DIM" "$v_backend" "$g_mpi" "$CASE_FLAGS")"
             if [ -z "$exe" ]; then
@@ -242,17 +244,46 @@ for case_name in "${CASES[@]}"; do
 
             out="$WORK/$case_name/$g_label/$(echo "$v_label" | tr '/' '_')"
             mkdir -p "$out"
+            
+            half_dt=$(awk -v t="$CASE_TIME_END" 'BEGIN{printf "%.17g", t/2}')
             printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\n' \
-                "$ic" "$out" "$CASE_TIME_END" "$CASE_TIME_END" > "$out/param.txt"
+                "$ic" "$out" "$CASE_TIME_END" "$half_dt" > "$out/param.txt"
             printf 'rebalance_interval = 10\nimbalance_log_interval = 1000\nimbalance_threshold = 1.10\n' \
                 >> "$out/param.txt"
+
+            restart_flag=()
+            if [ "$v_mode" = restart ]; then
+                last=$(ls "$ref_dir"/snapshot_*.hdf5 2>/dev/null \
+                       | sed 's/.*snapshot_\([0-9]*\).*/\1/' | sort -n | tail -1)
+                if [ -z "$last" ] || [ "$last" -lt 1 ]; then
+                    problem="$v_label needs >=2 reference snapshots"; break
+                fi
+                
+                copy_fail=""
+                for k in $(seq 0 $((last - 1))); do
+                    if [ "$g_mpi" -eq 1 ]; then
+                        for r in $(seq 0 $((g_ranks - 1))); do
+                            cp "$ref_dir/snapshot_$k.$r.hdf5" "$out/" || copy_fail="snapshot_$k.$r"
+                        done
+                    else
+                        cp "$ref_dir/snapshot_$k.hdf5" "$out/" || copy_fail="snapshot_$k"
+                    fi
+                done
+                if [ -n "$copy_fail" ]; then
+                    problem="$v_label could not seed $copy_fail"; break
+                fi
+                
+                [ -f "$ref_dir/profile.hdf5" ] && cp "$ref_dir/profile.hdf5" "$out/"
+                restart_flag=(1)
+            fi
 
             # --bind-to none so OpenMP threads actually spread; the default binds each rank
             # to one core and the thread axis silently stops testing anything
             if [ "$g_mpi" -eq 1 ]; then
-                launch=(mpirun --bind-to none -np "$g_ranks" "$exe" "$out/param.txt")
+                launch=(mpirun --bind-to none -np "$g_ranks" "$exe" "$out/param.txt"
+                        ${restart_flag[@]+"${restart_flag[@]}"})
             else
-                launch=("$exe" "$out/param.txt")
+                launch=("$exe" "$out/param.txt" ${restart_flag[@]+"${restart_flag[@]}"})
             fi
             if ! OMP_NUM_THREADS="$v_threads" timeout 3600 "${launch[@]}" >"$out/run.log" 2>&1; then
                 problem="$v_label run"
