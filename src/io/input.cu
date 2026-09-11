@@ -99,7 +99,7 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     // read header attributes
     {
         h5::Group header_group(H5Gopen(file, "header", H5P_DEFAULT));
-        h5::read_attr(header_group, "dimension", icData.header.dimension);
+        if (!h5::read_attr(header_group, "dimension", icData.header.dimension)) { return false; }
     }
 
     // check that IC dimension matches code dimension
@@ -159,7 +159,7 @@ bool InputHandler::readICHeader(const std::string& filename, ICHeader& header, u
     // header/dimension
     {
         h5::Group header_group(H5Gopen(file, "header", H5P_DEFAULT));
-        h5::read_attr(header_group, "dimension", header.dimension);
+        if (!h5::read_attr(header_group, "dimension", header.dimension)) { return false; }
     }
 
     // n_total from "mesh/pos" dataset extent
@@ -169,7 +169,8 @@ bool InputHandler::readICHeader(const std::string& filename, ICHeader& header, u
         return false;
     }
     h5::Space space(H5Dget_space(dset));
-    hsize_t   dims[2];
+    if (!h5::check_rank(space, "mesh/pos", 2)) { return false; }
+    hsize_t dims[2];
     H5Sget_simple_extent_dims(space, dims, NULL);
     n_total = dims[0];
 
@@ -196,7 +197,7 @@ bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icDa
     // dimension check — same gate as the serial reader
     {
         h5::Group header_group(H5Gopen(file, "header", H5P_DEFAULT));
-        h5::read_attr(header_group, "dimension", icData.header.dimension);
+        if (!h5::read_attr(header_group, "dimension", icData.header.dimension)) { return false; }
     }
 
 #ifdef dim_2D
@@ -285,18 +286,18 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     // read header
     {
         h5::Group header_group(H5Gopen(file, "header", H5P_DEFAULT));
-        h5::read_attr(header_group, "dimension", icData.header.dimension);
-        h5::read_attr(header_group, "time", snap.t_sim);
-        h5::read_attr(header_group, "step", snap.step);
-        h5::read_attr(header_group, "n_global", snap.n_global);
-        h5::read_attr(header_group, "nranks", snap.nranks);
-        h5::read_attr(header_group, "rank", snap.rank);
+        if (!h5::read_attr(header_group, "dimension", icData.header.dimension) ||
+            !h5::read_attr(header_group, "time", snap.t_sim) || !h5::read_attr(header_group, "step", snap.step) ||
+            !h5::read_attr(header_group, "n_global", snap.n_global) ||
+            !h5::read_attr(header_group, "nranks", snap.nranks) || !h5::read_attr(header_group, "rank", snap.rank)) {
+            return false;
+        }
 
         // /header/profiler: walk attrs to recover per-rank cumulative seconds. Snapshots
         // written by the legacy text-log code path lack this sub-group; leave map empty.
         if (H5Lexists(header_group, "profiler", H5P_DEFAULT) > 0) {
-            h5::Group prof_group(H5Gopen(header_group, "profiler", H5P_DEFAULT));
-            H5Aiterate2(
+            h5::Group    prof_group(H5Gopen(header_group, "profiler", H5P_DEFAULT));
+            const herr_t walked = H5Aiterate2(
                 prof_group,
                 H5_INDEX_NAME,
                 H5_ITER_NATIVE,
@@ -305,11 +306,15 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
                     auto*    map = static_cast<std::unordered_map<std::string, double>*>(data);
                     h5::Attr a(H5Aopen(loc, name, H5P_DEFAULT));
                     double   v = 0.0;
-                    H5Aread(a, H5T_NATIVE_DOUBLE, &v);
+                    if (!a.valid() || H5Aread(a, H5T_NATIVE_DOUBLE, &v) < 0) { return -1; }
                     (*map)[name] = v;
                     return 0;
                 },
                 &snap.profiler_cum);
+            if (walked < 0) {
+                std::cerr << "INPUT: Error! Could not read the profiler attributes of " << filename << std::endl;
+                return false;
+            }
         }
     }
 

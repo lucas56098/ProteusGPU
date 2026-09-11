@@ -13,12 +13,6 @@
 //       truncated. Report the failure up to the caller and exit there.
 namespace h5 {
 
-    // hsize_t is HDF5's own 64-bit unsigned type, but *which* 64-bit type it aliases varies by
-    // HDF5 version -- uint64_t on 1.14, unsigned long long on older ones. Values convert freely
-    // between the two; pointers and references do not. So nothing here may hand a caller an
-    // `hsize_t*` or `hsize_t&` to fill: the caller thinks in uint64_t (the mesh index type) and
-    // the two only bind on the HDF5 versions where they happen to be the same type. Passing
-    // hsize_t *by value* is fine and is what the dimension arguments below do.
     static_assert(sizeof(hsize_t) == sizeof(uint64_t), "hsize_t is expected to be 64 bits wide");
 
     template <herr_t (*CLOSE)(hid_t)> class Handle {
@@ -72,15 +66,29 @@ namespace h5 {
         static hid_t id() { return H5T_NATIVE_INT64; }
     };
 
+    inline bool check_rank(hid_t space, const char* name, int expected) {
+        const int ndims = H5Sget_simple_extent_ndims(space);
+        if (ndims != expected) {
+            std::cerr << "H5: Error! Dataset '" << name << "' has rank " << ndims << ", expected " << expected
+                      << std::endl;
+            return false;
+        }
+        return true;
+    }
+
     // ------------------------------------------------------------
     // writing
     // ------------------------------------------------------------
 
-    template <typename T> inline void write_attr(hid_t parent, const char* name, T value) {
+    template <typename T> inline bool write_attr(hid_t parent, const char* name, T value) {
         const hid_t type = native<T>::id();
         Space       space(H5Screate(H5S_SCALAR));
         Attr        attr(H5Acreate(parent, name, type, space, H5P_DEFAULT, H5P_DEFAULT));
-        H5Awrite(attr, type, &value);
+        if (!attr.valid() || H5Awrite(attr, type, &value) < 0) {
+            std::cerr << "H5: Error! Could not write attribute '" << name << "'" << std::endl;
+            return false;
+        }
+        return true;
     }
 
     template <typename T>
@@ -92,7 +100,10 @@ namespace h5 {
             std::cerr << "H5: Error! Could not create dataset '" << name << "'" << std::endl;
             return false;
         }
-        H5Dwrite(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+        if (H5Dwrite(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) < 0) {
+            std::cerr << "H5: Error! Could not write dataset '" << name << "'" << std::endl;
+            return false;
+        }
         return true;
     }
 
@@ -111,10 +122,14 @@ namespace h5 {
     // reading
     // ------------------------------------------------------------
 
-    template <typename T> inline void read_attr(hid_t parent, const char* name, T& out) {
+    template <typename T> inline bool read_attr(hid_t parent, const char* name, T& out) {
         const hid_t type = native<T>::id();
         Attr        attr(H5Aopen(parent, name, H5P_DEFAULT));
-        H5Aread(attr, type, &out);
+        if (!attr.valid() || H5Aread(attr, type, &out) < 0) {
+            std::cerr << "H5: Error! Could not read attribute '" << name << "'" << std::endl;
+            return false;
+        }
+        return true;
     }
 
     // Whole 1D dataset; `out` is resized to the extent stored in the file.
@@ -125,11 +140,15 @@ namespace h5 {
             std::cerr << "H5: Error! Could not open dataset '" << name << "'" << std::endl;
             return false;
         }
-        Space   space(H5Dget_space(dset));
+        Space space(H5Dget_space(dset));
+        if (!check_rank(space, name, 1)) { return false; }
         hsize_t dim = 0;
         H5Sget_simple_extent_dims(space, &dim, NULL);
         out.resize(dim);
-        H5Dread(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data());
+        if (H5Dread(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data()) < 0) {
+            std::cerr << "H5: Error! Could not read dataset '" << name << "'" << std::endl;
+            return false;
+        }
         return true;
     }
 
@@ -142,11 +161,15 @@ namespace h5 {
             std::cerr << "H5: Error! Could not open dataset '" << name << "'" << std::endl;
             return false;
         }
-        Space   space(H5Dget_space(dset));
+        Space space(H5Dget_space(dset));
+        if (!check_rank(space, name, 2)) { return false; }
         hsize_t dims[2] = {0, 0};
         H5Sget_simple_extent_dims(space, dims, NULL);
         out.resize(dims[0] * dims[1]);
-        H5Dread(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data());
+        if (H5Dread(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data()) < 0) {
+            std::cerr << "H5: Error! Could not read dataset '" << name << "'" << std::endl;
+            return false;
+        }
         if (out_rows) { *out_rows = (uint64_t)dims[0]; }
         return true;
     }
@@ -163,7 +186,8 @@ namespace h5 {
             std::cerr << "H5: Error! Could not open dataset '" << name << "'" << std::endl;
             return false;
         }
-        Space   filespace(H5Dget_space(dset));
+        Space filespace(H5Dget_space(dset));
+        if (!check_rank(filespace, name, 1)) { return false; }
         hsize_t offset = row_lo;
         hsize_t count  = n_local;
         if (n_local > 0) {
@@ -191,7 +215,8 @@ namespace h5 {
             std::cerr << "H5: Error! Could not open dataset '" << name << "'" << std::endl;
             return false;
         }
-        Space   filespace(H5Dget_space(dset));
+        Space filespace(H5Dget_space(dset));
+        if (!check_rank(filespace, name, 2)) { return false; }
         hsize_t full_dims[2] = {0, 0};
         H5Sget_simple_extent_dims(filespace, full_dims, NULL);
         if (full_dims[1] != expected_dim) {

@@ -59,22 +59,23 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
     // write header
     {
         h5::Group header_group(H5Gcreate(file, "header", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
-        h5::write_attr(header_group, "dimension", DIMENSION);
-        h5::write_attr(header_group, "time", sim.t_sim);
-        h5::write_attr(header_group, "step", sim.step);
-        h5::write_attr(header_group, "n_global", n_global);
-        h5::write_attr(header_group, "nranks", nranks);
-        h5::write_attr(header_group, "rank", rank);
+        if (!h5::write_attr(header_group, "dimension", DIMENSION) || !h5::write_attr(header_group, "time", sim.t_sim) ||
+            !h5::write_attr(header_group, "step", sim.step) || !h5::write_attr(header_group, "n_global", n_global) ||
+            !h5::write_attr(header_group, "nranks", nranks) || !h5::write_attr(header_group, "rank", rank)) {
+            return false;
+        }
 
 #ifdef ASTRO_PHYSICS
-        h5::write_attr(header_group, "UnitLength_in_cm", units.UnitLength_in_cm);
-        h5::write_attr(header_group, "UnitMass_in_g", units.UnitMass_in_g);
-        h5::write_attr(header_group, "UnitVelocity_in_cm_per_s", units.UnitVelocity_in_cm_per_s);
+        if (!h5::write_attr(header_group, "UnitLength_in_cm", units.UnitLength_in_cm) ||
+            !h5::write_attr(header_group, "UnitMass_in_g", units.UnitMass_in_g) ||
+            !h5::write_attr(header_group, "UnitVelocity_in_cm_per_s", units.UnitVelocity_in_cm_per_s)) {
+            return false;
+        }
 #endif
 
         h5::Group prof_group(H5Gcreate(header_group, "profiler", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         for (const auto& kv : Profiler::CurrentCumulative()) {
-            h5::write_attr(prof_group, kv.first.c_str(), kv.second);
+            if (!h5::write_attr(prof_group, kv.first.c_str(), kv.second)) { return false; }
         }
     }
 
