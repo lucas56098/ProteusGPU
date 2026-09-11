@@ -48,6 +48,8 @@ namespace {
     // computes the per-step diff for all ranks from the gathered cumulative values.
     std::map<std::pair<int, std::string>, long long> s_prev_step_cum;
 
+    std::unordered_map<std::string, long long> s_restart_baseline;
+
     // Live start times for currently-open scopes. CollectCurrent uses these to
     // extend long-running timers (TOTAL, HYDRO) to "now" each step.
     std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> s_live_start;
@@ -325,7 +327,7 @@ void Profiler::SeedFromCumulative(const std::unordered_map<std::string, double>&
         // For TOTAL we rewind its live start time below rather than seeding the
         // cumulative — otherwise we'd double-count once the live offset kicks in.
         if (kv.first != "TOTAL") s_cum_us[kv.first] = us;
-        s_prev_step_cum[{s_my_rank, kv.first}] = us;
+        s_restart_baseline[kv.first] = us;
     }
     auto it_cum = cum_sec.find("TOTAL");
     auto it_st  = s_live_start.find("TOTAL");
@@ -723,6 +725,31 @@ void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
     s_nranks     = proteus_mpi::nranks();
     s_log_active = true;
 
+    if (restart_step >= 0) {
+        std::vector<std::string> names;
+        std::vector<long long>   vals;
+        names.reserve(s_restart_baseline.size());
+        vals.reserve(s_restart_baseline.size());
+        for (const auto& kv : s_restart_baseline) {
+            names.push_back(kv.first);
+            vals.push_back(kv.second);
+        }
+        GatheredRows g;
+#ifdef USE_MPI
+        if (s_nranks > 1) {
+            g = gather_rows_to_root(names, std::vector<char>(names.size(), 'c'), vals, s_nranks, s_my_rank);
+        } else
+#endif
+        {
+            g.names = {names};
+            g.vals  = {vals};
+        }
+        for (size_t r = 0; r < g.names.size(); r++) {
+            for (size_t i = 0; i < g.names[r].size(); i++)
+                s_prev_step_cum[{(int)r, g.names[r][i]}] = (i < g.vals[r].size()) ? g.vals[r][i] : 0;
+        }
+    }
+
     // Only rank 0 owns the file; every other rank ships rows to it and never touches HDF5.
     if (s_my_rank != 0) return;
 
@@ -785,24 +812,6 @@ void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
 
         H5Fflush(s_file, H5F_SCOPE_GLOBAL);
         s_current_len = target;
-
-        if (restart_step > 0) {
-            const hsize_t prev_idx = (hsize_t)(restart_step - 1);
-            for (auto& kv : s_dsets) {
-                h5::Space fs(H5Dget_space(kv.second.cum));
-                hsize_t   sel[1] = {prev_idx};
-                hsize_t   cnt[1] = {1};
-                H5Sselect_hyperslab(fs, H5S_SELECT_SET, sel, NULL, cnt, NULL);
-                h5::Space mspace(H5Screate_simple(1, cnt, NULL));
-                double    v = 0.0;
-                H5Dread(kv.second.cum, H5T_NATIVE_DOUBLE, mspace, fs, H5P_DEFAULT, &v);
-                s_prev_step_cum[kv.first] = (long long)(v * 1e6 + 0.5);
-            }
-        } else {
-            // restart from t=0 snapshot: no kept rows. Diffs are computed from 0.
-            for (auto& kv : s_prev_step_cum)
-                kv.second = 0;
-        }
     }
 }
 
