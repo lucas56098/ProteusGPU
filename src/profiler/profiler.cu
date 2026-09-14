@@ -401,6 +401,13 @@ namespace {
     };
 
 #ifdef USE_MPI
+    std::vector<std::string>              s_sent_names;
+    std::vector<char>                     s_sent_kinds;
+    std::vector<std::vector<std::string>> s_root_names;
+    std::vector<std::vector<char>>        s_root_kinds;
+    std::vector<int>                      s_root_counts;
+    std::vector<int>                      s_root_displs;
+
     // Gather every rank's rows to rank 0, the only writer. Non-root ranks get an empty result.
     GatheredRows gather_rows_to_root(const std::vector<std::string>& my_names,
                                      const std::vector<char>&        my_kinds,
@@ -409,6 +416,34 @@ namespace {
                                      int                             my_rank) {
         GatheredRows g;
         const int    my_count = (int)my_names.size();
+
+        int changed = (my_names != s_sent_names || my_kinds != s_sent_kinds) ? 1 : 0;
+        MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+        if (!changed && (int)s_root_counts.size() == nranks) {
+            int total = 0;
+            for (int r = 0; r < nranks; r++)
+                total += s_root_counts[r];
+            std::vector<long long> val_all((size_t)(my_rank == 0 ? total : 0));
+            MPI_Gatherv(my_vals.data(),
+                        my_count,
+                        MPI_LONG_LONG,
+                        val_all.data(),
+                        s_root_counts.data(),
+                        s_root_displs.data(),
+                        MPI_LONG_LONG,
+                        0,
+                        MPI_COMM_WORLD);
+            if (my_rank != 0) return g;
+            g.names = s_root_names;
+            g.kinds = s_root_kinds;
+            g.vals.resize(nranks);
+            for (int r = 0; r < nranks; r++) {
+                g.vals[r].assign(val_all.begin() + s_root_displs[r],
+                                 val_all.begin() + s_root_displs[r] + s_root_counts[r]);
+            }
+            return g;
+        }
 
         // per-rank timer counts (also the kind/val gatherv counts)
         std::vector<int> counts(nranks, 0);
@@ -460,6 +495,11 @@ namespace {
                     0,
                     MPI_COMM_WORLD);
 
+        s_sent_names  = my_names;
+        s_sent_kinds  = my_kinds;
+        s_root_counts = counts;
+        s_root_displs = kdispls;
+
         if (my_rank != 0) return g;
 
         g.names.resize(nranks);
@@ -470,6 +510,8 @@ namespace {
             g.kinds[r].assign(kind_all.begin() + kdispls[r], kind_all.begin() + kdispls[r] + counts[r]);
             g.vals[r].assign(val_all.begin() + kdispls[r], val_all.begin() + kdispls[r] + counts[r]);
         }
+        s_root_names = g.names;
+        s_root_kinds = g.kinds;
         return g;
     }
 #endif
