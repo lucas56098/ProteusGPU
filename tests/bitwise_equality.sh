@@ -36,17 +36,18 @@ and that whole set is repeated per launch configuration:
   serial       built without USE_MPI, run directly
   mpi2         built with USE_MPI, mpirun -np 2
   mpi4         built with USE_MPI, mpirun -np 4
+  mpi9         built with USE_MPI, mpirun -np 9, 2D cases only, 3 threads per rank
+  mpi27        only with --mpi27: mpirun --oversubscribe -np 27, 3D cases, CPU variants,
+               2 threads per rank
 
-Different rank counts are NOT compared against each other, and that is deliberate: a
-different decomposition renumbers cells and reorders each cell's neighbour list, so the
-sums legitimately differ. Cross-rank-count reproducibility is a separate, much stronger
-property this code does not claim.
 
 Options:
   --only NAME      run just one case (the directory name)
   --no-cuda        skip the GPU variants; the rank and thread axes still run
-  --max-ranks N    cap the rank ladder (default: as many as mpirun will give us, up to 4)
-  --threads N      the multi-thread count to test against 1 (default: min(8, nproc))
+  --max-ranks N    cap the default rank ladder (2, 4, 9); does not affect --mpi27
+  --mpi27          also run mpi27 (3D, CPU, 27 ranks, --oversubscribe)
+  --threads N      the multi-thread count to test against 1 (default: min(8, nproc)); caps
+                   every config's own thread count
   --list           print what would run, and exit
   --keep           keep builds, ICs and snapshots instead of deleting them
   -h, --help       show this message
@@ -61,13 +62,14 @@ never a pass.
 USAGE
 }
 
-LIST=0; KEEP=0; ONLY=""; MAX_RANKS=0; THREADS_N=0; NO_CUDA=0
+LIST=0; KEEP=0; ONLY=""; MAX_RANKS=0; THREADS_N=0; NO_CUDA=0; WANT_MPI27=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --only)      ONLY="${2:-}"; shift ;;
         --max-ranks) MAX_RANKS="${2:-}"; shift ;;
         --threads)   THREADS_N="${2:-}"; shift ;;
         --no-cuda)   NO_CUDA=1 ;;
+        --mpi27)     WANT_MPI27=1 ;;
         --list)      LIST=1 ;;
         --keep)      KEEP=1 ;;
         -h|--help)   usage; exit 0 ;;
@@ -116,21 +118,29 @@ fi
 
 # Rank ladder. nproc counts hardware threads while OpenMPI hands out cores, so ask mpirun
 # what it will actually launch rather than trusting the core count.
-RANK_LIST=()
-if [ "$CAP_MPI" = yes ]; then
-    cap=4
-    [ "$MAX_RANKS" -gt 0 ] && [ "$MAX_RANKS" -lt "$cap" ] && cap="$MAX_RANKS"
-    for r in 2 4; do
-        [ "$r" -gt "$cap" ] && continue
-        if timeout 120 mpirun -np "$r" true >/dev/null 2>&1; then RANK_LIST+=("$r"); fi
-    done
-fi
 
-# group spec: "label ranks use_mpi"
-CONFIGS=("serial 1 0")
-for r in "${RANK_LIST[@]:-}"; do
-    [ -n "$r" ] && CONFIGS+=("mpi$r $r 1")
-done
+CONFIGS=("serial 1 0 all $THREADS_N")
+MPI27_SKIPPED=0
+add_mpi_config() {
+    local label="$1" ranks="$2" scope="$3" threads="$4" over="${5:-}" args=()
+    [ "$threads" -gt "$THREADS_N" ] && threads="$THREADS_N"
+    [ "$over" = oversubscribe ] && args=(--oversubscribe)
+    if timeout 120 mpirun ${args[@]+"${args[@]}"} -np "$ranks" true >/dev/null 2>&1; then
+        CONFIGS+=("$label $ranks 1 $scope $threads $over")
+        return 0
+    fi
+    return 1
+}
+if [ "$CAP_MPI" = yes ]; then
+    for spec in "mpi2 2 all $THREADS_N" "mpi4 4 all $THREADS_N" "mpi9 9 2d 3"; do
+        set -- $spec
+        [ "$MAX_RANKS" -gt 0 ] && [ "$2" -gt "$MAX_RANKS" ] && continue
+        add_mpi_config "$@"
+    done
+    if [ "$WANT_MPI27" -eq 1 ] && ! add_mpi_config mpi27 27 3dcpu 2 oversubscribe; then
+        MPI27_SKIPPED=1
+    fi
+fi
 
 # variant spec: "label backend threads"
 VARIANTS=("cpu/t1 cpu 1")
@@ -144,7 +154,7 @@ fi
 
 printf '\033[1mProteus bitwise reproducibility\033[0m\n'
 printf '  cases      %s\n' "${CASES[*]}"
-printf '  configs    %s\n' "$(for g in "${CONFIGS[@]}"; do set -- $g; printf '%s ' "$1"; done)"
+printf '  configs    %s\n' "$(for g in "${CONFIGS[@]}"; do set -- $g; printf '%s(t%s%s%s) ' "$1" "$5" "$([ "$4" != all ] && echo ",$4")" "$([ -n "${6:-}" ] && echo ',oversubscribed')"; done)"
 printf '  variants   %s\n' "$(for v in "${VARIANTS[@]}"; do set -- $v; printf '%s ' "$1"; done)"
 printf '  nvcc       %s\n' "$CAP_NVCC"
 printf '  mpi        %s   (cores: %s, threads tested: 1 and %s)\n' "$CAP_MPI" "$NPROC" "$THREADS_N"
@@ -158,6 +168,9 @@ fi
 if [ "$CAP_MPI" = no ]; then
     printf '  \033[33mmpirun or parallel HDF5 missing: the rank axis is NOT tested\033[0m\n\n'
 fi
+if [ "$MPI27_SKIPPED" -eq 1 ]; then
+    printf '  \033[33m--mpi27 requested but mpirun --oversubscribe -np 27 cannot launch: NOT tested\033[0m\n\n'
+fi
 
 if [ "$LIST" -eq 1 ]; then
     for c in "${CASES[@]}"; do
@@ -166,9 +179,22 @@ if [ "$LIST" -eq 1 ]; then
           printf '  %-12s %-32s dim=%s  n=%s  t_end=%s  flags="%s"\n' \
                  "$c" "$CASE_DESC" "$CASE_DIM" "$CASE_N" "$CASE_TIME_END" "$CASE_FLAGS" )
     done
-    printf '\n  %d case(s) x %d config(s) x %d variant(s) = %d runs\n' \
-        "${#CASES[@]}" "${#CONFIGS[@]}" "${#VARIANTS[@]}" \
-        "$(( ${#CASES[@]} * ${#CONFIGS[@]} * ${#VARIANTS[@]} ))"
+    n_runs=0
+    for c in "${CASES[@]}"; do
+        c_dim="$( . "$CASES_DIR/$c/case.sh"; printf '%s' "$CASE_DIM" )"
+        for g in "${CONFIGS[@]}"; do
+            set -- $g; g_scope="$4"
+            [ "$g_scope" = 2d ] && [ "$c_dim" != 2 ] && continue
+            [ "$g_scope" = 3dcpu ] && [ "$c_dim" != 3 ] && continue
+            for v in "${VARIANTS[@]}"; do
+                set -- $v
+                [ "$g_scope" = 3dcpu ] && [ "$2" != cpu ] && continue
+                n_runs=$((n_runs + 1))
+            done
+        done
+    done
+    printf '\n  %d case(s), %d config(s), %d variant(s): %d runs\n' \
+        "${#CASES[@]}" "${#CONFIGS[@]}" "${#VARIANTS[@]}" "$n_runs"
     exit 0
 fi
 
@@ -225,7 +251,11 @@ for case_name in "${CASES[@]}"; do
 
     for cfg_spec in "${CONFIGS[@]}"; do
         set -- $cfg_spec
-        g_label="$1"; g_ranks="$2"; g_mpi="$3"
+        g_label="$1"; g_ranks="$2"; g_mpi="$3"; g_scope="$4"; g_threads="$5"
+        [ "$g_scope" = 2d ] && [ "$CASE_DIM" != 2 ] && continue
+        [ "$g_scope" = 3dcpu ] && [ "$CASE_DIM" != 3 ] && continue
+        mpi_extra=()
+        [ "${6:-}" = oversubscribe ] && mpi_extra=(--oversubscribe)
 
         start=$SECONDS
         ref_dir=""; ref_label=""; ref_backend=""; problem=""; compared=0; steps=""
@@ -233,6 +263,11 @@ for case_name in "${CASES[@]}"; do
         for variant in "${VARIANTS[@]}"; do
             set -- $variant
             v_label="$1"; v_backend="$2"; v_threads="$3"; v_mode="${4:-run}"
+            [ "$g_scope" = 3dcpu ] && [ "$v_backend" != cpu ] && continue
+            if [ "$v_threads" -gt 1 ]; then
+                v_label="${v_label/\/t$v_threads//t$g_threads}"
+                v_threads="$g_threads"
+            fi
 
             exe="$(build_for "$CASE_DIM" "$v_backend" "$g_mpi" "$CASE_FLAGS")"
             if [ -z "$exe" ]; then
@@ -280,7 +315,7 @@ for case_name in "${CASES[@]}"; do
             # --bind-to none so OpenMP threads actually spread; the default binds each rank
             # to one core and the thread axis silently stops testing anything
             if [ "$g_mpi" -eq 1 ]; then
-                launch=(mpirun --bind-to none -np "$g_ranks" "$exe" "$out/param.txt"
+                launch=(mpirun --bind-to none ${mpi_extra[@]+"${mpi_extra[@]}"} -np "$g_ranks" "$exe" "$out/param.txt"
                         ${restart_flag[@]+"${restart_flag[@]}"})
             else
                 launch=("$exe" "$out/param.txt" ${restart_flag[@]+"${restart_flag[@]}"})
@@ -324,6 +359,7 @@ done
 # axes we could not test at all, reported so a green run is never mistaken for full coverage
 [ "$CAP_NVCC" = no ] && n_skip=$((n_skip + ${#CASES[@]}))
 [ "$CAP_MPI"  = no ] && n_skip=$((n_skip + ${#CASES[@]}))
+[ "$MPI27_SKIPPED" -eq 1 ] && n_skip=$((n_skip + 1))
 
 printf '\n────────────────────────────────────────\n'
 printf ' passed   %d\n' "$n_pass"
