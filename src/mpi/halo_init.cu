@@ -140,9 +140,10 @@ static void pick_neighbor_collective_mode() {
     halo.use_neighbor_coll = distinct;
 
     if (halo.use_neighbor_coll) {
+        // Built from MPI_COMM_WORLD, not cart_comm
         MPI_Info info;
         MPI_Info_create(&info);
-        MPI_Dist_graph_create_adjacent(decomp.cart_comm,
+        MPI_Dist_graph_create_adjacent(MPI_COMM_WORLD,
                                        halo.n_neighbors,
                                        halo.neighbor_ranks,
                                        MPI_UNWEIGHTED,
