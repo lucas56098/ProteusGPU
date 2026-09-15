@@ -80,13 +80,11 @@ class Profiler {
     // End-of-run summary on rank 0 (with cross-rank min/avg/max).
     static void PrintResults();
 
-    // Shared profile.hdf5 with one /rank_<R>/per_step/<TIMER> + /rank_<R>/cumulative/<TIMER>
-    // dataset per timer (full hierarchical path). Each dataset gets a @kind attribute
-    // ("cpu" | "mpi" | "gpu"). restart_step >= 0 opens for append and truncates rows
-    // past restart_step+1.
     static void OpenProfileLog(const std::string& path, int restart_step);
     static void CloseProfileLog();
     static void LogTimestep(int step);
+
+    static void AbortProfileLog();
 
     // Seed in-memory cumulative timings from a snapshot's /header/profiler group.
     // Must run before any new Start so subsequent diffs are computed from the
@@ -128,6 +126,7 @@ class Profiler {
     static inline void   OpenProfileLog(const std::string&, int) {}
     static inline void   CloseProfileLog() {}
     static inline void   LogTimestep(int) {}
+    static inline void   AbortProfileLog() {}
     static inline void   SeedFromCumulative(const std::unordered_map<std::string, double>&) {}
     static inline std::unordered_map<std::string, double> CurrentCumulative() { return {}; }
 #endif // ENABLE_PROFILING

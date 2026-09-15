@@ -37,8 +37,8 @@ def attr_dtype(obj, key):
         return str(np.asarray(obj.attrs[key]).dtype)
 
 
-def contents(path, with_values=True):
-    """Flatten one HDF5 file.
+def contents(path, with_values=True, value_names=()):
+    """Flatten one HDF5 file. Without with_values, only the datasets in value_names keep values.
 
     datasets: {name: (dtype, shape, values or None)}
     attrs:    {"owner@key": (dtype, shape, bytes)}
@@ -58,7 +58,8 @@ def contents(path, with_values=True):
 
         def visit(name, obj):
             if isinstance(obj, h5py.Dataset):
-                datasets[name] = (str(obj.dtype), obj.shape, obj[()] if with_values else None)
+                keep = with_values or name in value_names
+                datasets[name] = (str(obj.dtype), obj.shape, obj[()] if keep else None)
             else:
                 groups.add(name)
             take_attrs(name, obj)
@@ -78,11 +79,11 @@ def describe_value_diff(label, x, y):
     return f"{label}  {n} values differ"
 
 
-def compare_files(fa, fb, with_values, bad):
+def compare_files(fa, fb, with_values, bad, value_names=()):
     """Append one line to `bad` per difference. Returns how many things were checked."""
     tag = os.path.basename(fa)
-    da, aa, ga = contents(fa, with_values)
-    db, ab, gb = contents(fb, with_values)
+    da, aa, ga = contents(fa, with_values, value_names)
+    db, ab, gb = contents(fb, with_values, value_names)
 
     for what, sa, sb in (("datasets", set(da), set(db)),
                          ("attributes", set(aa), set(ab)),
@@ -98,7 +99,7 @@ def compare_files(fa, fb, with_values, bad):
             bad.append(f"{tag}:{k}  dtype {ta} vs {tb}")
         elif sha != shb:
             bad.append(f"{tag}:{k}  shape {sha} vs {shb}")
-        elif with_values and not np.array_equal(xa, xb):
+        elif xa is not None and not np.array_equal(xa, xb):
             bad.append(describe_value_diff(f"{tag}:{k}", xa, xb))
 
     for k in sorted(aa):
@@ -147,8 +148,8 @@ def main():
                   f"(ref {os.path.exists(pa)}, new {os.path.exists(pb)}) -- "
                   "is ENABLE_PROFILING set for these builds?")
             return 1
-        # structure only: with_values=False leaves the timings out, they are wall clock
-        n_prof = compare_files(pa, pb, False, bad)
+        # structure plus which timer sits at which index; the timings stay out, they are wall clock
+        n_prof = compare_files(pa, pb, False, bad, value_names=("timer_names", "timer_kinds"))
         if not n_prof and not bad:
             print("profile.hdf5 contained nothing to compare")
             return 1

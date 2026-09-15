@@ -12,10 +12,15 @@ def totals_of(run_dir):
     path = os.path.join(run_dir, "profile.hdf5")
     out = {}
     with h5py.File(path, "r") as f:
-        grp = f.get("cumulative")
-        if grp is not None:
-            # each dataset is [step, rank]; the last row is every rank's run total
-            for scope, ds in grp.items():
+        if "timer_names" in f:
+            # cumulative is [step, rank, timer]; the last step holds every rank's run total
+            last = f["cumulative"][-1, :, :]
+            for i, scope in enumerate(f["timer_names"][()]):
+                out[scope.decode()] = float(last[:, i].max())
+        elif isinstance(f.get("cumulative"), h5py.Group):
+            # older logs: one [step, rank] dataset per timer. Still read, since the reference side
+            # of a comparison is often a commit from before the layout changed.
+            for scope, ds in f["cumulative"].items():
                 out[scope] = float(max(ds[-1, :]))
     if not out:
         raise ValueError(f"no cumulative scopes in {path}")
