@@ -106,3 +106,7 @@ mustfail neg_gpuaware_without_mpi       dim_3D CUDA GPU_AWARE_MPI
 mustfail neg_astro_sub_without_master   dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP COOLING
 mustfail neg_2D_3D_together             dim_3D dim_2D CPU_DEBUG
 mustfail neg_CPU_GPU_together           dim_3D CPU_DEBUG CUDA
+mustfail neg_no_backend                 dim_3D MOVING_MESH USE_OPENMP
+mustfail neg_cudaprof_without_cuda      dim_3D CPU_DEBUG ENABLE_PROFILING CUDA_PROFILING
+mustfail neg_cudaprof_cpu_no_profiling  dim_3D CPU_DEBUG CUDA_PROFILING
+mustfail neg_cudaprof_without_profiling dim_3D CUDA CUDA_PROFILING
