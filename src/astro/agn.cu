@@ -28,9 +28,6 @@ namespace astro {
     const AgnParams& agn_params() {
         return g_agn;
     }
-    double agn_m_cold_cached() {
-        return s_m_cold_cached;
-    }
     bool agn_is_firing() {
         return s_m_cold_cached > 0.0;
     }

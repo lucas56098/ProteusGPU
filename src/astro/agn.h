@@ -45,9 +45,8 @@ namespace astro {
     };
 
     void             agn_init();
-    void             agn_prepare();       // reduce cold mass once per step, cache for CFL + apply
-    double           agn_m_cold_cached(); // read cached m_cold (0 before first prepare)
-    bool             agn_is_firing();     // == (m_cold_cached > 0)
+    void             agn_prepare();   // reduce cold mass once per step, cache for CFL + apply
+    bool             agn_is_firing(); // == (m_cold_cached > 0)
     const AgnParams& agn_params();
     void             agn_apply(double dt_half);
 

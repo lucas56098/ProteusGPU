@@ -3,7 +3,6 @@
 #include "../profiler/profiler.h"
 #include "log.h"
 
-#include <fstream>
 #include <iostream>
 #include <streambuf>
 
@@ -29,29 +28,6 @@ namespace logging {
         }
 
     } // namespace
-
-    FileLogger::FileLogger(const std::string& path) {
-        if (!proteus_mpi::is_root()) { return; } // non-root: leave file closed, root() returns null_stream
-
-        std::ios::openmode mode = std::ios::out | std::ios::app;
-        file.open(path, mode);
-        if (!file.is_open()) { std::cerr << "LOG: Error! Could not open log file: " << path << std::endl; }
-    }
-
-    FileLogger::~FileLogger() {
-        if (file.is_open()) {
-            file.flush();
-            file.close();
-        }
-    }
-
-    void FileLogger::flush() {
-        if (file.is_open()) { file.flush(); }
-    }
-
-    std::ostream& FileLogger::root() {
-        return file.is_open() ? static_cast<std::ostream&>(file) : null_stream();
-    }
 
     // std::cout on rank 0, null sink elsewhere
     std::ostream& root() {

@@ -16,10 +16,6 @@ namespace astro {
 
     static LimiterParams g_lim;
 
-    const LimiterParams& limiters_params() {
-        return g_lim;
-    }
-
     // ============================================================
     // Setup
     // ============================================================

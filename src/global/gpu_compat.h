@@ -60,17 +60,9 @@ typedef struct {
     uchar x, y;
 } uchar2;
 
-inline uchar2 make_uchar2(uchar x, uchar y) {
-    return {x, y};
-}
-
 typedef struct {
     uchar x, y, z;
 } uchar3;
-
-inline uchar3 make_uchar3(uchar x, uchar y, uchar z) {
-    return {x, y, z};
-}
 
 // int vector types: the wide-index counterparts of uchar2/uchar3, used by the CPU
 // fallback's BigConvexCell tier (see BIG_VERT_TYPE below). CUDA supplies these itself.
@@ -78,17 +70,9 @@ typedef struct {
     int x, y;
 } int2;
 
-inline int2 make_int2(int x, int y) {
-    return {x, y};
-}
-
 typedef struct {
     int x, y, z;
 } int3;
-
-inline int3 make_int3(int x, int y, int z) {
-    return {x, y, z};
-}
 
 #else // CUDA mode
 #define RUN_MODE "GPU"
@@ -110,8 +94,6 @@ inline int3 make_int3(int x, int y, int z) {
         CUDA_CHECK(cudaPeekAtLastError());                                                                             \
         CUDA_CHECK(cudaDeviceSynchronize());                                                                           \
     } while (0)
-
-#define GPU_LAUNCH_CHECK() CUDA_CHECK(cudaPeekAtLastError())
 
 #define CUDA_CHECK(call)                                                                                               \
     do {                                                                                                               \

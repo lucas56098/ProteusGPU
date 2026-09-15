@@ -20,9 +20,8 @@ namespace astro {
         double v_cap2;     // v_cap^2
     };
 
-    void                 limiters_init();
-    void                 limiters_apply();
-    const LimiterParams& limiters_params();
+    void limiters_init();
+    void limiters_apply();
 
 #endif // LIMITERS
 

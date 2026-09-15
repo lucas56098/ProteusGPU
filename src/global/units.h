@@ -27,10 +27,6 @@ struct Units {
     double UnitDensity_in_cgs() const {
         return UnitMass_in_g / (UnitLength_in_cm * UnitLength_in_cm * UnitLength_in_cm);
     }
-    double UnitPressure_in_cgs() const {
-        return UnitDensity_in_cgs() * UnitVelocity_in_cm_per_s * UnitVelocity_in_cm_per_s;
-    }
-    double UnitEnergy_in_cgs() const { return UnitMass_in_g * UnitVelocity_in_cm_per_s * UnitVelocity_in_cm_per_s; }
 
     // Newton's constant expressed in code units (G_cgs has units cm^3 g^-1 s^-2)
     double G_in_code_units() const {

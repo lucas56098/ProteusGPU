@@ -168,12 +168,6 @@ Profiler::MpiScope::~MpiScope() {
 Profiler::KernelScope::KernelScope(const char* short_name) {
     m_path = build_full_path(short_name);
     s_path_stack.push_back(m_path);
-#ifdef CPU_DEBUG
-    // CPU build: this region runs the equivalent CPU-side code, so report it as
-    // cpu work timed by chrono. No GPU exists.
-    s_kind[m_path]       = 'c';
-    s_live_start[m_path] = std::chrono::high_resolution_clock::now();
-#else
     // GPU build: this region brackets a CUDA kernel launch. CUDA_PROFILING
     // additionally records device-side events for accurate kernel timing.
     s_kind[m_path] = 'g';
@@ -183,24 +177,14 @@ Profiler::KernelScope::KernelScope(const char* short_name) {
     cudaEventRecord(e, 0);
     m_start_event = (void*)e;
 #endif
-#endif
 }
 
 Profiler::KernelScope::~KernelScope() {
-#ifdef CPU_DEBUG
-    const auto end = std::chrono::high_resolution_clock::now();
-    auto       it  = s_live_start.find(m_path);
-    if (it != s_live_start.end()) {
-        s_cum_us[m_path] += std::chrono::duration_cast<std::chrono::microseconds>(end - it->second).count();
-        s_live_start.erase(it);
-    }
-#else
 #ifdef CUDA_PROFILING
     cudaEvent_t stop = acquire_event();
     cudaEventRecord(stop, 0);
     s_pending_gpu[m_path].push_back({(cudaEvent_t)m_start_event, stop});
     nvtxRangePop();
-#endif
 #endif
     if (!s_path_stack.empty()) s_path_stack.pop_back();
 }

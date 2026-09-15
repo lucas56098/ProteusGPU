@@ -15,8 +15,7 @@ class OutputHandler {
   public:
     OutputHandler(const std::string& outputDir = "./output/");
 
-    bool        initialize();
-    std::string getOutputDirectory() const { return outputDirectory; }
+    bool initialize();
 
     // write snapshot
     void write_snapshot();

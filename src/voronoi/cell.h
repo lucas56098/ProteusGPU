@@ -15,8 +15,8 @@ namespace voronoi {
                            : (long long)((1ULL << (8 * sizeof(T) - 1)) - 1ULL); // signed: 2^(n-1) - 1
     }
 
-    // build a dual-graph vertex from DIMENSION plane indices. Replaces the make_uchar2 /
-    // make_uchar3 calls so the same code serves both the uchar and int tiers.
+    // build a dual-graph vertex from DIMENSION plane indices, so the same code serves both the
+    // uchar and int tiers.
     template <typename VERT> HD inline VERT make_vert(int i, int j, int k = 0) {
         VERT v;
         v.x = (decltype(v.x))i;

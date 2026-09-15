@@ -75,11 +75,6 @@ namespace proteus_mpi {
         return lo;
     }
 
-    inline bool decomp_owns_bucket(int bx, int by, int bz) {
-        const MpiDecomp& d = decomp;
-        return bx >= d.b0[0] && bx < d.b1[0] && by >= d.b0[1] && by < d.b1[1] && bz >= d.b0[2] && bz < d.b1[2];
-    }
-
     // owner rank of the given bucket; returns -1 if out of global range
     int decomp_owner_of_bucket(int bx, int by, int bz);
 
