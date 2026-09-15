@@ -901,7 +901,7 @@ void Profiler::LogTimestep(int step) {
         my_vals.push_back(r.second);
     }
 
-    int changed = (my_names != s _sent_names || my_kinds != s_sent_kinds) ? 1 : 0;
+    int changed = (my_names != s_sent_names || my_kinds != s_sent_kinds) ? 1 : 0;
 #ifdef USE_MPI
     if (parallel_log()) MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 #endif
