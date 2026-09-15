@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -59,7 +60,10 @@ class InputHandler {
 
     std::string get_parameter(const std::string& key) const;
     double      get_parameter_double(const std::string& key) const;
-    bool        has_parameter(const std::string& key) const; // for optional params (the getters throw)
+    int         get_parameter_int(const std::string& key) const;
+    bool        has_parameter(const std::string& key) const;
+
+    void warn_unread_parameters() const;
 
     // load ic
     bool read_ic_file(const std::string& filename, ICData& ic_data);
@@ -81,6 +85,7 @@ class InputHandler {
 
   private:
     std::map<std::string, std::string> parameters;
+    mutable std::set<std::string>      read_keys;
     std::string                        param_file_path;
 
     // helper

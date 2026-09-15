@@ -44,7 +44,9 @@ namespace begrun {
         initial_printouts();
 
         // load parameters
-        input.load_parameters(argc > 1 ? argv[1] : "./ics/param.txt");
+        if (!input.load_parameters(argc > 1 ? argv[1] : "./ics/param.txt")) {
+            proteus_mpi::exit_failure("BEGRUN: could not load the parameter file.\n");
+        }
 
         // init OutputHandler
         std::string out_dir = input.get_parameter("output_directory");
@@ -60,6 +62,7 @@ namespace begrun {
         if (ic_data.header.restart_flag) {
 
             // restart sim
+            (void)input.has_parameter("ic_file");
             restart_from_snapshot(latest_snap_n, out_dir);
 
         } else {
@@ -108,6 +111,9 @@ namespace begrun {
 
         // init hydro from ic_data + build initial voronoi mesh
         init_hydro_and_mesh();
+
+        // every parameter has been read by now
+        input.warn_unread_parameters();
     }
 
     // free everything + print summary
@@ -297,8 +303,8 @@ namespace begrun {
         sim.output_dt    = input.get_parameter_double("output_dt");
         sim.t_nextoutput = sim.t_sim + sim.output_dt;
 #ifdef USE_MPI
-        sim.rebalance_interval     = (int)input.get_parameter_double("rebalance_interval");
-        sim.imbalance_log_interval = (int)input.get_parameter_double("imbalance_log_interval");
+        sim.rebalance_interval     = input.get_parameter_int("rebalance_interval");
+        sim.imbalance_log_interval = input.get_parameter_int("imbalance_log_interval");
         sim.imbalance_threshold    = input.get_parameter_double("imbalance_threshold");
 #endif
     }

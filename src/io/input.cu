@@ -1,6 +1,11 @@
 #include "../global/allvars.h"
+#include "../mpi/mpi_compat.h"
 #include "h5.h"
 #include "input.h"
+#include <cerrno>
+#include <climits>
+#include <cmath>
+#include <cstdlib>
 #include <dirent.h>
 #include <fstream>
 #include <iostream>
@@ -28,7 +33,9 @@ bool InputHandler::load_parameters(const std::string& filename) {
 
     // read file line by line
     std::string line;
+    int         line_no = 0;
     while (std::getline(file, line)) {
+        line_no++;
         line = trim(line);
 
         // skip empty lines and comments
@@ -36,15 +43,22 @@ bool InputHandler::load_parameters(const std::string& filename) {
 
         // parse key = value pairs
         size_t pos = line.find('=');
-        if (pos != std::string::npos) {
-            std::string key   = trim(line.substr(0, pos));
-            std::string value = trim(line.substr(pos + 1));
+        if (pos == std::string::npos || trim(line.substr(0, pos)).empty()) {
+            std::cerr << "INPUT: Error! Line " << line_no << " of " << param_file_path
+                      << " is not 'key = value': " << line << std::endl;
+            return false;
+        }
+        std::string key   = trim(line.substr(0, pos));
+        std::string value = trim(line.substr(pos + 1));
 
-            // remove inline comments
-            size_t comment_pos = value.find('#');
-            if (comment_pos != std::string::npos) { value = trim(value.substr(0, comment_pos)); }
+        // remove inline comments
+        size_t comment_pos = value.find('#');
+        if (comment_pos != std::string::npos) { value = trim(value.substr(0, comment_pos)); }
 
-            parameters[key] = value;
+        if (!parameters.emplace(key, value).second) {
+            std::cerr << "INPUT: Error! Parameter '" << key << "' is set twice in " << param_file_path
+                      << " (again on line " << line_no << ")" << std::endl;
+            return false;
         }
     }
 
@@ -56,22 +70,54 @@ bool InputHandler::load_parameters(const std::string& filename) {
 // access parameter
 std::string InputHandler::get_parameter(const std::string& key) const {
     auto it = parameters.find(key);
-    if (it != parameters.end()) { return it->second; }
-    throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
+    if (it != parameters.end()) {
+        read_keys.insert(key);
+        return it->second;
+    }
+    proteus_mpi::exit_failure(
+        "INPUT: Error! Required parameter '%s' not found in %s\n", key.c_str(), param_file_path.c_str());
 }
 
 bool InputHandler::has_parameter(const std::string& key) const {
-    return parameters.find(key) != parameters.end();
+    if (parameters.find(key) == parameters.end()) { return false; }
+    read_keys.insert(key);
+    return true;
 }
 
-// access parameter converted to double
 double InputHandler::get_parameter_double(const std::string& key) const {
-    std::string value = get_parameter(key);
-    try {
-        return std::stod(value);
-    } catch (const std::exception&) {
-        throw std::runtime_error("Error: Could not convert parameter '" + key + "' with value '" + value +
-                                 "' to double");
+    const std::string value = get_parameter(key);
+    const char*       begin = value.c_str();
+    char*             end   = nullptr;
+    errno                   = 0;
+    const double v          = std::strtod(begin, &end);
+    if (end == begin || *end != '\0' || errno == ERANGE || !std::isfinite(v)) {
+        proteus_mpi::exit_failure("INPUT: Error! Parameter '%s' in %s has value '%s', which is not a finite number\n",
+                                  key.c_str(),
+                                  param_file_path.c_str(),
+                                  value.c_str());
+    }
+    return v;
+}
+
+int InputHandler::get_parameter_int(const std::string& key) const {
+    const double v = get_parameter_double(key);
+    if (v != std::floor(v) || v < (double)INT_MIN || v > (double)INT_MAX) {
+        proteus_mpi::exit_failure("INPUT: Error! Parameter '%s' in %s has value '%s', which is not an integer\n",
+                                  key.c_str(),
+                                  param_file_path.c_str(),
+                                  parameters.at(key).c_str());
+    }
+    return (int)v;
+}
+
+void InputHandler::warn_unread_parameters() const {
+    std::string unread;
+    for (const auto& kv : parameters) {
+        if (read_keys.count(kv.first) == 0) { unread += (unread.empty() ? "" : ", ") + kv.first; }
+    }
+    if (!unread.empty()) {
+        logging::root() << "INPUT: Warning! Parameters in " << param_file_path << " not read by this run: " << unread
+                        << std::endl;
     }
 }
 
