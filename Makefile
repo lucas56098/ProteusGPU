@@ -11,12 +11,14 @@ SHELL := /bin/bash
 CONFIG_DEFINES := $(shell grep -v "^\#" $(CONFIG) | grep -v "^$$" | grep -v "^!" | awk 'NF {print "-D" $$1}')
 DEFINES :=
 
-# set systype
-ifdef SYSTYPE
-        SYSTYPE := $(SYSTYPE)
-else
-        SYSTYPE ?= $(shell uname -s)
+# set systype: SYSTYPE=<name> on the command line, else the one line uncommented in Makefile.systype
+# KNOWN_SYSTYPES lists the names of the ifeq ($(SYSTYPE),...) blocks further down, for the errors
+KNOWN_SYSTYPES = $(shell sed -n 's/^ifeq (\$$(SYSTYPE),\([A-Za-z0-9_]*\)).*/\1/p' $(firstword $(MAKEFILE_LIST)))
+ifndef SYSTYPE
         -include Makefile.systype
+endif
+ifeq ($(strip $(SYSTYPE)),)
+        $(error No system selected. Uncomment one line in Makefile.systype, or run make SYSTYPE=<name>. Known systems: $(KNOWN_SYSTYPES))
 endif
 
 # exact-match test for a Config.sh flag
@@ -243,6 +245,11 @@ endif
 # endif
 ####################################################################################
 
+# every block above sets CXX_RELEASE, so an empty one means SYSTYPE matched none of them
+ifeq ($(strip $(CXX_RELEASE)),)
+        $(error Unknown SYSTYPE "$(SYSTYPE)". Known systems: $(KNOWN_SYSTYPES). A new system needs its own block in the Makefile, next to the others)
+endif
+
 # HDF5
 CXXFLAGS += $(HDF5_CFLAGS)
 LDFLAGS += $(HDF5_LIBS)
@@ -281,10 +288,6 @@ ifeq ($(CUDA_ENABLED),CUDA)
         CXXFLAGS += -arch=$(CUDA_ARCH)
 else
         CXX = ${CXX_RELEASE}
-endif
-
-ifndef CXX
-	$(error SYSTYPE not recognized.)
 endif
 
 # optional: use MPI; route host compiler thorugh mpicxx
