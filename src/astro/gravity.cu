@@ -30,9 +30,9 @@ namespace astro {
 
 #ifdef NFW
         {
-            const double M     = input.getParameterDouble("M_NFW") * SOLAR_MASS_G / units.UnitMass_in_g;
-            const double c     = input.getParameterDouble("c_NFW");
-            const double H0    = input.getParameterDouble("H0") * KM_S_IN_CGS / MPC_IN_CM * units.UnitTime_in_s();
+            const double M     = input.get_parameter_double("M_NFW") * SOLAR_MASS_G / units.UnitMass_in_g;
+            const double c     = input.get_parameter_double("c_NFW");
+            const double H0    = input.get_parameter_double("H0") * KM_S_IN_CGS / MPC_IN_CM * units.UnitTime_in_s();
             const double mc    = log(1.0 + c) - c / (1.0 + c);
             const double rho_s = 200.0 * c * c * c * H0 * H0 / (8.0 * PI * G * mc); // characteristic density
             g_grav.nfw_Rs      = cbrt(M / (4.0 * PI * rho_s * mc));
@@ -41,15 +41,15 @@ namespace astro {
 #endif
 #ifdef HERNQUIST
         {
-            const double M = input.getParameterDouble("M_BCG") * SOLAR_MASS_G / units.UnitMass_in_g;
-            g_grav.hq_R    = input.getParameterDouble("R_BCG") * KPC_IN_CM / units.UnitLength_in_cm;
+            const double M = input.get_parameter_double("M_BCG") * SOLAR_MASS_G / units.UnitMass_in_g;
+            g_grav.hq_R    = input.get_parameter_double("R_BCG") * KPC_IN_CM / units.UnitLength_in_cm;
             g_grav.hq_GM   = G * M;
         }
 #endif
 #ifdef SMBH
         {
-            const double M   = input.getParameterDouble("M_BH") * SOLAR_MASS_G / units.UnitMass_in_g;
-            const double eps = input.getParameterDouble("smbh_softening") * KPC_IN_CM / units.UnitLength_in_cm;
+            const double M   = input.get_parameter_double("M_BH") * SOLAR_MASS_G / units.UnitMass_in_g;
+            const double eps = input.get_parameter_double("smbh_softening") * KPC_IN_CM / units.UnitLength_in_cm;
             g_grav.bh_GM     = G * M;
             g_grav.bh_eps2   = eps * eps;
         }

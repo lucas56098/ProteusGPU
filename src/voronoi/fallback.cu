@@ -383,7 +383,7 @@ namespace voronoi {
     gather_nearby_seeds_sorted(double* d_stored_points, int seed_id, const knn_problem* knn, int max_candidates) {
         const double4_t seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
         const int       seed_cell =
-            knn::cellFromPoint(knn->N_grid, knn->grid_lo, knn->inv_cell_size, knn->d_stored_points[seed_id]);
+            knn::cell_from_point(knn->N_grid, knn->grid_lo, knn->inv_cell_size, knn->d_stored_points[seed_id]);
 
         std::vector<std::pair<double, int>> candidates;
         candidates.reserve(max_candidates * 2);
@@ -859,7 +859,7 @@ namespace voronoi {
 #ifdef dim_3D
         gp.z = g_old.z;
 #endif
-        const int center = knn::cellFromPoint(knn->N_grid, knn->grid_lo, knn->inv_cell_size, gp);
+        const int center = knn::cell_from_point(knn->N_grid, knn->grid_lo, knn->inv_cell_size, gp);
 
         for (int ring = 0; ring < knn->N_cell_offsets; ring++) {
             if (knn->d_cell_offset_dists[ring] > search_l2) break; // rings sorted by lower bound

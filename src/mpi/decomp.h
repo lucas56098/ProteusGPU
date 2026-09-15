@@ -112,7 +112,7 @@ namespace proteus_mpi {
         return coord_to_rank[idx];
     }
 
-    // bucket coords for a position. mirrors knn::cellFromPoint's index math but uses
+    // bucket coords for a position. mirrors knn::cell_from_point's index math but uses
     // the global N_grid so all ranks agree. 2D: z bucket is always 0.
     HD inline void
     decomp_bucket_of_point(double px, double py, double pz, int N_grid, double buff, int* bx, int* by, int* bz) {

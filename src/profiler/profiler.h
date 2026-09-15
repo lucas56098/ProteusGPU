@@ -22,7 +22,7 @@
 //   PROFILE("MESH.CELLS")          // CPU work, kind=c
 //   PROFILE_MPI("WAIT")            // MPI call site, kind=m
 //   PROFILE_KERNEL("FLUX_KERNEL")  // CUDA kernel, kind=g — GPU events
-//                                  //   queried lazily at LogTimestep
+//                                  //   queried lazily at log_timestep
 //
 // The macros are RAII over a Scope/MpiScope/KernelScope; the destructor pops
 // the stack and accumulates elapsed time. Don't mix with manual Start/End.
@@ -73,39 +73,39 @@ class Profiler {
 #endif
     };
 
-    static void   StartTotalTimer();
-    static void   StopTotalTimer();
-    static double TotalSeconds();
+    static void   start_total_timer();
+    static void   stop_total_timer();
+    static double total_seconds();
 
     // End-of-run summary on rank 0 (with cross-rank min/avg/max).
-    static void PrintResults();
+    static void print_results();
 
-    static void OpenProfileLog(const std::string& path, int restart_step);
-    static void CloseProfileLog();
-    static void LogTimestep(int step);
+    static void open_profile_log(const std::string& path, int restart_step);
+    static void close_profile_log();
+    static void log_timestep(int step);
 
-    static void AbortProfileLog();
+    static void abort_profile_log();
 
     // Seed in-memory cumulative timings from a snapshot's /header/profiler group.
     // Must run before any new Start so subsequent diffs are computed from the
     // restored baseline. TOTAL is rewound by adjusting its live start time so
-    // CollectCurrent's live offset includes the resumed runtime.
-    static void SeedFromCumulative(const std::unordered_map<std::string, double>& cum_sec);
+    // collect_current's live offset includes the resumed runtime.
+    static void seed_from_cumulative(const std::unordered_map<std::string, double>& cum_sec);
 
     // Current cumulative seconds per full-path timer (live values for any
     // currently-open scopes are folded in). Used by output.cu to snapshot
     // profiler state for restart-on-snapshot.
-    static std::unordered_map<std::string, double> CurrentCumulative();
+    static std::unordered_map<std::string, double> current_cumulative();
 
   private:
     // Non-blocking drain of completed GPU events into the cumulative GPU map.
-    // Called from LogTimestep (every step) and PrintResults (force-sync).
-    static void DrainGpuEvents(bool force_sync);
+    // Called from log_timestep (every step) and print_results (force-sync).
+    static void drain_gpu_events(bool force_sync);
 
     // Build the (name, cum_us) view this rank currently has, with live timers
     // (TOTAL, HYDRO) extended to "now". One row per full-path timer, regardless
     // of kind — for cpu/mpi rows the unit is CPU µs, for gpu rows it's GPU µs.
-    static std::vector<std::pair<std::string, long long>> CollectCurrent();
+    static std::vector<std::pair<std::string, long long>> collect_current();
 #else
     // Empty RAII types keep the scope classes usable if a call site names one
     // directly; the macros below degrade to `(void)0` anyway.
@@ -119,16 +119,16 @@ class Profiler {
         explicit KernelScope(const char*) {}
     };
 
-    static inline void   StartTotalTimer() {}
-    static inline void   StopTotalTimer() {}
-    static inline double TotalSeconds() { return 0.0; }
-    static inline void   PrintResults() {}
-    static inline void   OpenProfileLog(const std::string&, int) {}
-    static inline void   CloseProfileLog() {}
-    static inline void   LogTimestep(int) {}
-    static inline void   AbortProfileLog() {}
-    static inline void   SeedFromCumulative(const std::unordered_map<std::string, double>&) {}
-    static inline std::unordered_map<std::string, double> CurrentCumulative() { return {}; }
+    static inline void   start_total_timer() {}
+    static inline void   stop_total_timer() {}
+    static inline double total_seconds() { return 0.0; }
+    static inline void   print_results() {}
+    static inline void   open_profile_log(const std::string&, int) {}
+    static inline void   close_profile_log() {}
+    static inline void   log_timestep(int) {}
+    static inline void   abort_profile_log() {}
+    static inline void   seed_from_cumulative(const std::unordered_map<std::string, double>&) {}
+    static inline std::unordered_map<std::string, double> current_cumulative() { return {}; }
 #endif // ENABLE_PROFILING
 };
 

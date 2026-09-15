@@ -15,14 +15,14 @@
 // ============================================================
 
 // load parameters from file
-bool InputHandler::loadParameters(const std::string& filename) {
+bool InputHandler::load_parameters(const std::string& filename) {
 
-    paramFilePath = filename;
-    std::ifstream file(paramFilePath);
+    param_file_path = filename;
+    std::ifstream file(param_file_path);
 
     // check if file opened successfully
     if (!file.is_open()) {
-        std::cerr << "INPUT: Error! Could not open parameter file: " << paramFilePath << std::endl;
+        std::cerr << "INPUT: Error! Could not open parameter file: " << param_file_path << std::endl;
         return false;
     }
 
@@ -41,32 +41,32 @@ bool InputHandler::loadParameters(const std::string& filename) {
             std::string value = trim(line.substr(pos + 1));
 
             // remove inline comments
-            size_t commentPos = value.find('#');
-            if (commentPos != std::string::npos) { value = trim(value.substr(0, commentPos)); }
+            size_t comment_pos = value.find('#');
+            if (comment_pos != std::string::npos) { value = trim(value.substr(0, comment_pos)); }
 
             parameters[key] = value;
         }
     }
 
     file.close();
-    logging::root() << "INPUT: Loaded " << parameters.size() << " parameters from " << paramFilePath << std::endl;
+    logging::root() << "INPUT: Loaded " << parameters.size() << " parameters from " << param_file_path << std::endl;
     return true;
 }
 
 // access parameter
-std::string InputHandler::getParameter(const std::string& key) const {
+std::string InputHandler::get_parameter(const std::string& key) const {
     auto it = parameters.find(key);
     if (it != parameters.end()) { return it->second; }
     throw std::runtime_error("Error: Required parameter '" + key + "' not found in parameter file");
 }
 
-bool InputHandler::hasParameter(const std::string& key) const {
+bool InputHandler::has_parameter(const std::string& key) const {
     return parameters.find(key) != parameters.end();
 }
 
 // access parameter converted to double
-double InputHandler::getParameterDouble(const std::string& key) const {
-    std::string value = getParameter(key);
+double InputHandler::get_parameter_double(const std::string& key) const {
+    std::string value = get_parameter(key);
     try {
         return std::stod(value);
     } catch (const std::exception&) {
@@ -79,8 +79,8 @@ double InputHandler::getParameterDouble(const std::string& key) const {
 // load ic
 // ============================================================
 
-// read IC file into icData
-bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
+// read IC file into ic_data
+bool InputHandler::read_ic_file(const std::string& filename, ICData& ic_data) {
 
     // check file exists
     std::ifstream f(filename);
@@ -99,18 +99,18 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     // read header attributes
     {
         h5::Group header_group(H5Gopen(file, "header", H5P_DEFAULT));
-        if (!h5::read_attr(header_group, "dimension", icData.header.dimension)) { return false; }
+        if (!h5::read_attr(header_group, "dimension", ic_data.header.dimension)) { return false; }
     }
 
     // check that IC dimension matches code dimension
 #ifdef dim_2D
-    if (icData.header.dimension != 2)
+    if (ic_data.header.dimension != 2)
 #else
-    if (icData.header.dimension != 3)
+    if (ic_data.header.dimension != 3)
 #endif
     {
         std::cerr << "INPUT: Error! IC file dimension mismatch!" << std::endl;
-        std::cerr << "  IC file dimension: " << icData.header.dimension << "D" << std::endl;
+        std::cerr << "  IC file dimension: " << ic_data.header.dimension << "D" << std::endl;
         std::cerr << "  Compiled code dimension: " << DIMENSION << "D" << std::endl;
         std::cerr << "  Please recompile with correct dimension in Config.sh or use a different IC file." << std::endl;
         return false;
@@ -120,29 +120,29 @@ bool InputHandler::readICFile(const std::string& filename, ICData& icData) {
     {
         h5::Group mesh_group(H5Gopen(file, "mesh", H5P_DEFAULT));
         h5::Group hydro_group(H5Gopen(file, "hydro", H5P_DEFAULT));
-        if (!h5::read_dataset_2d(mesh_group, "pos", icData.pos, &icData.header.n_seeds) ||
-            !h5::read_dataset_1d(hydro_group, "rho", icData.rho) ||
-            !h5::read_dataset_2d(hydro_group, "vel", icData.vel) ||
-            !h5::read_dataset_1d(hydro_group, "energy", icData.energy)) {
+        if (!h5::read_dataset_2d(mesh_group, "pos", ic_data.pos, &ic_data.header.n_seeds) ||
+            !h5::read_dataset_1d(hydro_group, "rho", ic_data.rho) ||
+            !h5::read_dataset_2d(hydro_group, "vel", ic_data.vel) ||
+            !h5::read_dataset_1d(hydro_group, "energy", ic_data.energy)) {
             return false;
         }
     }
 
     logging::root() << "INPUT: IC file " << filename << " loaded successfully!" << std::endl;
 
-    const int n_total = (int)icData.header.n_seeds;
+    const int n_total = (int)ic_data.header.n_seeds;
 
     // set sequential global IDs in input order
-    icData.global_id.resize(n_total);
+    ic_data.global_id.resize(n_total);
     for (int i = 0; i < n_total; i++)
-        icData.global_id[i] = (uint64_t)i;
+        ic_data.global_id[i] = (uint64_t)i;
 
     return true;
 }
 
 // peek IC file header + global particle count without reading the bulk arrays.
 // Opens serially on every rank (independent, no MPIIO setup) since it's a few bytes.
-bool InputHandler::readICHeader(const std::string& filename, ICHeader& header, uint64_t& n_total) {
+bool InputHandler::read_ic_header(const std::string& filename, ICHeader& header, uint64_t& n_total) {
 
     std::ifstream f(filename);
     if (!f.good()) {
@@ -180,7 +180,10 @@ bool InputHandler::readICHeader(const std::string& filename, ICHeader& header, u
 #ifdef USE_MPI
 
 // collective parallel-HDF5 read of rows [row_lo, row_lo + n_local) for this rank.
-bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icData, uint64_t row_lo, uint64_t n_local) {
+bool InputHandler::read_ic_chunk_parallel(const std::string& filename,
+                                          ICData&            ic_data,
+                                          uint64_t           row_lo,
+                                          uint64_t           n_local) {
 
     // collective open via MPIIO
     h5::File file;
@@ -197,38 +200,38 @@ bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icDa
     // dimension check — same gate as the serial reader
     {
         h5::Group header_group(H5Gopen(file, "header", H5P_DEFAULT));
-        if (!h5::read_attr(header_group, "dimension", icData.header.dimension)) { return false; }
+        if (!h5::read_attr(header_group, "dimension", ic_data.header.dimension)) { return false; }
     }
 
 #ifdef dim_2D
-    if (icData.header.dimension != 2)
+    if (ic_data.header.dimension != 2)
 #else
-    if (icData.header.dimension != 3)
+    if (ic_data.header.dimension != 3)
 #endif
     {
         std::cerr << "INPUT: Error! IC file dimension mismatch!" << std::endl;
-        std::cerr << "  IC file dimension: " << icData.header.dimension << "D" << std::endl;
+        std::cerr << "  IC file dimension: " << ic_data.header.dimension << "D" << std::endl;
         std::cerr << "  Compiled code dimension: " << DIMENSION << "D" << std::endl;
         return false;
     }
 
-    icData.header.n_seeds = n_local;
+    ic_data.header.n_seeds = n_local;
 
     {
         h5::Group mesh_group(H5Gopen(file, "mesh", H5P_DEFAULT));
         h5::Group hydro_group(H5Gopen(file, "hydro", H5P_DEFAULT));
-        if (!h5::read_hyperslab_2d(mesh_group, "pos", row_lo, n_local, (hsize_t)DIMENSION, icData.pos) ||
-            !h5::read_hyperslab_2d(hydro_group, "vel", row_lo, n_local, (hsize_t)DIMENSION, icData.vel) ||
-            !h5::read_hyperslab_1d(hydro_group, "rho", row_lo, n_local, icData.rho) ||
-            !h5::read_hyperslab_1d(hydro_group, "energy", row_lo, n_local, icData.energy)) {
+        if (!h5::read_hyperslab_2d(mesh_group, "pos", row_lo, n_local, (hsize_t)DIMENSION, ic_data.pos) ||
+            !h5::read_hyperslab_2d(hydro_group, "vel", row_lo, n_local, (hsize_t)DIMENSION, ic_data.vel) ||
+            !h5::read_hyperslab_1d(hydro_group, "rho", row_lo, n_local, ic_data.rho) ||
+            !h5::read_hyperslab_1d(hydro_group, "energy", row_lo, n_local, ic_data.energy)) {
             return false;
         }
     }
 
     // global IDs in input order: row_lo + i
-    icData.global_id.resize(n_local);
+    ic_data.global_id.resize(n_local);
     for (uint64_t i = 0; i < n_local; i++)
-        icData.global_id[i] = (uint64_t)(row_lo + i);
+        ic_data.global_id[i] = (uint64_t)(row_lo + i);
 
     logging::root() << "INPUT: IC file " << filename << " loaded in parallel (per-rank chunked read)." << std::endl;
     return true;
@@ -241,7 +244,7 @@ bool InputHandler::readICChunkParallel(const std::string& filename, ICData& icDa
 // ============================================================
 
 // find latest snapshot N in directory
-int InputHandler::findLatestSnapshot(const std::string& dir, int nranks, int rank) {
+int InputHandler::find_latest_snapshot(const std::string& dir, int nranks, int rank) {
     DIR* d = opendir(dir.c_str());
     if (!d) return -1;
 
@@ -268,8 +271,8 @@ int InputHandler::findLatestSnapshot(const std::string& dir, int nranks, int ran
     return max_num;
 }
 
-// read snapshot into icData for restart
-bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData, SnapshotHeader& snap) {
+// read snapshot into ic_data for restart
+bool InputHandler::read_snapshot_file(const std::string& filename, ICData& ic_data, SnapshotHeader& snap) {
 
     std::ifstream f(filename);
     if (!f.good()) {
@@ -286,7 +289,7 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     // read header
     {
         h5::Group header_group(H5Gopen(file, "header", H5P_DEFAULT));
-        if (!h5::read_attr(header_group, "dimension", icData.header.dimension) ||
+        if (!h5::read_attr(header_group, "dimension", ic_data.header.dimension) ||
             !h5::read_attr(header_group, "time", snap.t_sim) || !h5::read_attr(header_group, "step", snap.step) ||
             !h5::read_attr(header_group, "n_global", snap.n_global) ||
             !h5::read_attr(header_group, "nranks", snap.nranks) || !h5::read_attr(header_group, "rank", snap.rank)) {
@@ -300,7 +303,7 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
                       << std::endl;
             return false;
         }
-        if (!h5::read_attr(header_group, "knn_N_grid", icData.header.knn_N_grid)) { return false; }
+        if (!h5::read_attr(header_group, "knn_N_grid", ic_data.header.knn_N_grid)) { return false; }
 
         // /header/profiler: walk attrs to recover per-rank cumulative seconds. Snapshots
         // written by the legacy text-log code path lack this sub-group; leave map empty.
@@ -328,12 +331,12 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     }
 
 #ifdef dim_2D
-    if (icData.header.dimension != 2)
+    if (ic_data.header.dimension != 2)
 #else
-    if (icData.header.dimension != 3)
+    if (ic_data.header.dimension != 3)
 #endif
     {
-        std::cerr << "INPUT: Error! Snapshot dimension mismatch! Snapshot: " << icData.header.dimension
+        std::cerr << "INPUT: Error! Snapshot dimension mismatch! Snapshot: " << ic_data.header.dimension
                   << "D, compiled: " << DIMENSION << "D" << std::endl;
         return false;
     }
@@ -342,10 +345,10 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
     {
         h5::Group mesh_group(H5Gopen(file, "mesh", H5P_DEFAULT));
         h5::Group hydro_group(H5Gopen(file, "hydro", H5P_DEFAULT));
-        if (!h5::read_dataset_2d(mesh_group, "pos", icData.pos, &icData.header.n_seeds) ||
-            !h5::read_dataset_1d(hydro_group, "rho", icData.rho) ||
-            !h5::read_dataset_2d(hydro_group, "vel", icData.vel) ||
-            !h5::read_dataset_1d(hydro_group, "energy", icData.energy)) {
+        if (!h5::read_dataset_2d(mesh_group, "pos", ic_data.pos, &ic_data.header.n_seeds) ||
+            !h5::read_dataset_1d(hydro_group, "rho", ic_data.rho) ||
+            !h5::read_dataset_2d(hydro_group, "vel", ic_data.vel) ||
+            !h5::read_dataset_1d(hydro_group, "energy", ic_data.energy)) {
             return false;
         }
 
@@ -359,7 +362,7 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
                       << std::endl;
             return false;
         }
-        if (!h5::read_dataset_2d(mesh_group, "v_mesh", icData.v_mesh)) { return false; }
+        if (!h5::read_dataset_2d(mesh_group, "v_mesh", ic_data.v_mesh)) { return false; }
 #endif
 
 #ifdef USE_MPI
@@ -371,13 +374,13 @@ bool InputHandler::readSnapshotFile(const std::string& filename, ICData& icData,
         h5::Group   decomp_group(H5Gopen(file, "decomp", H5P_DEFAULT));
         const char* axis_name[3] = {"splits_x", "splits_y", "splits_z"};
         for (int a = 0; a < 3; a++) {
-            if (!h5::read_dataset_1d(decomp_group, axis_name[a], icData.header.decomp_splits[a])) { return false; }
+            if (!h5::read_dataset_1d(decomp_group, axis_name[a], ic_data.header.decomp_splits[a])) { return false; }
         }
 #endif
     }
 
-    logging::root() << "INPUT: Snapshot loaded successfully! (" << icData.header.n_seeds << " cells, t = " << snap.t_sim
-                    << ")" << std::endl;
+    logging::root() << "INPUT: Snapshot loaded successfully! (" << ic_data.header.n_seeds
+                    << " cells, t = " << snap.t_sim << ")" << std::endl;
     return true;
 }
 

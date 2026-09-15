@@ -38,25 +38,26 @@ namespace begrun {
     // setup simulation
     void begrun(int argc, char* argv[]) {
 
-        Profiler::StartTotalTimer();
+        Profiler::start_total_timer();
         PROFILE("BEGRUN");
 
         initial_printouts();
 
         // load parameters
-        input.loadParameters(argc > 1 ? argv[1] : "./ics/param.txt");
+        input.load_parameters(argc > 1 ? argv[1] : "./ics/param.txt");
 
         // init OutputHandler
-        std::string out_dir = input.getParameter("output_directory");
+        std::string out_dir = input.get_parameter("output_directory");
         output              = OutputHandler(out_dir);
         if (!output.initialize()) { proteus_mpi::exit_failure("BEGRUN: output directory setup failed.\n"); }
 
         // find latest snap
-        const int latest_snap_n = InputHandler::findLatestSnapshot(out_dir, proteus_mpi::nranks(), proteus_mpi::rank());
+        const int latest_snap_n =
+            InputHandler::find_latest_snapshot(out_dir, proteus_mpi::nranks(), proteus_mpi::rank());
 
         // do we restart?
-        icData.header.restart_flag = (argc > 2) && (std::atoi(argv[2]) == 1);
-        if (icData.header.restart_flag) {
+        ic_data.header.restart_flag = (argc > 2) && (std::atoi(argv[2]) == 1);
+        if (ic_data.header.restart_flag) {
 
             // restart sim
             restart_from_snapshot(latest_snap_n, out_dir);
@@ -64,15 +65,15 @@ namespace begrun {
         } else {
 
             // new sim from IC file
-            icData.header.ic_filename = input.getParameter("ic_file");
+            ic_data.header.ic_filename = input.get_parameter("ic_file");
 
             // read IC header (fields are read after domain decomp)
             uint64_t n_total = 0;
-            if (!input.readICHeader(icData.header.ic_filename, icData.header, n_total)) {
+            if (!input.read_ic_header(ic_data.header.ic_filename, ic_data.header, n_total)) {
                 proteus_mpi::exit_failure("BEGRUN: could not read IC header from %s\n",
-                                          icData.header.ic_filename.c_str());
+                                          ic_data.header.ic_filename.c_str());
             }
-            icData.header.n_global = n_total;
+            ic_data.header.n_global = n_total;
 
             // refuse to silently overwrite existing snapshots
             if (latest_snap_n > 0) {
@@ -88,24 +89,24 @@ namespace begrun {
         astro::sources_init();
 
         // create profile log
-        const std::string profile_path = input.getParameter("output_directory") + "/profile.hdf5";
-        Profiler::OpenProfileLog(profile_path, icData.header.restart_flag ? sim.step : -1);
+        const std::string profile_path = input.get_parameter("output_directory") + "/profile.hdf5";
+        Profiler::open_profile_log(profile_path, ic_data.header.restart_flag ? sim.step : -1);
 
         // decompose domain
-        buff = (1. / pow((double)icData.header.n_global, 1. / ((double)DIMENSION))) * 4;
-        proteus_mpi::decomp_init(icData.header.n_global, buff);
+        buff = (1. / pow((double)ic_data.header.n_global, 1. / ((double)DIMENSION))) * 4;
+        proteus_mpi::decomp_init(ic_data.header.n_global, buff);
 
 #ifdef USE_MPI
-        if (icData.header.restart_flag) { restore_decomp_splits(); }
+        if (ic_data.header.restart_flag) { restore_decomp_splits(); }
 #endif
 
-        // load IC fields into icData
-        if (!icData.header.restart_flag) { load_IC_fields(); };
+        // load IC fields into ic_data
+        if (!ic_data.header.restart_flag) { load_IC_fields(); };
 
         // init halo and migrate for exchange
         init_exch_buffers();
 
-        // init hydro from icData + build initial voronoi mesh
+        // init hydro from ic_data + build initial voronoi mesh
         init_hydro_and_mesh();
     }
 
@@ -119,13 +120,13 @@ namespace begrun {
         proteus_mpi::halo_free();
         sim.mesh = nullptr;
 
-        Profiler::StopTotalTimer(); // accumulates the final TOTAL time
-        Profiler::PrintResults();
-        Profiler::CloseProfileLog();
+        Profiler::stop_total_timer(); // accumulates the final TOTAL time
+        Profiler::print_results();
+        Profiler::close_profile_log();
 
         // peak memory + final runtime
         print_max_memory_usage();
-        logging::root() << "MAIN: Done. (Total runtime = " << Profiler::TotalSeconds() << " s)" << std::endl;
+        logging::root() << "MAIN: Done. (Total runtime = " << Profiler::total_seconds() << " s)" << std::endl;
     }
 
     // ============================================================
@@ -206,9 +207,9 @@ namespace begrun {
     // against them, so the parameters are not required and units keeps its cgs-identity default.
     static void init_units() {
 #ifdef ASTRO_PHYSICS
-        units.set_base(input.getParameterDouble("UnitLength_in_cm"),
-                       input.getParameterDouble("UnitMass_in_g"),
-                       input.getParameterDouble("UnitVelocity_in_cm_per_s"));
+        units.set_base(input.get_parameter_double("UnitLength_in_cm"),
+                       input.get_parameter_double("UnitMass_in_g"),
+                       input.get_parameter_double("UnitVelocity_in_cm_per_s"));
 
         logging::root() << "UNITS: 1 code unit = " << units.UnitLength_in_cm << " cm, " << units.UnitMass_in_g << " g, "
                         << units.UnitVelocity_in_cm_per_s << " cm/s" << std::endl;
@@ -220,17 +221,17 @@ namespace begrun {
         const auto& dc = proteus_mpi::decomp;
         for (int a = 0; a < 3; a++) {
             const size_t want = (size_t)dc.dims[a] + 1;
-            if (icData.header.decomp_splits[a].size() != want) {
+            if (ic_data.header.decomp_splits[a].size() != want) {
                 proteus_mpi::exit_failure("RESTART: Error! snapshot split table for axis %d has %zu entries, "
                                           "this run's decomposition needs %zu.\n",
                                           a,
-                                          icData.header.decomp_splits[a].size(),
+                                          ic_data.header.decomp_splits[a].size(),
                                           want);
             }
         }
-        proteus_mpi::decomp_apply_splits(icData.header.decomp_splits[0].data(),
-                                         icData.header.decomp_splits[1].data(),
-                                         icData.header.decomp_splits[2].data());
+        proteus_mpi::decomp_apply_splits(ic_data.header.decomp_splits[0].data(),
+                                         ic_data.header.decomp_splits[1].data(),
+                                         ic_data.header.decomp_splits[2].data());
     }
 #endif
 
@@ -254,7 +255,7 @@ namespace begrun {
 
         // read snapshot
         SnapshotHeader snap;
-        if (!input.readSnapshotFile(snap_path, icData, snap)) {
+        if (!input.read_snapshot_file(snap_path, ic_data, snap)) {
             proteus_mpi::exit_failure("RESTART: could not read snapshot %s\n", snap_path.c_str());
         }
 
@@ -275,15 +276,15 @@ namespace begrun {
         }
 
         // read sim info from snap
-        sim.t_sim              = snap.t_sim;
-        sim.step               = snap.step + (latest_snap_n > 0 ? 1 : 0);
-        sim.snap_num           = latest_snap_n + 1;
-        icData.header.n_global = snap.n_global;
+        sim.t_sim               = snap.t_sim;
+        sim.step                = snap.step + (latest_snap_n > 0 ? 1 : 0);
+        sim.snap_num            = latest_snap_n + 1;
+        ic_data.header.n_global = snap.n_global;
         // load_IC_fields() is the only other writer of n_hydro and is skipped on restart
-        sim.n_hydro = icData.header.n_seeds;
+        sim.n_hydro = ic_data.header.n_seeds;
 
         // restore profiler timings from snapshot
-        if (!snap.profiler_cum.empty()) Profiler::SeedFromCumulative(snap.profiler_cum);
+        if (!snap.profiler_cum.empty()) Profiler::seed_from_cumulative(snap.profiler_cum);
     }
 
     // sim parameters from params
@@ -291,52 +292,52 @@ namespace begrun {
 
         // write parameters into sim struct
         sim.t_start      = sim.t_sim;
-        sim.t_end        = input.getParameterDouble("time_end");
-        sim.CFL          = input.getParameterDouble("CFL_frac");
-        sim.output_dt    = input.getParameterDouble("output_dt");
+        sim.t_end        = input.get_parameter_double("time_end");
+        sim.CFL          = input.get_parameter_double("CFL_frac");
+        sim.output_dt    = input.get_parameter_double("output_dt");
         sim.t_nextoutput = sim.t_sim + sim.output_dt;
 #ifdef USE_MPI
-        sim.rebalance_interval     = (int)input.getParameterDouble("rebalance_interval");
-        sim.imbalance_log_interval = (int)input.getParameterDouble("imbalance_log_interval");
-        sim.imbalance_threshold    = input.getParameterDouble("imbalance_threshold");
+        sim.rebalance_interval     = (int)input.get_parameter_double("rebalance_interval");
+        sim.imbalance_log_interval = (int)input.get_parameter_double("imbalance_log_interval");
+        sim.imbalance_threshold    = input.get_parameter_double("imbalance_threshold");
 #endif
     }
 
-    // load IC seeds and primitive variables into icData
+    // load IC seeds and primitive variables into ic_data
     static void load_IC_fields() {
 #ifdef USE_MPI
 
         // evenly split n_global by rank number
         int64_t my_lo = 0, my_hi = 0;
         proteus_mpi::decomp_even_split(
-            icData.header.n_global, proteus_mpi::nranks(), proteus_mpi::rank(), &my_lo, &my_hi);
+            ic_data.header.n_global, proteus_mpi::nranks(), proteus_mpi::rank(), &my_lo, &my_hi);
         const uint64_t row_lo  = (uint64_t)my_lo;
         const uint64_t n_local = (uint64_t)(my_hi - my_lo);
 
         // each rank reads part of the IC
-        if (!input.readICChunkParallel(icData.header.ic_filename, icData, row_lo, n_local)) {
-            proteus_mpi::exit_failure("BEGRUN: parallel IC read failed for %s\n", icData.header.ic_filename.c_str());
+        if (!input.read_ic_chunk_parallel(ic_data.header.ic_filename, ic_data, row_lo, n_local)) {
+            proteus_mpi::exit_failure("BEGRUN: parallel IC read failed for %s\n", ic_data.header.ic_filename.c_str());
         }
 
         // exch the seedpoints to the ranks where they belong
-        proteus_mpi::distribute_ic_parallel(icData, buff);
+        proteus_mpi::distribute_ic_parallel(ic_data, buff);
 #else
         // read the whole file
-        if (!input.readICFile(icData.header.ic_filename, icData)) {
-            proteus_mpi::exit_failure("BEGRUN: IC read failed for %s\n", icData.header.ic_filename.c_str());
+        if (!input.read_ic_file(ic_data.header.ic_filename, ic_data)) {
+            proteus_mpi::exit_failure("BEGRUN: IC read failed for %s\n", ic_data.header.ic_filename.c_str());
         }
 #endif
         // local cell count
-        sim.n_hydro = icData.header.n_seeds;
+        sim.n_hydro = ic_data.header.n_seeds;
 
         // sanity check: sum of per-rank local counts must equal n_global
-        if (icData.header.restart_flag) {
+        if (ic_data.header.restart_flag) {
             const long long n_global_kept = logging::sum_global((long long)sim.n_hydro);
-            if (n_global_kept != (long long)icData.header.n_global) {
+            if (n_global_kept != (long long)ic_data.header.n_global) {
                 proteus_mpi::exit_failure("RESTART: FATAL cell-count mismatch — sum(per-rank n_local) = %lld, "
                                           "expected %lld (from snapshot header).\n",
                                           n_global_kept,
-                                          (long long)icData.header.n_global);
+                                          (long long)ic_data.header.n_global);
             }
         }
     }
@@ -355,19 +356,19 @@ namespace begrun {
     // init hydro from IC + built initial voronoi mesh
     static void init_hydro_and_mesh() {
 
-        // primitive variables (from icData)
+        // primitive variables (from ic_data)
         hydro::init_hydro();
 
         // allocate mesh
         sim.mesh = voronoi::allocate_mesh(sim.n_hydro);
 
 #ifdef MOVING_MESH
-        if (!icData.v_mesh.empty()) {
+        if (!ic_data.v_mesh.empty()) {
             for (uint64_t i = 0; i < sim.n_hydro; i++) {
-                sim.mesh->v_mesh[i].x = icData.v_mesh[DIMENSION * i];
-                sim.mesh->v_mesh[i].y = icData.v_mesh[DIMENSION * i + 1];
+                sim.mesh->v_mesh[i].x = ic_data.v_mesh[DIMENSION * i];
+                sim.mesh->v_mesh[i].y = ic_data.v_mesh[DIMENSION * i + 1];
 #ifdef dim_3D
-                sim.mesh->v_mesh[i].z = icData.v_mesh[DIMENSION * i + 2];
+                sim.mesh->v_mesh[i].z = ic_data.v_mesh[DIMENSION * i + 2];
 #endif
             }
         }
@@ -375,7 +376,7 @@ namespace begrun {
 
         // initial build
         voronoi::compute_periodic_mesh(
-            sim.mesh, (POINT_TYPE*)icData.pos.data(), sim.n_hydro, sim.primvar, sim.prim_new, 0.0);
+            sim.mesh, (POINT_TYPE*)ic_data.pos.data(), sim.n_hydro, sim.primvar, sim.prim_new, 0.0);
 
         // IC no longer needed
         free_initial_conditions();
@@ -383,7 +384,7 @@ namespace begrun {
         if (sim.t_sim > 0.0) {
             logging::root() << "HYDRO: restarted from t = " << sim.t_sim << " (snap_num = " << sim.snap_num
                             << ", step = " << sim.step << ", nranks = " << proteus_mpi::nranks()
-                            << ", n_global = " << icData.header.n_global << ")" << std::endl;
+                            << ", n_global = " << ic_data.header.n_global << ")" << std::endl;
         } else {
             logging::root() << "HYDRO: started from IC" << std::endl;
         }
@@ -392,13 +393,13 @@ namespace begrun {
 
     // drop the IC arrays once primvar + mesh are built from them
     void free_initial_conditions() {
-        std::vector<double>().swap(icData.pos);
-        std::vector<double>().swap(icData.rho);
-        std::vector<double>().swap(icData.vel);
-        std::vector<double>().swap(icData.energy);
-        std::vector<uint64_t>().swap(icData.global_id);
+        std::vector<double>().swap(ic_data.pos);
+        std::vector<double>().swap(ic_data.rho);
+        std::vector<double>().swap(ic_data.vel);
+        std::vector<double>().swap(ic_data.energy);
+        std::vector<uint64_t>().swap(ic_data.global_id);
 #ifdef MOVING_MESH
-        std::vector<double>().swap(icData.v_mesh);
+        std::vector<double>().swap(ic_data.v_mesh);
 #endif
     }
 

@@ -92,7 +92,7 @@ namespace proteus_mpi {
         std::vfprintf(stderr, fmt, args);
         va_end(args);
         std::fflush(stderr);
-        Profiler::AbortProfileLog();
+        Profiler::abort_profile_log();
 #ifdef USE_MPI
         MPI_Abort(MPI_COMM_WORLD, 1);
 #else

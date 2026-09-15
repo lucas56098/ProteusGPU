@@ -47,7 +47,7 @@ struct SnapshotHeader {
     int     nranks   = 0;   // ranks the snapshot was written with
     int     rank     = 0;   // which rank wrote this file
     // /header/profiler attrs — per-rank cumulative seconds at snapshot time, used
-    // by Profiler::SeedFromCumulative to restore in-memory state on restart.
+    // by Profiler::seed_from_cumulative to restore in-memory state on restart.
     std::unordered_map<std::string, double> profiler_cum;
 };
 
@@ -55,33 +55,33 @@ struct SnapshotHeader {
 class InputHandler {
   public:
     // read from parameter file
-    bool loadParameters(const std::string& filename);
+    bool load_parameters(const std::string& filename);
 
-    std::string getParameter(const std::string& key) const;
-    double      getParameterDouble(const std::string& key) const;
-    bool        hasParameter(const std::string& key) const; // for optional params (the getters throw)
+    std::string get_parameter(const std::string& key) const;
+    double      get_parameter_double(const std::string& key) const;
+    bool        has_parameter(const std::string& key) const; // for optional params (the getters throw)
 
     // load ic
-    bool readICFile(const std::string& filename, ICData& icData);
+    bool read_ic_file(const std::string& filename, ICData& ic_data);
 
     // peek IC header + total particle count without reading the bulk arrays (serial, sub-kB).
     // Used so begrun can size the decomposition before the field read in load_IC_fields.
-    bool readICHeader(const std::string& filename, ICHeader& header, uint64_t& n_total);
+    bool read_ic_header(const std::string& filename, ICHeader& header, uint64_t& n_total);
 
 #ifdef USE_MPI
     // collective parallel-HDF5 read of rows [row_lo, row_lo + n_local) for pos/vel/rho/energy.
-    // Every rank in MPI_COMM_WORLD must call with identical filename. Fills icData with this
+    // Every rank in MPI_COMM_WORLD must call with identical filename. Fills ic_data with this
     // rank's chunk only; global IDs assigned as row_lo + i (input-order).
-    bool readICChunkParallel(const std::string& filename, ICData& icData, uint64_t row_lo, uint64_t n_local);
+    bool read_ic_chunk_parallel(const std::string& filename, ICData& ic_data, uint64_t row_lo, uint64_t n_local);
 #endif
 
     // load snapshot
-    bool       readSnapshotFile(const std::string& filename, ICData& icData, SnapshotHeader& snap);
-    static int findLatestSnapshot(const std::string& dir, int nranks, int rank);
+    bool       read_snapshot_file(const std::string& filename, ICData& ic_data, SnapshotHeader& snap);
+    static int find_latest_snapshot(const std::string& dir, int nranks, int rank);
 
   private:
     std::map<std::string, std::string> parameters;
-    std::string                        paramFilePath;
+    std::string                        param_file_path;
 
     // helper
     std::string trim(const std::string& str);

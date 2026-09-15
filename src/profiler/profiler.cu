@@ -36,7 +36,7 @@ namespace {
 
     std::unordered_map<std::string, long long> s_restart_baseline;
 
-    // Live start times for currently-open scopes. CollectCurrent uses these to
+    // Live start times for currently-open scopes. collect_current uses these to
     // extend long-running timers (TOTAL, HYDRO) to "now" each step.
     std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> s_live_start;
 
@@ -51,7 +51,7 @@ namespace {
         cudaEvent_t stop;
     };
     // Per-timer queue of un-queried event pairs. Drained non-blocking at every
-    // LogTimestep and force-synced once at end-of-run.
+    // log_timestep and force-synced once at end-of-run.
     std::unordered_map<std::string, std::deque<GpuPending>> s_pending_gpu;
 
     static cudaEvent_t acquire_event() {
@@ -85,7 +85,7 @@ namespace {
     // The timer axis, identical on every rank: a timer's index is its row in /timer_names.
     std::unordered_map<std::string, size_t> s_timer_index;
 
-    // This rank's cumulative microseconds at the previous LogTimestep, by timer index.
+    // This rank's cumulative microseconds at the previous log_timestep, by timer index.
     std::vector<long long> s_prev_cum;
 
     // This rank's timer names and kinds as of the last time any rank's list changed (sorted by
@@ -194,21 +194,21 @@ Profiler::KernelScope::~KernelScope() {
 // ============================================================
 
 // TOTAL spans begrun() through endrun(), so it can't be a stack-RAII scope.
-// Held on the heap here; StopTotalTimer destructs it, accumulating the final time.
+// Held on the heap here; stop_total_timer destructs it, accumulating the final time.
 static std::unique_ptr<Profiler::Scope> s_total_scope;
 
-void Profiler::StartTotalTimer() {
+void Profiler::start_total_timer() {
     s_total_scope  = std::make_unique<Scope>("TOTAL");
     sim.wall_start = std::chrono::steady_clock::now(); // session wall clock for ETA + final runtime
 }
 
-void Profiler::StopTotalTimer() {
+void Profiler::stop_total_timer() {
     s_total_scope.reset();
 }
 
 // cumulative TOTAL seconds for this rank (folds the live offset if still open).
-// Includes runtime resumed from a restart, since SeedFromCumulative rewinds TOTAL's start.
-double Profiler::TotalSeconds() {
+// Includes runtime resumed from a restart, since seed_from_cumulative rewinds TOTAL's start.
+double Profiler::total_seconds() {
     long long us = 0;
     auto      it = s_cum_us.find("TOTAL");
     if (it != s_cum_us.end()) us = it->second;
@@ -225,7 +225,7 @@ double Profiler::TotalSeconds() {
 // GPU drain
 // ============================================================
 
-void Profiler::DrainGpuEvents(bool force_sync) {
+void Profiler::drain_gpu_events(bool force_sync) {
 #ifdef CUDA_PROFILING
     for (auto& kv : s_pending_gpu) {
         auto& q = kv.second;
@@ -250,12 +250,12 @@ void Profiler::DrainGpuEvents(bool force_sync) {
 }
 
 // ============================================================
-// CollectCurrent / CurrentCumulative
+// collect_current / current_cumulative
 // ============================================================
 
-std::vector<std::pair<std::string, long long>> Profiler::CollectCurrent() {
-    DrainGpuEvents(/*force_sync=*/false);
-    const auto endTime = std::chrono::high_resolution_clock::now();
+std::vector<std::pair<std::string, long long>> Profiler::collect_current() {
+    drain_gpu_events(/*force_sync=*/false);
+    const auto end_time = std::chrono::high_resolution_clock::now();
 
     std::vector<std::pair<std::string, long long>> rows;
     rows.reserve(s_cum_us.size() + s_live_start.size());
@@ -265,21 +265,21 @@ std::vector<std::pair<std::string, long long>> Profiler::CollectCurrent() {
         long long us   = kv.second;
         auto      live = s_live_start.find(kv.first);
         if (live != s_live_start.end()) {
-            us += std::chrono::duration_cast<std::chrono::microseconds>(endTime - live->second).count();
+            us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - live->second).count();
         }
         rows.emplace_back(kv.first, us);
     }
     // open scopes that haven't accumulated anything yet
     for (const auto& kv : s_live_start) {
         if (s_cum_us.find(kv.first) != s_cum_us.end()) continue;
-        long long us = std::chrono::duration_cast<std::chrono::microseconds>(endTime - kv.second).count();
+        long long us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - kv.second).count();
         rows.emplace_back(kv.first, us);
     }
     return rows;
 }
 
-std::unordered_map<std::string, double> Profiler::CurrentCumulative() {
-    auto                                    rows = CollectCurrent();
+std::unordered_map<std::string, double> Profiler::current_cumulative() {
+    auto                                    rows = collect_current();
     std::unordered_map<std::string, double> out;
     for (const auto& r : rows)
         out[r.first] = r.second / 1e6;
@@ -287,10 +287,10 @@ std::unordered_map<std::string, double> Profiler::CurrentCumulative() {
 }
 
 // ============================================================
-// SeedFromCumulative — restart resume
+// seed_from_cumulative — restart resume
 // ============================================================
 
-void Profiler::SeedFromCumulative(const std::unordered_map<std::string, double>& cum_sec) {
+void Profiler::seed_from_cumulative(const std::unordered_map<std::string, double>& cum_sec) {
     for (const auto& kv : cum_sec) {
         const long long us = (long long)(kv.second * 1e6 + 0.5);
         // For TOTAL we rewind its live start time below rather than seeding the
@@ -307,7 +307,7 @@ void Profiler::SeedFromCumulative(const std::unordered_map<std::string, double>&
 }
 
 // ============================================================
-// PrintResults — tree dump with cross-rank stats
+// print_results — tree dump with cross-rank stats
 // ============================================================
 
 namespace {
@@ -454,9 +454,9 @@ namespace {
 
 } // namespace
 
-void Profiler::PrintResults() {
+void Profiler::print_results() {
     // 1) make sure GPU times are fully accounted for
-    DrainGpuEvents(/*force_sync=*/true);
+    drain_gpu_events(/*force_sync=*/true);
 
     const int nranks = proteus_mpi::nranks();
     const int rank   = proteus_mpi::rank();
@@ -478,7 +478,7 @@ void Profiler::PrintResults() {
     const int                ntimers = (int)ordered.size();
     std::vector<double>      my_cum(ntimers, 0.0);
     {
-        auto                                    live = CollectCurrent(); // live values, not just frozen s_cum_us
+        auto                                    live = collect_current(); // live values, not just frozen s_cum_us
         std::unordered_map<std::string, double> mine;
         for (const auto& r : live)
             mine[r.first] = r.second / 1e6;
@@ -805,7 +805,7 @@ namespace {
 
 } // namespace
 
-void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
+void Profiler::open_profile_log(const std::string& path, int restart_step) {
     s_my_rank    = proteus_mpi::rank();
     s_nranks     = proteus_mpi::nranks();
     s_log_active = true;
@@ -840,11 +840,11 @@ void Profiler::OpenProfileLog(const std::string& path, int restart_step) {
         s_rows     = 0;
     }
 
-    // so a rank that aborts before the first LogTimestep still leaves a readable file
+    // so a rank that aborts before the first log_timestep still leaves a readable file
     H5Fflush(s_file, H5F_SCOPE_GLOBAL);
 }
 
-void Profiler::CloseProfileLog() {
+void Profiler::close_profile_log() {
     if (!s_log_active) return;
     s_log_active = false;
     if (s_file < 0) return;
@@ -853,20 +853,20 @@ void Profiler::CloseProfileLog() {
     s_file = -1;
 }
 
-void Profiler::AbortProfileLog() {
+void Profiler::abort_profile_log() {
 
     if (parallel_log()) {
         s_log_active = false;
         return;
     }
-    CloseProfileLog();
+    close_profile_log();
 }
 
-void Profiler::LogTimestep(int step) {
+void Profiler::log_timestep(int step) {
     if (!s_log_active) return;
 
     // sorted by name, so the list only compares unequal to last step's when the timers changed
-    auto rows = CollectCurrent();
+    auto rows = collect_current();
     std::sort(rows.begin(),
               rows.end(),
               [](const std::pair<std::string, long long>& a, const std::pair<std::string, long long>& b) {
@@ -932,23 +932,23 @@ void print_max_memory_usage() {
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
 
-        double rssBytes = 0.0;
+        double rss_bytes = 0.0;
 #if defined(__APPLE__) && defined(__MACH__)
-        rssBytes = static_cast<double>(usage.ru_maxrss);
+        rss_bytes = static_cast<double>(usage.ru_maxrss);
 #elif defined(__linux__)
-        rssBytes = static_cast<double>(usage.ru_maxrss) * 1024.0;
+        rss_bytes = static_cast<double>(usage.ru_maxrss) * 1024.0;
 #else
-        rssBytes = static_cast<double>(usage.ru_maxrss);
+        rss_bytes = static_cast<double>(usage.ru_maxrss);
 #endif
 
-        const long   pages    = sysconf(_SC_PHYS_PAGES);
-        const long   pageSize = sysconf(_SC_PAGE_SIZE);
-        const double totalRam = (pages > 0 && pageSize > 0) ? (double)pages * (double)pageSize : 0.0;
+        const long   pages     = sysconf(_SC_PHYS_PAGES);
+        const long   page_size = sysconf(_SC_PAGE_SIZE);
+        const double total_ram = (pages > 0 && page_size > 0) ? (double)pages * (double)page_size : 0.0;
 
-        constexpr double MiB    = 1024.0 * 1024.0;
-        const double     rssMiB = rssBytes / MiB;
-        const char*      tag    = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
-        logging::root() << "MAIN: maximum CPU memory used" << tag << ": " << rssMiB << " MiB (" << totalRam / MiB
+        constexpr double MiB     = 1024.0 * 1024.0;
+        const double     rss_mib = rss_bytes / MiB;
+        const char*      tag     = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
+        logging::root() << "MAIN: maximum CPU memory used" << tag << ": " << rss_mib << " MiB (" << total_ram / MiB
                         << " MiB total)" << std::endl;
     } else {
         std::cerr << "Error getting resource usage." << std::endl;
@@ -958,10 +958,10 @@ void print_max_memory_usage() {
     size_t gpu_free  = 0;
     size_t gpu_total = 0;
     cudaMemGetInfo(&gpu_free, &gpu_total);
-    constexpr double MiB     = 1024.0 * 1024.0;
-    const double     peakMiB = (double)g_gpu_bytes_peak() / MiB;
-    const char*      tag     = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
-    logging::root() << "MAIN: maximum GPU memory used" << tag << ": " << peakMiB << " MiB (" << (double)gpu_total / MiB
+    constexpr double MiB      = 1024.0 * 1024.0;
+    const double     peak_mib = (double)g_gpu_bytes_peak() / MiB;
+    const char*      tag      = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
+    logging::root() << "MAIN: maximum GPU memory used" << tag << ": " << peak_mib << " MiB (" << (double)gpu_total / MiB
                     << " MiB total)" << std::endl;
 #endif
 }

@@ -29,7 +29,7 @@ namespace knn {
         knn->N_grid = (N_grid_restored > 0) ? N_grid_restored
                                             : std::max(1, (int)round(pow(max_n_total / 3.1f, 1.0f / (float)DIMENSION)));
         knn->Npow   = (int)pow(knn->N_grid, DIMENSION);
-        // bucket grid spans [-buff, 1+buff]^d; cellFromPoint uses inv_boxsize to index into it
+        // bucket grid spans [-buff, 1+buff]^d; cell_from_point uses inv_boxsize to index into it
         knn->buff        = buff;
         knn->inv_boxsize = 1.0 / (1.0 + 2.0 * buff);
         // default to the global box; set_local_extent() re-anchors to the rank's extent each build
@@ -251,7 +251,7 @@ namespace knn {
         // 1) count points per grid cell. Integer atomics, so the totals do not depend on
         //    the order the increments land in.
         parallel_for<_KNN_BLOCK_SIZE_>("COUNT", len_pts, [=] HD(int id) {
-            const int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
+            const int cell = cell_from_point(N_grid, grid_lo, inv_cell_size, pts[id]);
             portable_atomicAdd(d_counters + cell, 1);
         });
 
@@ -264,7 +264,7 @@ namespace knn {
         //    d_counters is reused as the fill cursor and ends up back at the counts.
         gpu_memset(d_counters, 0, Npow * sizeof(int));
         parallel_for<_KNN_BLOCK_SIZE_>("SCATTER", len_pts, [=] HD(int id) {
-            const int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
+            const int cell = cell_from_point(N_grid, grid_lo, inv_cell_size, pts[id]);
             bucket_ids[d_ptrs[cell] + portable_atomicAdd(d_counters + cell, 1)] = id;
         });
 
@@ -274,7 +274,7 @@ namespace knn {
         //    serialise a thread.
         parallel_for<_KNN_BLOCK_SIZE_>("RANK", len_pts, [=] HD(int slot) {
             const int id   = bucket_ids[slot];
-            const int cell = cellFromPoint(N_grid, grid_lo, inv_cell_size, pts[id]);
+            const int cell = cell_from_point(N_grid, grid_lo, inv_cell_size, pts[id]);
             const int base = d_ptrs[cell];
             const int end  = base + d_counters[cell];
 
@@ -292,7 +292,7 @@ namespace knn {
     // helpers (grid mapping)
     // ============================================================
 
-    HD int cellFromPoint(int N_grid, const double* grid_lo, double inv_cell_size, POINT_TYPE point) {
+    HD int cell_from_point(int N_grid, const double* grid_lo, double inv_cell_size, POINT_TYPE point) {
         // grid origin grid_lo[a], isotropic cell width 1/inv_cell_size. Map (point - grid_lo) into
         // [0, N_grid); out-of-extent ghosts clamp into the edge cells. For the global-box fallback
         // grid_lo = -buff and inv_cell_size = N_grid/(1+2*buff), i.e. the old mapping exactly.

@@ -41,34 +41,34 @@ namespace astro {
         g_agn.cy = 0.5;
         g_agn.cz = 0.5;
 
-        const double R_acc = input.getParameterDouble("R_acc") * KPC_IN_CM / units.UnitLength_in_cm;
+        const double R_acc = input.get_parameter_double("R_acc") * KPC_IN_CM / units.UnitLength_in_cm;
         g_agn.r_acc2       = R_acc * R_acc;
-        g_agn.T_cold_acc   = input.getParameterDouble("T_cold_acc");
+        g_agn.T_cold_acc   = input.get_parameter_double("T_cold_acc");
         g_agn.C_T          = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS * units.UnitVelocity_in_cm_per_s *
                     units.UnitVelocity_in_cm_per_s / BOLTZMANN;
-        g_agn.t_acc = input.getParameterDouble("t_acc") * 1.0e6 * YEAR_IN_S / units.UnitTime_in_s(); // Myr -> code
-        g_agn.eta   = input.getParameterDouble("eta_agn");
+        g_agn.t_acc = input.get_parameter_double("t_acc") * 1.0e6 * YEAR_IN_S / units.UnitTime_in_s(); // Myr -> code
+        g_agn.eta   = input.get_parameter_double("eta_agn");
         const double c_code = SPEED_OF_LIGHT / units.UnitVelocity_in_cm_per_s;
         g_agn.c2            = c_code * c_code;
 
-        const double R_T = input.getParameterDouble("R_T") * KPC_IN_CM / units.UnitLength_in_cm;
+        const double R_T = input.get_parameter_double("R_T") * KPC_IN_CM / units.UnitLength_in_cm;
         g_agn.r_T2       = R_T * R_T;
 #ifdef dim_2D
         g_agn.inv_V_T = 1.0 / (PI * R_T * R_T);
 #else
         g_agn.inv_V_T = 1.0 / (4.0 / 3.0 * PI * R_T * R_T * R_T);
 #endif
-        g_agn.f_T   = input.getParameterDouble("f_T");
+        g_agn.f_T   = input.get_parameter_double("f_T");
         g_agn.T_max = 5.0e9; // paper temperature limit
         // c_s^2 = gamma*(gamma-1)*e_int/rho, and T = C_T*e_int/rho, so cs2 at T_max is:
         g_agn.cs2_max = gamma_eos * (gamma_eos - 1.0) * g_agn.T_max / g_agn.C_T;
 
 #ifdef AGN_KINETIC
-        g_agn.f_K          = input.getParameterDouble("f_K");
-        const double r_jet = input.getParameterDouble("R_jet") * KPC_IN_CM / units.UnitLength_in_cm;
+        g_agn.f_K          = input.get_parameter_double("f_K");
+        const double r_jet = input.get_parameter_double("R_jet") * KPC_IN_CM / units.UnitLength_in_cm;
         g_agn.r_jet2       = r_jet * r_jet;
-        g_agn.h_jet        = input.getParameterDouble("h_jet") * KPC_IN_CM / units.UnitLength_in_cm;
-        g_agn.L_jet        = input.getParameterDouble("L_jet") * KPC_IN_CM / units.UnitLength_in_cm;
+        g_agn.h_jet        = input.get_parameter_double("h_jet") * KPC_IN_CM / units.UnitLength_in_cm;
+        g_agn.L_jet        = input.get_parameter_double("L_jet") * KPC_IN_CM / units.UnitLength_in_cm;
 #ifdef dim_2D
         g_agn.inv_Vjet = 1.0 / (2.0 * r_jet * g_agn.h_jet); // one zone: 2*r_jet (perp) x h_jet
 #else
@@ -76,7 +76,7 @@ namespace astro {
 #endif
         const double c_c = SPEED_OF_LIGHT / units.UnitVelocity_in_cm_per_s;
         g_agn.v_jet      = sqrt(2.0 * g_agn.eta) * c_c;
-        g_agn.v_cap      = input.getParameterDouble("v_cap") * c_c;
+        g_agn.v_cap      = input.get_parameter_double("v_cap") * c_c;
 #endif
 
         logging::root() << "AGN: cold-accretion trigger (R_acc=" << R_acc << " code)"

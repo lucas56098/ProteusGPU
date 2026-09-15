@@ -15,7 +15,7 @@
 static bool write_mesh_geometry(hid_t mesh_group, int n_hydro);
 #endif
 
-OutputHandler::OutputHandler(const std::string& outputDir) : outputDirectory(outputDir) {}
+OutputHandler::OutputHandler(const std::string& output_dir) : output_directory(output_dir) {}
 
 // ============================================================
 // init
@@ -26,15 +26,15 @@ bool OutputHandler::initialize() {
     bool ok = true;
     if (proteus_mpi::is_root()) {
         struct stat st;
-        if (stat(outputDirectory.c_str(), &st) != 0) {
-            if (mkdir(outputDirectory.c_str(), 0755) != 0) {
-                std::cerr << "OUTPUT: Error! Could not create output directory: " << outputDirectory << std::endl;
+        if (stat(output_directory.c_str(), &st) != 0) {
+            if (mkdir(output_directory.c_str(), 0755) != 0) {
+                std::cerr << "OUTPUT: Error! Could not create output directory: " << output_directory << std::endl;
                 ok = false;
             } else {
-                logging::root() << "OUTPUT: Created new output directory: " << outputDirectory << std::endl;
+                logging::root() << "OUTPUT: Created new output directory: " << output_directory << std::endl;
             }
         }
-        if (ok) logging::root() << "OUTPUT: directory: " << outputDirectory << std::endl;
+        if (ok) logging::root() << "OUTPUT: directory: " << output_directory << std::endl;
     }
 #ifdef USE_MPI
     {
@@ -76,7 +76,7 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
 #endif
 
         h5::Group prof_group(H5Gcreate(header_group, "profiler", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
-        for (const auto& kv : Profiler::CurrentCumulative()) {
+        for (const auto& kv : Profiler::current_cumulative()) {
             if (!h5::write_attr(prof_group, kv.first.c_str(), kv.second)) { return false; }
         }
     }
@@ -151,16 +151,16 @@ void OutputHandler::write_snapshot() {
     std::string output_file = "snapshot_" + std::to_string(sim.snap_num);
     if (nranks > 1) output_file += "." + std::to_string(rank);
     output_file += ".hdf5";
-    const std::string fullPath = outputDirectory + output_file;
+    const std::string full_path = output_directory + output_file;
 
     if (nranks > 1) {
-        std::cout << "OUTPUT: Writing snapshot to: " << fullPath << std::endl;
+        std::cout << "OUTPUT: Writing snapshot to: " << full_path << std::endl;
     } else {
-        logging::root() << "OUTPUT: Writing snapshot to: " << fullPath << std::endl;
+        logging::root() << "OUTPUT: Writing snapshot to: " << full_path << std::endl;
     }
 
-    if (!write_snapshot_file(fullPath, n_hydro, nranks, rank, n_global)) {
-        proteus_mpi::exit_failure("OUTPUT: failed to write snapshot %s\n", fullPath.c_str());
+    if (!write_snapshot_file(full_path, n_hydro, nranks, rank, n_global)) {
+        proteus_mpi::exit_failure("OUTPUT: failed to write snapshot %s\n", full_path.c_str());
     }
 
     sim.snap_num += 1;

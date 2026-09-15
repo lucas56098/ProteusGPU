@@ -37,10 +37,10 @@ namespace voronoi {
         // unit box). If the IC declares `vol_ref_cell_size` (the finest designed cell size, code
         // units), use that instead so a statically-refined IC isn't de-refined by the drift — it then
         // only fires on cells crushed below the finest level. For a uniform IC the two are identical.
-        double V_ref = 1.0 / (double)icData.header.n_global;
+        double V_ref = 1.0 / (double)ic_data.header.n_global;
 #ifdef VOL_REGULARIZE
-        if (input.hasParameter("vol_ref_cell_size")) {
-            const double vs = input.getParameterDouble("vol_ref_cell_size");
+        if (input.has_parameter("vol_ref_cell_size")) {
+            const double vs = input.get_parameter_double("vol_ref_cell_size");
 #ifdef dim_2D
             V_ref = vs * vs;
 #else
@@ -128,7 +128,7 @@ namespace voronoi {
         mesh->scratch_move = gpu_alloc<POINT_TYPE>(ext);
 
         // KNN cache
-        mesh->knn = knn::init_once((int)n_hydro, icData.header.knn_N_grid);
+        mesh->knn = knn::init_once((int)n_hydro, ic_data.header.knn_N_grid);
 
         // hint GPU-preferred placement for hot arrays
         gpu_advise_gpu_preferred(mesh->seeds, ext * sizeof(double3));

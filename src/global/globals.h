@@ -163,13 +163,13 @@ struct SimState {
     // Set from the cooling temperature floor (T_floor / C_T) when COOLING is compiled in.
     double min_egy_spec = 0.0;
 
-    // wall-clock start; per-step profile log lives in profile.hdf5 (see Profiler::OpenProfileLog)
+    // wall-clock start; per-step profile log lives in profile.hdf5 (see Profiler::open_profile_log)
     std::chrono::steady_clock::time_point wall_start;
 };
 
 // globals
 extern InputHandler  input;
-extern ICData        icData;
+extern ICData        ic_data;
 extern OutputHandler output;
 extern SimState      sim;
 extern double        buff; // buffer for the periodic bc (box will be 1 + 2*buff long)

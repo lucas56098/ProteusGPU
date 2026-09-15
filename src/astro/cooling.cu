@@ -29,8 +29,8 @@ namespace astro {
     // ============================================================
 
     void cooling_init() {
-        load_table(input.getParameter("cooling_table"), g_cool);
-        g_cool.T_floor = input.getParameterDouble("T_floor");
+        load_table(input.get_parameter("cooling_table"), g_cool);
+        g_cool.T_floor = input.get_parameter_double("T_floor");
 
         // T[K] = C_T * (e_int_code / rho_code)
         g_cool.C_T = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS * units.UnitVelocity_in_cm_per_s *

@@ -36,14 +36,14 @@ namespace hydro {
         sim.primvar = gpu_alloc<primvars>(1);
         allocate_prim_buffer(sim.n_hydro, sim.primvar, /*with_ghosts=*/true);
 
-        // fill primvar with icData
+        // fill primvar with ic_data
         for (int i = 0; i < n_hydro; i++) {
-            sim.primvar->rho[i] = icData.rho[i];
-            sim.primvar->E[i]   = icData.energy[i];
-            sim.primvar->v[i].x = icData.vel[DIMENSION * i];
-            sim.primvar->v[i].y = icData.vel[DIMENSION * i + 1];
+            sim.primvar->rho[i] = ic_data.rho[i];
+            sim.primvar->E[i]   = ic_data.energy[i];
+            sim.primvar->v[i].x = ic_data.vel[DIMENSION * i];
+            sim.primvar->v[i].y = ic_data.vel[DIMENSION * i + 1];
 #ifdef dim_3D
-            sim.primvar->v[i].z = icData.vel[DIMENSION * i + 2];
+            sim.primvar->v[i].z = ic_data.vel[DIMENSION * i + 2];
 #endif
         }
 

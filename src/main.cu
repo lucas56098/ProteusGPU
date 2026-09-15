@@ -62,7 +62,7 @@ int main(int argc, char* argv[]) {
             if (sim.t_sim >= sim.t_nextoutput || sim.t_sim >= sim.t_end) { output.write_snapshot(); }
 
             // log profiling times
-            Profiler::LogTimestep(sim.step);
+            Profiler::log_timestep(sim.step);
             sim.step++;
         }
     }

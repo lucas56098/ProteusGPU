@@ -10,10 +10,10 @@ struct VMesh;
 // output handler class for writing snapshot files
 class OutputHandler {
   private:
-    std::string outputDirectory;
+    std::string output_directory;
 
   public:
-    OutputHandler(const std::string& outputDir = "./output/");
+    OutputHandler(const std::string& output_dir = "./output/");
 
     bool initialize();
 

@@ -21,9 +21,9 @@ typedef struct knn_problem {
     int*          d_bucket_ids;             // point ids in bucket order, pre-rank; pts_capacity
     POINT_TYPE*   d_stored_points;          // input points sorted, numpoints
     double        buff;                     // periodic ghost buffer; bucket grid spans [-buff, 1+buff]^d
-    double        inv_boxsize;              // 1 / (1 + 2*buff), precomputed for cellFromPoint
+    double        inv_boxsize;              // 1 / (1 + 2*buff), precomputed for cell_from_point
     double        grid_lo[3];               // per-rank grid origin (data_lo; -buff in global fallback)
-    double        inv_cell_size;            // 1 / isotropic cell_size, for cellFromPoint
+    double        inv_cell_size;            // 1 / isotropic cell_size, for cell_from_point
     double*       d_cell_offset_dists_unit; // ring lower-bound dist^2 at unit cell_size; rescaled per build
 } knn_problem;
 
@@ -35,7 +35,7 @@ namespace knn {
     // resets counters and sorts points into grid
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
 
-    HD int cellFromPoint(int N_grid, const double* grid_lo, double inv_cell_size, POINT_TYPE point);
+    HD int cell_from_point(int N_grid, const double* grid_lo, double inv_cell_size, POINT_TYPE point);
 
     // anchor the KNN grid to this rank's local extent (data_lo/data_hi from set_data_extent_for_build);
     // falls back to the global box when the extent is degenerate (single-rank sentinel lo==hi).
@@ -108,7 +108,7 @@ namespace knn {
         int               len_pts             = knn->len_pts;
 
         POINT_TYPE p       = d_stored_points[point_in];
-        int        cell_in = cellFromPoint(N_grid, knn->grid_lo, knn->inv_cell_size, p);
+        int        cell_in = cell_from_point(N_grid, knn->grid_lo, knn->inv_cell_size, p);
 
         // initialize the heap with sentinel "infinitely far" entries
         for (int i = 0; i < K; i++) {

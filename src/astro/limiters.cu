@@ -25,14 +25,14 @@ namespace astro {
         g_lim.cy = 0.5;
         g_lim.cz = 0.5;
 
-        const double R_lim = input.getParameterDouble("R_lim") * KPC_IN_CM / units.UnitLength_in_cm;
+        const double R_lim = input.get_parameter_double("R_lim") * KPC_IN_CM / units.UnitLength_in_cm;
         g_lim.r_lim2       = R_lim * R_lim;
-        g_lim.T_max        = input.getParameterDouble("T_max_lim");
+        g_lim.T_max        = input.get_parameter_double("T_max_lim");
         g_lim.C_T          = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS * units.UnitVelocity_in_cm_per_s *
                     units.UnitVelocity_in_cm_per_s / BOLTZMANN;
         g_lim.e_max_c       = g_lim.T_max / g_lim.C_T; // e_int/rho ceiling
         const double c_code = SPEED_OF_LIGHT / units.UnitVelocity_in_cm_per_s;
-        g_lim.v_cap         = input.getParameterDouble("v_cap_lim") * c_code;
+        g_lim.v_cap         = input.get_parameter_double("v_cap_lim") * c_code;
         g_lim.v_cap2        = g_lim.v_cap * g_lim.v_cap;
 
         logging::root() << "LIMITERS: r<" << R_lim << " code, T<" << g_lim.T_max << " K, |v|<" << g_lim.v_cap

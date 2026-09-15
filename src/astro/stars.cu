@@ -27,12 +27,12 @@ namespace astro {
         const double G = units.G_in_code_units();
 
         // --- SNIa: rates tied to the BCG stellar (Hernquist) density ---
-        const double M_BCG     = input.getParameterDouble("M_BCG") * SOLAR_MASS_G / units.UnitMass_in_g;
-        const double R_BCG     = input.getParameterDouble("R_BCG") * KPC_IN_CM / units.UnitLength_in_cm;
-        const double Gamma     = input.getParameterDouble("Gamma_SNIa"); // /yr/Msun
-        const double E_SN      = input.getParameterDouble("E_SNIa");     // erg
-        const double alpha     = input.getParameterDouble("alpha_SNIa"); // /s
-        const double Gamma_cgs = Gamma / (YEAR_IN_S * SOLAR_MASS_G);     // /s/g
+        const double M_BCG     = input.get_parameter_double("M_BCG") * SOLAR_MASS_G / units.UnitMass_in_g;
+        const double R_BCG     = input.get_parameter_double("R_BCG") * KPC_IN_CM / units.UnitLength_in_cm;
+        const double Gamma     = input.get_parameter_double("Gamma_SNIa"); // /yr/Msun
+        const double E_SN      = input.get_parameter_double("E_SNIa");     // erg
+        const double alpha     = input.get_parameter_double("alpha_SNIa"); // /s
+        const double Gamma_cgs = Gamma / (YEAR_IN_S * SOLAR_MASS_G);       // /s/g
 
         // dE_code = Ce * rho_BCG_code * dt_code ; dRho_code = Cm * rho_BCG_code * dt_code
         g_star.snia_Ce = Gamma_cgs * E_SN * units.UnitTime_in_s() /
@@ -43,17 +43,17 @@ namespace astro {
         g_star.bcg_rsoft = 0.1 * R_BCG;
 
         // --- particle-free SF heating ---
-        g_star.sf_eff        = input.getParameterDouble("eff_SF");
+        g_star.sf_eff        = input.get_parameter_double("eff_SF");
         const double c_code  = SPEED_OF_LIGHT / units.UnitVelocity_in_cm_per_s;
         g_star.sf_c2         = c_code * c_code;
         g_star.sf_G          = G;
-        const double n_SF    = input.getParameterDouble("n_SF"); // n_H [cm^-3]
+        const double n_SF    = input.get_parameter_double("n_SF"); // n_H [cm^-3]
         g_star.sf_rho_thresh = n_SF * PROTONMASS / (HYDROGEN_MASSFRAC * units.UnitDensity_in_cgs());
-        g_star.sf_T_max      = input.getParameterDouble("T_SF");
+        g_star.sf_T_max      = input.get_parameter_double("T_SF");
         g_star.sf_C_T        = (gamma_eos - 1.0) * MEAN_MOL_WEIGHT * PROTONMASS * units.UnitVelocity_in_cm_per_s *
                         units.UnitVelocity_in_cm_per_s / BOLTZMANN;
-        const double R_acc = input.getParameterDouble("R_acc") * KPC_IN_CM / units.UnitLength_in_cm;
-        const double R_SF  = input.getParameterDouble("R_SF") * KPC_IN_CM / units.UnitLength_in_cm;
+        const double R_acc = input.get_parameter_double("R_acc") * KPC_IN_CM / units.UnitLength_in_cm;
+        const double R_SF  = input.get_parameter_double("R_SF") * KPC_IN_CM / units.UnitLength_in_cm;
         g_star.sf_r_in2    = R_acc * R_acc;
         g_star.sf_r_out2   = R_SF * R_SF;
 
