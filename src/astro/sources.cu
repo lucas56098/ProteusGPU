@@ -26,7 +26,12 @@ namespace astro {
 #endif
     }
 
-    // first-half order: gravity, cooling, stars, agn
+    void sources_prepare() {
+#ifdef AGN_ENABLED
+        agn_prepare();
+#endif
+    }
+
     void apply_sources_first_half(double dt_half) {
         (void)dt_half;
 #ifdef GRAVITY_ENABLED

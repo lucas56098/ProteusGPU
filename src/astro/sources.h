@@ -8,6 +8,7 @@
 namespace astro {
 
     void sources_init();
+    void sources_prepare();
 
     // first half before hydro_step, second half after, each over dt_half. Second half runs the
     // sources in reversed order to keep the split symmetric (2nd order) with multiple sources.
