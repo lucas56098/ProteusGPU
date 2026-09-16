@@ -2,12 +2,9 @@
 #define OUTPUT_H
 
 #include "../global/allvars.h"
-#include <chrono>
 #include <string>
 
-struct VMesh;
-
-// output handler class for writing snapshot files
+// stores the output directory and writes snapshot files (one per rank)
 class OutputHandler {
   private:
     std::string output_directory;
