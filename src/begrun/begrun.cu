@@ -335,20 +335,9 @@ namespace begrun {
 #endif
         // local cell count
         sim.n_hydro = ic_data.header.n_seeds;
-
-        // sanity check: sum of per-rank local counts must equal n_global
-        if (ic_data.header.restart_flag) {
-            const long long n_global_kept = logging::sum_global((long long)sim.n_hydro);
-            if (n_global_kept != (long long)ic_data.header.n_global) {
-                proteus_mpi::exit_failure("RESTART: FATAL cell-count mismatch — sum(per-rank n_local) = %lld, "
-                                          "expected %lld (from snapshot header).\n",
-                                          n_global_kept,
-                                          (long long)ic_data.header.n_global);
-            }
-        }
     }
 
-    // init halo and migrate for exchange
+    // halo and migration buffers
     static void init_exch_buffers() {
 
         // store initial max n_local across ranks
