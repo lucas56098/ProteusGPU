@@ -1,4 +1,5 @@
-/* Strang-split source-term orchestration */
+// calls the source terms in order (sources.h)
+
 #include "agn.h"
 #include "cooling.h"
 #include "gravity.h"
@@ -8,6 +9,7 @@
 
 namespace astro {
 
+    // reads the parameters of every source term that is compiled in
     void sources_init() {
 #ifdef GRAVITY_ENABLED
         gravity_init();
@@ -26,6 +28,7 @@ namespace astro {
 #endif
     }
 
+    // once per step, before the timestep is chosen
     void sources_prepare() {
 #ifdef AGN_ENABLED
         agn_prepare();
@@ -48,8 +51,7 @@ namespace astro {
 #endif
     }
 
-    // reversed order of the first half, then the global hard clamps (idempotent -- once per full
-    // step is enough since the CFL already bounds the post-AGN sound speed inside R_T)
+    // reverse order, so the whole step stays symmetric
     void apply_sources_second_half(double dt_half) {
         (void)dt_half;
 #ifdef AGN_ENABLED

@@ -1,4 +1,5 @@
-/* static analytic gravity: NFW + Hernquist + point-mass SMBH, applied as a Strang-split kick */
+// implements the static potential (gravity.h)
+
 #include "../global/allvars.h"
 #include "../io/input.h"
 #include "../profiler/profiler.h"
@@ -11,17 +12,13 @@ namespace astro {
 
 #ifdef GRAVITY_ENABLED
 
-    // forward declarations
     HD double     gravity_magnitude(double r, const GravityParams& p);
     HD POINT_TYPE gravity_accel(double3 pos, const GravityParams& p);
     HD void gravity_kick_cell(uint64_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half);
 
     static GravityParams g_grav;
 
-    // ============================================================
-    // Setup
-    // ============================================================
-
+    // turns the parameters of the profiles into code units
     void gravity_init() {
         g_grav.cx      = 0.5;
         g_grav.cy      = 0.5;
@@ -30,17 +27,19 @@ namespace astro {
 
 #ifdef NFW
         {
+            // NFW halo from its mass and concentration; rho_s belongs to an overdensity of 200
             const double M     = input.get_parameter_double("M_NFW") * SOLAR_MASS_G / units.UnitMass_in_g;
             const double c     = input.get_parameter_double("c_NFW");
             const double H0    = input.get_parameter_double("H0") * KM_S_IN_CGS / MPC_IN_CM * units.UnitTime_in_s();
             const double mc    = log(1.0 + c) - c / (1.0 + c);
-            const double rho_s = 200.0 * c * c * c * H0 * H0 / (8.0 * PI * G * mc); // characteristic density
+            const double rho_s = 200.0 * c * c * c * H0 * H0 / (8.0 * PI * G * mc);
             g_grav.nfw_Rs      = cbrt(M / (4.0 * PI * rho_s * mc));
             g_grav.nfw_A       = G * M / mc;
         }
 #endif
 #ifdef HERNQUIST
         {
+            // Hernquist profile of the central galaxy
             const double M = input.get_parameter_double("M_BCG") * SOLAR_MASS_G / units.UnitMass_in_g;
             g_grav.hq_R    = input.get_parameter_double("R_BCG") * KPC_IN_CM / units.UnitLength_in_cm;
             g_grav.hq_GM   = G * M;
@@ -48,6 +47,7 @@ namespace astro {
 #endif
 #ifdef SMBH
         {
+            // black hole, softened so the acceleration stays finite at the centre
             const double M   = input.get_parameter_double("M_BH") * SOLAR_MASS_G / units.UnitMass_in_g;
             const double eps = input.get_parameter_double("smbh_softening") * KPC_IN_CM / units.UnitLength_in_cm;
             g_grav.bh_GM     = G * M;
@@ -57,10 +57,6 @@ namespace astro {
 
         logging::root() << "GRAVITY: static potential enabled" << std::endl;
     }
-
-    // ============================================================
-    // Apply
-    // ============================================================
 
     void gravity_apply(double dt_half) {
         PROFILE("GRAVITY");
@@ -73,11 +69,7 @@ namespace astro {
             "GRAVITY_KICK", mesh->n_hydro, [=] HD(size_t i) { gravity_kick_cell(i, mesh, primvar, p, dt_half); });
     }
 
-    // ============================================================
-    // Per-cell work
-    // ============================================================
-
-    // kick: v += a*dt_half; update E by the kinetic-energy change so internal energy is untouched
+    // changes the velocity of one cell; the internal energy stays as it is
     HD void
     gravity_kick_cell(uint64_t i, const VMesh* mesh, hydro::primvars* primvar, GravityParams p, double dt_half) {
         const POINT_TYPE a   = gravity_accel(mesh->seeds[i], p);
@@ -101,11 +93,11 @@ namespace astro {
         primvar->E[i] += 0.5 * rho * (v2_new - v2_old);
     }
 
-    // radial acceleration magnitude at radius r, summed over the enabled potentials
+    // how strong the pull is at radius r, all parts added up
     HD double gravity_magnitude(double r, const GravityParams& p) {
         const double r2 = r * r;
         double       g  = 0.0;
-        (void)r2; // read by NFW and SMBH only
+        (void)r2;
 #ifdef NFW
         {
             const double x = r / p.nfw_Rs;
@@ -127,7 +119,7 @@ namespace astro {
         return g;
     }
 
-    // acceleration vector at a cell position, pointing toward the center (code units, no wrap)
+    // the same, as a vector towards the centre
     HD POINT_TYPE gravity_accel(double3 pos, const GravityParams& p) {
         const double dx = p.cx - pos.x;
         const double dy = p.cy - pos.y;
@@ -138,7 +130,8 @@ namespace astro {
         const double r = sqrt(dx * dx + dy * dy);
 #endif
         POINT_TYPE a;
-        if (r < 1e-9) { // at the center there is no preferred direction
+        // right at the centre there is no direction
+        if (r < 1e-9) {
             a.x = 0.0;
             a.y = 0.0;
 #ifdef dim_3D
@@ -156,6 +149,6 @@ namespace astro {
         return a;
     }
 
-#endif // GRAVITY_ENABLED
+#endif
 
 } // namespace astro

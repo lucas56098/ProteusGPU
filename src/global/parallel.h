@@ -2,24 +2,29 @@
 #define PARALLEL_H
 #pragma once
 
+// Launches per-cell work: parallel_for, parallel_reduce and parallel_exclusive_scan, one kernel on CUDA
+// and an OpenMP loop on CPU. A device lambda cannot capture a namespace-scope global, so copy such a
+// global into a local before using it in a body.
+
 #include "../profiler/profiler.h"
 #include "gpu_compat.h"
 
-// CPU scheduling policy
+// CPU loop schedule; dynamic pays off where the cost per cell varies a lot
 enum class Sched { Static, Dynamic };
 
 #ifndef CPU_DEBUG
 
-// the one copy of the index-guard boilerplate that every kernel body used to repeat
 template <int BLOCK, int MIN_BLOCKS, typename F>
+// the generic kernel behind parallel_for; F is a template parameter, so the body inlines like a hand-written one
 GLOBAL void LAUNCH_BOUNDS(BLOCK, MIN_BLOCKS) kernel_parallel_apply(size_t n, F f) {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     f(i);
 }
 
-#endif // !CPU_DEBUG
+#endif
 
+// plain loops, threaded only with USE_OPENMP
 template <typename F> inline void cpu_for_static(size_t n, F f) {
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
@@ -39,8 +44,9 @@ template <typename F> inline void cpu_for_dynamic(size_t n, F f) {
 }
 
 template <int BLOCK, int MIN_BLOCKS = 1, Sched SCHED = Sched::Static, typename F>
+// runs f(i) for every i in [0, n)
 inline void parallel_for(const char* name, size_t n, F f) {
-    (void)name; // unused when profiling is compiled out
+    (void)name;
     if (n == 0) return;
 
 #ifndef CPU_DEBUG
@@ -48,7 +54,6 @@ inline void parallel_for(const char* name, size_t n, F f) {
     kernel_parallel_apply<BLOCK, MIN_BLOCKS><<<(n + BLOCK - 1) / BLOCK, BLOCK>>>(n, f);
     GPU_SYNC();
 #else
-    // a CPU scope rather than a kernel one: same label, no GPU events to query
     PROFILE(name);
 
     if (SCHED == Sched::Dynamic) {
@@ -59,6 +64,7 @@ inline void parallel_for(const char* name, size_t n, F f) {
 #endif
 }
 
+// scratch elements a scan over n values needs
 inline size_t scan_scratch_size(size_t n, int block) {
     size_t total = 0;
     while (n > 1) {
@@ -69,6 +75,7 @@ inline size_t scan_scratch_size(size_t n, int block) {
 }
 
 #ifndef CPU_DEBUG
+// three phases: scan inside each block, recurse on the block totals, add the offsets back
 template <int BLOCK, typename T> GLOBAL void kernel_scan_block(size_t n, const T* in, T* out, T* block_sums) {
     __shared__ T buf[2][BLOCK];
     const size_t i   = (size_t)blockIdx.x * BLOCK + threadIdx.x;
@@ -87,7 +94,7 @@ template <int BLOCK, typename T> GLOBAL void kernel_scan_block(size_t n, const T
     }
 
     const T incl = buf[pout][tid];
-    if (i < n) out[i] = incl - v; // inclusive -> exclusive
+    if (i < n) out[i] = incl - v;
     if (tid == BLOCK - 1) block_sums[blockIdx.x] = incl;
 }
 
@@ -107,9 +114,11 @@ template <int BLOCK, typename T> inline void scan_device(size_t n, const T* in, 
     }
 }
 
-#endif // !CPU_DEBUG
+#endif
 
 template <int BLOCK, typename T>
+// exclusive prefix sum of in into out; in == out is allowed
+// take offsets from here whenever they must be reproducible, an atomic cursor hands them out in race order
 inline void parallel_exclusive_scan(const char* name, size_t n, const T* in, T* out, T* scratch) {
     (void)name;
     (void)scratch;
@@ -152,7 +161,7 @@ inline void parallel_exclusive_scan(const char* name, size_t n, const T* in, T* 
         const size_t hi = (lo + chunk < n) ? lo + chunk : n;
         T            r  = totals[c];
         for (size_t i = lo; i < hi; i++) {
-            const T v = in[i]; // read before write, so in == out is safe
+            const T v = in[i];
             out[i]    = r;
             r += v;
         }
@@ -160,6 +169,7 @@ inline void parallel_exclusive_scan(const char* name, size_t n, const T* in, T* 
 #endif
 }
 
+// scratch of the reductions, grown on demand and kept
 template <typename T> inline T* reduce_scratch(size_t need) {
     static T*     buf = nullptr;
     static size_t cap = 0;
@@ -173,6 +183,7 @@ template <typename T> inline T* reduce_scratch(size_t need) {
 
 #ifndef CPU_DEBUG
 template <int BLOCK, typename T, typename Op, typename F>
+// one level of the tree: BLOCK values per block, folded pairwise
 GLOBAL void kernel_reduce_level(size_t n, T identity, Op op, F f, T* out) {
     __shared__ T buf[BLOCK];
     const int    tid = threadIdx.x;
@@ -187,7 +198,7 @@ GLOBAL void kernel_reduce_level(size_t n, T identity, Op op, F f, T* out) {
     }
     if (tid == 0) out[blockIdx.x] = buf[0];
 }
-#endif // !CPU_DEBUG
+#endif
 
 template <int BLOCK, typename T, typename Op, typename F>
 inline void reduce_level(size_t n, T identity, Op op, F f, T* out) {
@@ -216,6 +227,8 @@ inline void reduce_level(size_t n, T identity, Op op, F f, T* out) {
 }
 
 template <int BLOCK, typename T, typename Op, typename F>
+// folds f(i) over [0, n) with op; identity pads the last block
+// the tree shape follows the index alone, so the result is the same on CPU and GPU and for any thread count
 inline T parallel_reduce(const char* name, size_t n, T identity, Op op, F f) {
     static_assert(BLOCK >= 2 && (BLOCK & (BLOCK - 1)) == 0, "parallel_reduce needs a power-of-two BLOCK >= 2");
     (void)name;
@@ -242,8 +255,9 @@ inline T parallel_reduce(const char* name, size_t n, T identity, Op op, F f) {
     return out[0];
 }
 
+// sum wrapper
 template <int BLOCK, typename T, typename F> inline T parallel_reduce_sum(const char* name, size_t n, F f) {
     return parallel_reduce<BLOCK, T>(name, n, (T)0, [] HD(T a, T b) { return a + b; }, f);
 }
 
-#endif // PARALLEL_H
+#endif

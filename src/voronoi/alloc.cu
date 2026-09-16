@@ -1,9 +1,11 @@
+
+// allocates and frees the mesh (voronoi.h)
+
 namespace voronoi {
 
+    // allocates all mesh arrays, once at startup
     VMesh* allocate_mesh(uint64_t n_hydro) {
-        // n_grow = max post-migration n_local. Periodic and MPI ghosts coexist in pts[] and ghost_ids,
-        // and capacities scale with n_grow so all mesh-build buffers survive migration imbalance.
-        // ext sizes the per-cell SoA arrays for n_grow + MPI ghost slots.
+        // cells with growth headroom + periodic ghosts + MPI ghosts
         const double   ghost_frac     = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         const uint64_t n_grow         = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
         const uint64_t max_pgh        = (uint64_t)(2.0 * ghost_frac * n_grow) + 1;
@@ -22,21 +24,15 @@ namespace voronoi {
         mesh->total_capacity = total;
         mesh->buff           = buff;
 
-        // per-cell — every n_hydro-indexed array is sized ext so it survives migration
-        // growth and the MPI ghost band [n_hydro, n_hydro + n_mpi_ghosts)
-        mesh->seeds       = gpu_calloc<double3>(ext);
-        mesh->com         = gpu_calloc<double3>(ext);
-        mesh->volumes     = gpu_calloc<double>(ext);
-        mesh->face_counts = gpu_calloc<uint64_t>(ext);
-        mesh->face_ptr    = gpu_calloc<uint64_t>(ext);
-        // device-side mirror of the hydro floor; sources_init() runs before this, so a
-        // cooling-derived floor is already in sim by now
+        // per cell
+        mesh->seeds        = gpu_calloc<double3>(ext);
+        mesh->com          = gpu_calloc<double3>(ext);
+        mesh->volumes      = gpu_calloc<double>(ext);
+        mesh->face_counts  = gpu_calloc<uint64_t>(ext);
+        mesh->face_ptr     = gpu_calloc<uint64_t>(ext);
         mesh->min_egy_spec = sim.min_egy_spec;
 
-        // reference cell for the size-equalizing drift. Default: the mean cell (V_ref = 1/N_global,
-        // unit box). If the IC declares `vol_ref_cell_size` (the finest designed cell size, code
-        // units), use that instead so a statically-refined IC isn't de-refined by the drift — it then
-        // only fires on cells crushed below the finest level. For a uniform IC the two are identical.
+        // mean cell volume, or the size from the param file
         double V_ref = 1.0 / (double)ic_data.header.n_global;
 #ifdef VOL_REGULARIZE
         if (input.has_parameter("vol_ref_cell_size")) {
@@ -56,8 +52,6 @@ namespace voronoi {
 
         mesh->cell_status = gpu_alloc<Status>(ext);
 #ifdef USE_MPI
-        // only the MPI perturb repair reads this; on single-rank builds the array would be
-        // ext * 8 B of never-read memory
         mesh->security_d2 = gpu_calloc<double>(ext);
 #else
         mesh->security_d2 = nullptr;
@@ -72,8 +66,7 @@ namespace voronoi {
         mesh->old_volumes = gpu_calloc<double>(ext);
 #endif
 
-        // MPI ghost SoA storage (separate from real arrays so it can be grown by
-        // halo_grow_capacity without touching the per-cell-array sizing).
+        // ghost arrays, none without MPI
         const int gc = proteus_mpi::n_mpi_capacity;
         if (gc > 0) {
             mesh->seeds_g = gpu_alloc<double3>(gc);
@@ -97,17 +90,16 @@ namespace voronoi {
 #endif
         }
 
-        // per-face
+        // per face
         mesh->neighbor_cell = gpu_alloc<int>(max_faces);
         mesh->face_area     = gpu_alloc<double>(max_faces);
 #ifdef MOVING_MESH
         mesh->f_mid_local = gpu_alloc<double>(max_faces * (DIMENSION - 1));
 #endif
 
-        // ghost mapping
         mesh->ghost_ids = gpu_alloc<uint64_t>(max_ghosts);
 
-        // index maps; ext-sized so permute_inplace's live↔scratch swap stays uniform-size
+        // index maps and scratch
         mesh->real_sorted_ids  = gpu_alloc<unsigned int>(ext);
         mesh->sid_to_neighbor  = gpu_alloc<unsigned int>(total);
         mesh->cell_to_original = gpu_alloc<unsigned int>(ext);
@@ -115,22 +107,20 @@ namespace voronoi {
         mesh->orig_to_k_save   = gpu_alloc<unsigned int>(ext);
         mesh->scan_flags       = gpu_alloc<unsigned int>(total);
         mesh->scan_scratch     = gpu_alloc<unsigned int>(scan_scratch_size((size_t)total, _MESH_BLOCK_SIZE_));
+        // cell k is input point k until the first build sorts them
         for (uint64_t i = 0; i < n_hydro; i++)
             mesh->cell_to_original[i] = (unsigned int)i;
 
-        // typed scratch pools — ext-sized (see above)
         mesh->scratch_uint   = gpu_alloc<unsigned int>(ext);
         mesh->scratch_double = gpu_alloc<double>(ext);
         mesh->scratch_point  = gpu_alloc<POINT_TYPE>(ext);
 
-        // mesh-build scratch
         mesh->scratch_pts  = gpu_alloc<POINT_TYPE>(total);
         mesh->scratch_move = gpu_alloc<POINT_TYPE>(ext);
 
-        // KNN cache
         mesh->knn = knn::init_once((int)n_hydro, ic_data.header.knn_N_grid);
 
-        // hint GPU-preferred placement for hot arrays
+        // keep the hot arrays on the device
         gpu_advise_gpu_preferred(mesh->seeds, ext * sizeof(double3));
         gpu_advise_gpu_preferred(mesh->com, n_hydro * sizeof(double3));
         gpu_advise_gpu_preferred(mesh->volumes, n_hydro * sizeof(double));
@@ -150,6 +140,7 @@ namespace voronoi {
         return mesh;
     }
 
+    // frees what allocate_mesh took
     void free_mesh(VMesh* mesh) {
         if (!mesh) return;
         gpu_free(mesh->seeds);
@@ -192,7 +183,7 @@ namespace voronoi {
         gpu_free(mesh);
     }
 
-    // resize ghost arrays to new_cap; called by proteus_mpi::halo_grow_capacity.
+    // new ghost arrays after n_mpi_capacity grew, old content dropped
     void mesh_grow_ghosts(VMesh* mesh, int new_cap) {
         if (mesh->seeds_g) gpu_free(mesh->seeds_g);
         mesh->seeds_g = (new_cap > 0) ? gpu_alloc<double3>(new_cap) : nullptr;
@@ -206,10 +197,7 @@ namespace voronoi {
 #endif
     }
 
-    // resize mesh-build buffers (scratch_pts, ghost_ids, sid_to_neighbor) to fit a new
-    // MPI ghost capacity. Called from halo_grow_capacity when n_mpi_capacity grows past
-    // the startup estimate. Existing data is copied so the in-progress mesh build (which
-    // wrote periodic ghosts into scratch_pts before triggering the grow) survives the swap.
+    // longer point list and maps, content kept
     void mesh_grow_build_buffers(VMesh* mesh, int new_mpi_capacity) {
         const double   ghost_frac     = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         const uint64_t n_grow         = (uint64_t)proteus_mpi::max_n_local((int)mesh->n_hydro);

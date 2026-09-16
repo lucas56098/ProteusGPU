@@ -1,52 +1,56 @@
 #ifndef KNN_H
 #define KNN_H
 
+// Nearest neighbour search on a uniform grid of buckets.
+
 #include "global/allvars.h"
 #include <cfloat>
 #include <cmath>
 
+// the grid and the point list sorted into it, one per run
 typedef struct knn_problem {
-    int           len_pts;                  // number of input points (current call)
-    int           pts_capacity;             // allocated capacity for d_stored_points / d_permutation
-    int           N_grid;                   // grid resolution
-    int           Npow;                     // N_grid^DIMENSION (total grid cells)
-    int           N_cell_offsets;           // actual number of cells in the offset grid
-    int*          d_cell_offsets;           // cell offsets (sorted by rings), Nmax*Nmax*Nmax*Nmax
-    double*       d_cell_offset_dists;      // stores min dist to the cells in the rings
-    unsigned int* d_permutation;            // allows to restore original point order
-    int*          d_counters;               // counters per cell,   N_grid*N_grid*N_grid
-    int*          d_ptrs;                   // cell start pointers, N_grid*N_grid*N_grid
-    int*          d_globcounter;            // global allocation counter, 1
-    int*          d_scan_scratch;           // block sums for the exclusive scan over d_counters
-    int*          d_bucket_ids;             // point ids in bucket order, pre-rank; pts_capacity
-    POINT_TYPE*   d_stored_points;          // input points sorted, numpoints
-    double        buff;                     // periodic ghost buffer; bucket grid spans [-buff, 1+buff]^d
-    double        inv_boxsize;              // 1 / (1 + 2*buff), precomputed for cell_from_point
-    double        grid_lo[3];               // per-rank grid origin (data_lo; -buff in global fallback)
-    double        inv_cell_size;            // 1 / isotropic cell_size, for cell_from_point
-    double*       d_cell_offset_dists_unit; // ring lower-bound dist^2 at unit cell_size; rescaled per build
+    int           len_pts;             // points in the grid right now
+    int           pts_capacity;        // points the arrays can hold
+    int           N_grid;              // buckets per axis, same for the whole run
+    int           Npow;                // buckets in total
+    int           N_cell_offsets;      // entries of the two ring arrays
+    int*          d_cell_offsets;      // index step of every ring, nearest ring first
+    double*       d_cell_offset_dists; // smallest distance to that ring, squared
+    unsigned int* d_permutation;       // sorted point -> its index in the input list
+    int*          d_counters;          // points per bucket
+    int*          d_ptrs;              // first point of each bucket
+    int*          d_globcounter;
+    int*          d_scan_scratch;           // scratch of the scan over d_counters
+    int*          d_bucket_ids;             // scratch of the sort
+    POINT_TYPE*   d_stored_points;          // the points, bucket by bucket
+    double        buff;                     // ghost band width, used when there is no data extent
+    double        inv_boxsize;              // 1 / (box plus both bands)
+    double        grid_lo[3];               // lower corner of the grid
+    double        inv_cell_size;            // 1 / bucket size
+    double*       d_cell_offset_dists_unit; // the same distances in bucket units, scaled when the grid changes
 } knn_problem;
 
 namespace knn {
 
-    // computes offset grid and allocates buffers
+    // allocates the grid once per run; N_grid_restored > 0 comes from a snapshot
     knn_problem* init_once(int n_hydro, int N_grid_restored);
 
-    // resets counters and sorts points into grid
+    // sorts the points into the grid
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
 
+    // bucket a point falls into
     HD int cell_from_point(int N_grid, const double* grid_lo, double inv_cell_size, POINT_TYPE point);
 
-    // anchor the KNN grid to this rank's local extent (data_lo/data_hi from set_data_extent_for_build);
-    // falls back to the global box when the extent is degenerate (single-rank sentinel lo==hi).
+    // puts the grid on this rank's data extent, or on the whole box if there is none
     void set_local_extent(knn_problem* knn, const double* data_lo, const double* data_hi);
 
+    // frees the grid and clears the pointer
     void knn_free(knn_problem** knn);
 
-    // resize per-call point buffers to fit a new max point count. Used by
-    // proteus_mpi::halo_grow_capacity when n_mpi_capacity grows past its startup estimate.
+    // room for more points, the buckets stay as they are
     void knn_grow(knn_problem* knn, int new_pts_capacity);
 
+    // squared distance between two points
     HD static inline double dist2_point(const POINT_TYPE& a, const POINT_TYPE& b) {
 #ifdef dim_2D
         double dx = a.x - b.x;
@@ -66,6 +70,7 @@ namespace knn {
         b = c;
     }
 
+    // moves one node down until vals is a max heap again
     HD inline void heapify(unsigned int* keys, double* vals, int node, int size) {
         int j = node;
         while (true) {
@@ -81,6 +86,7 @@ namespace knn {
         }
     }
 
+    // sorts both arrays by increasing distance
     HD inline void heapsort(unsigned int* keys, double* vals, int size) {
         while (size > 1) {
             swap_on_device(vals[0], vals[size - 1]);
@@ -90,9 +96,9 @@ namespace knn {
         }
     }
 
-    // K nearest neighbours of point_in, sorted by distance (max-heap on stack)
+    // the K nearest points of point_in, as sorted-list indices, nearest first
     template <int K> HD void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest) {
-        // thread-private max-heap of K best candidates seen so far
+        // the K best so far in a max heap, local_dists[0] is the worst of them
         unsigned int local_knearest[K];
         double       local_dists[K];
         int          heap_size = 0;
@@ -110,37 +116,34 @@ namespace knn {
         POINT_TYPE p       = d_stored_points[point_in];
         int        cell_in = cell_from_point(N_grid, knn->grid_lo, knn->inv_cell_size, p);
 
-        // initialize the heap with sentinel "infinitely far" entries
+        // if there are fewer than K neighbours, the rest stay the point itself
         for (int i = 0; i < K; i++) {
             local_knearest[i] = (unsigned int)point_in;
             local_dists[i]    = DBL_MAX;
         }
 
-        // walk grid cells in expanding-distance order
+        // rings from near to far, stop when the heap is full and closer than the ring
         for (int search_cell_index = 0; search_cell_index < N_cell_offsets; search_cell_index++) {
-            // terminate once heap is full and the ring's lower-bound exceeds our worst-in-heap
             double min_dist = d_cell_offset_dists[search_cell_index];
             if (heap_size == K && local_dists[0] < min_dist) { break; }
 
             int cell = cell_in + d_cell_offsets[search_cell_index];
-            if (cell < 0 || cell >= Npow_local) { continue; }
+            if (cell < 0 || cell >= Npow_local) { continue; } // ring step left the grid
 
             int cell_base = d_ptrs[cell];
             int num       = d_counters[cell];
             int cell_end  = cell_base + num;
 
-            // defensive guard: skip corrupted cell ranges instead of reading OOB
             if (cell_base < 0 || num < 0 || cell_end < cell_base || cell_end > len_pts) { continue; }
 
-            // test every point in this grid cell against the heap
             for (int ptr = cell_base; ptr < cell_end; ptr++) {
-                if (ptr == point_in) { continue; }
+                if (ptr == point_in) { continue; } // never itself
 
                 POINT_TYPE p_cmp = d_stored_points[ptr];
                 double     d     = dist2_point(p, p_cmp);
 
+                // heap not full yet: add it and move it up
                 if (heap_size < K) {
-                    // heap not yet full: append and sift up
                     int pos             = heap_size;
                     local_dists[pos]    = d;
                     local_knearest[pos] = (unsigned int)ptr;
@@ -153,8 +156,7 @@ namespace knn {
                         swap_on_device(local_knearest[parent], local_knearest[pos]);
                         pos = parent;
                     }
-                } else if (d < local_dists[0]) {
-                    // heap full and this candidate beats the current worst — replace + sift down
+                } else if (d < local_dists[0]) { // closer than the worst: replace it and move it down
                     local_dists[0]    = d;
                     local_knearest[0] = (unsigned int)ptr;
                     heapify(local_knearest, local_dists, 0, K);
@@ -162,7 +164,7 @@ namespace knn {
             }
         }
 
-        // sort heap ascending so callers iterate near-to-far
+        // the cell build clips in this order, so it needs the nearest first
         if (heap_size > 1) { heapsort(local_knearest, local_dists, heap_size); }
 
         for (int i = 0; i < K; i++) {
@@ -172,4 +174,4 @@ namespace knn {
 
 } // namespace knn
 
-#endif // KNN_H
+#endif

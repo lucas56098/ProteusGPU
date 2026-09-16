@@ -1,12 +1,14 @@
 #ifndef ALLVARS_H
 #define ALLVARS_H
 #pragma once
-#include "globals.h"    // stores global variables
-#include "gpu_compat.h" // helpers for GPU/CPU compatibility
-#include "log.h"        // root-only / MPI-aggregated logging wrappers
-#include "math_utils.h" // math helpers
-#include "parallel.h"   // one dispatch for per-cell work, CUDA kernel or OpenMP loop
-#include "structs.h"    // globally used structs
-#include "units.h"      // code-unit system (astro modules convert against it)
 
-#endif // ALLVARS_H
+// Umbrella header: global state, shared types and the parallel abstraction in one include
+#include "globals.h"
+#include "gpu_compat.h"
+#include "log.h"
+#include "math_utils.h"
+#include "parallel.h"
+#include "structs.h"
+#include "units.h"
+
+#endif

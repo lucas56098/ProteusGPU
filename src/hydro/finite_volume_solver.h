@@ -1,6 +1,8 @@
 #ifndef FINITE_VOLUME_SOLVER_H
 #define FINITE_VOLUME_SOLVER_H
 
+// The finite volume step: fluxes over the faces, and the CFL timestep.
+
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../mpi/halo.h"
@@ -9,21 +11,21 @@
 
 namespace hydro {
 
-    // initialization and memory management — operate on global `sim`
-    void init_hydro(); // allocates primvar (from IC) + per-step scratch (prim_new, grads)
-    void free_hydro(); // frees everything init_hydro allocated
+    void init_hydro();
+    void free_hydro();
 
-    // main routines
-    void   hydro_step(double dt, VMesh* mesh, primvars* primvar);
-    void   apply_flux_update(double                          dt_update,
-                             double                          dt_extrap,
-                             const VMesh*                    mesh,
-                             const primvars*                 prim_old,
-                             const gradients::PrimGradients* grads,
-                             primvars*                       prim_new);
+    // one full step
+    void hydro_step(double dt, VMesh* mesh, primvars* primvar);
+    void apply_flux_update(double                          dt_update,
+                           double                          dt_extrap,
+                           const VMesh*                    mesh,
+                           const primvars*                 prim_old,
+                           const gradients::PrimGradients* grads,
+                           primvars*                       prim_new);
+    // smallest CFL step over all cells and ranks
     double calc_timestep(double CFL, const VMesh* mesh, const primvars* primvar);
 
-    // HD helpers
+    // per face, all called from flux_update_for_cell
     HD void apply_spatial_extrapolation(const prim                    state,
                                         const gradients::PrimGradient gradient,
                                         POINT_TYPE                    dx,
@@ -46,9 +48,7 @@ namespace hydro {
     HD void convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned);
 #endif
 
-    // allocate per-cell SoA + (optionally) MPI ghost SoA. with_ghosts=true sizes the
-    // _g arrays from proteus_mpi::n_mpi_capacity; flip to false for buffers like prim_new
-    // that are never read at neighbor indices and so never need ghost slots.
+    // one set of primvars: cells with growth headroom, ghosts only for the current state
     inline void allocate_prim_buffer(uint64_t n_hydro, primvars* primvar, bool with_ghosts) {
         const uint64_t ext = (uint64_t)proteus_mpi::alloc_per_cell_size((int)n_hydro);
         primvar->rho       = gpu_alloc<double>(ext);
@@ -86,9 +86,6 @@ namespace hydro {
         primvar->E_g   = nullptr;
     }
 
-    // resize the ghost arrays to new_cap (>= current). Ghost contents are not preserved —
-    // halo_exchange_primvars repopulates them before any reader. Called by halo_grow_capacity
-    // when the post-rebalance halo exceeds the current ghost-buffer size.
     inline void primvar_grow_ghosts(primvars* primvar, int new_cap) {
         if (primvar->rho_g) gpu_free(primvar->rho_g);
         if (primvar->v_g) gpu_free(primvar->v_g);
@@ -105,4 +102,4 @@ namespace hydro {
 
 } // namespace hydro
 
-#endif // FINITE_VOLUME_SOLVER
+#endif

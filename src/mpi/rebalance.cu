@@ -1,3 +1,5 @@
+// implements the rebalancing (rebalance.h)
+
 #include "rebalance.h"
 
 #include "../global/allvars.h"
@@ -13,14 +15,9 @@
 namespace proteus_mpi {
 
 #ifdef USE_MPI
-    // pre-rebalance imbalance, saved by rebalance_decide on rebalance steps
-    // for rebalance_log_after_migration to print alongside the post probe.
     static double s_pre_imbalance = 1.0;
 
-    // Allreduce of n_local: returns global max (int — per-rank fits int32 well past
-    // our target scale), global mean (long long — the cross-rank SUM is n_global which
-    // overflows int32 from ~1300^3 upward), and the max/mean imbalance ratio.
-    // Shared by the probe and pre/post logs.
+    // largest cell count over all ranks, divided by the mean
     static void compute_imbalance_probe(VMesh* mesh, int* n_max, long long* n_avg, double* imbalance) {
         const int       n_local_int = (int)mesh->n_hydro;
         const long long n_local_ll  = (long long)mesh->n_hydro;
@@ -58,13 +55,7 @@ namespace proteus_mpi {
 
 #ifdef USE_MPI
 
-    // marginal cell-count histograms along each axis. hx[bx] = #cells whose bucket.x == bx
-    // (summed over by, bz). pts is the position buffer to bucket against (move_mesh passes
-    // post-advance positions in mesh->scratch_move so splits reflect where cells will sit
-    // for the next step). hx/hy/hz are managed-memory buffers — reused across calls via
-    // persistent statics inside compute_local_histograms.
-
-    // per-cell body: atomicAdd into the three managed marginal histograms.
+    // every cell counts once per axis, in the bucket it sits in
     HD inline void hist_body(int k, const POINT_TYPE* pts, int N_grid, double bf, int* hx, int* hy, int* hz) {
         int bx, by, bz;
         decomp_bucket_of_point(pts[k].x,
@@ -90,7 +81,6 @@ namespace proteus_mpi {
 
     static void compute_local_histograms(
         POINT_TYPE* pts, int n_hydro, int N_grid, double bf, int*& hx, int*& hy, int*& hz, int& hxyz_cap) {
-        // grow managed histogram buffers if N_grid has increased (or first call)
         const int need = std::max(N_grid, 1);
         if (need > hxyz_cap) {
             if (hx) gpu_free(hx);
@@ -106,7 +96,6 @@ namespace proteus_mpi {
 #ifdef dim_3D
         gpu_memset(hz, 0, sizeof(int) * (size_t)N_grid);
 #else
-        // 2D: every cell has bz=0; collapse to a single-bin total.
         gpu_memset(hz, 0, sizeof(int));
         hz[0] = n_hydro;
 #endif
@@ -115,10 +104,7 @@ namespace proteus_mpi {
             "HIST_K", n_hydro, [=] HD(int k) { hist_body(k, pts, N_grid, bf, hx, hy, hz); });
     }
 
-    // walk hist[], place split[c] at the smallest bucket index whose cumulative sum reaches
-    // ceil(c × total / Pa). The ceiling division is what lets one extra cell land in the
-    // lower-index slab when total isn't a multiple of Pa — produces strictly monotone splits.
-    // Snap any empty slab to width-1 afterwards (the decomposition requires non-empty bricks).
+    // borders that give every slab of this axis about the same number of cells
     static void compute_splits_axis(const int* hist, int N_grid, int Pa, int* split_out) {
         split_out[0] = 0;
         if (Pa <= 1) {
@@ -130,6 +116,7 @@ namespace proteus_mpi {
         for (int i = 0; i < N_grid; i++)
             total += hist[i];
 
+        // walk the buckets and cut whenever the next share is full
         long long running = 0;
         int       next_c  = 1;
         long long target  = ((long long)next_c * total + Pa - 1) / Pa;
@@ -148,19 +135,17 @@ namespace proteus_mpi {
         }
         split_out[Pa] = N_grid;
 
-        // forward sweep: ensure each slab has width >= 1
+        // every slab needs at least one bucket, from both ends
         for (int c = 0; c < Pa; c++) {
             if (split_out[c + 1] < split_out[c] + 1) { split_out[c + 1] = split_out[c] + 1; }
         }
-        // backward sweep: if the forward sweep pushed the last split past N_grid, pull
-        // earlier splits left so we end at N_grid. If N_grid < Pa, splits become degenerate
-        // and check_bricks_nonempty in decomp_apply_splits will exit_failure cleanly.
         split_out[Pa] = N_grid;
         for (int c = Pa; c > 0; c--) {
             if (split_out[c - 1] > split_out[c] - 1) { split_out[c - 1] = split_out[c] - 1; }
         }
     }
 
+    // new splits from the cell distribution, if the imbalance is worth it
     bool rebalance_decide(int step, VMesh* mesh, POINT_TYPE* pts) {
         if (sim.rebalance_interval <= 0) return false;
         if (step <= 0) return false;
@@ -169,16 +154,11 @@ namespace proteus_mpi {
 
         PROFILE("BALANCE");
 
-        // pre-rebalance probe — used either for the "Skipped" line below or saved
-        // for rebalance_log_after_migration to pair with the post probe.
         int       pre_n_max;
         long long pre_n_avg;
         double    pre_imbalance;
         compute_imbalance_probe(mesh, &pre_n_max, &pre_n_avg, &pre_imbalance);
 
-        // gate on threshold — don't disturb a healthy decomposition. The histogram-based
-        // split chooser has bucket-granularity overshoot near concentrated regions (e.g.
-        // contact discontinuities), so re-splitting a near-balanced state can hurt.
         if (pre_imbalance < sim.imbalance_threshold) {
             if (decomp.rank == 0) {
                 printf("DECOMP: Skipped rebalancing (below threshold, imbalance=%.2f)\n", pre_imbalance);
@@ -191,9 +171,6 @@ namespace proteus_mpi {
         const int    n_hydro = (int)mesh->n_hydro;
         const double bf      = mesh->buff;
 
-        // Persistent managed histogram buffers — kept across calls so we don't
-        // gpu_malloc/free per rebalance step. compute_local_histograms grows them
-        // if N_grid increases (it doesn't change after begrun).
         static int* s_hx          = nullptr;
         static int* s_hy          = nullptr;
         static int* s_hz          = nullptr;
@@ -226,6 +203,7 @@ namespace proteus_mpi {
         gpu_memset(s_hz_global, 0, sizeof(int));
 #endif
 
+        // the histograms of all ranks add up to the global one
         mpi_sync_before_send(s_hx, sizeof(int) * (size_t)N_grid);
         mpi_sync_before_send(s_hy, sizeof(int) * (size_t)N_grid);
 #ifdef dim_3D
@@ -238,8 +216,6 @@ namespace proteus_mpi {
 #ifdef dim_3D
             MPI_Allreduce(s_hz, s_hz_global, N_grid, MPI_INT, MPI_SUM, decomp.cart_comm);
 #else
-            // 2D: every cell sits in bz=0. Reduction collapses to a single bin —
-            // long long for symmetry with 3D (per-bin total fits int32).
             const long long hz0_ll  = (long long)s_hz[0];
             long long       n_total = 0;
             MPI_Allreduce(&hz0_ll, &n_total, 1, MPI_LONG_LONG, MPI_SUM, decomp.cart_comm);
@@ -262,13 +238,12 @@ namespace proteus_mpi {
 #ifdef dim_3D
             compute_splits_axis(s_hz_global, N_grid, decomp.dims[2], sz.data());
 #else
-            // 2D: z slab is the fixed {0,1} bucket; not derived from histogram.
             sz[0] = 0;
             sz[1] = 1;
 #endif
         }
 
-        // diff against current splits; identical => skip the migration entirely.
+        // nothing to gain if the borders come out where they already are
         bool same = true;
         for (int i = 0; i <= decomp.dims[0] && same; i++)
             if (sx[i] != decomp.splits[0][i]) same = false;
@@ -284,7 +259,6 @@ namespace proteus_mpi {
             return false;
         }
 
-        // splits will change — stash pre-imbalance for the post-migration log line.
         s_pre_imbalance = pre_imbalance;
         decomp_apply_splits(sx.data(), sy.data(), sz.data());
 
@@ -298,13 +272,12 @@ namespace proteus_mpi {
         double    post_imbalance;
         compute_imbalance_probe(mesh, &n_max, &n_avg, &post_imbalance);
         if (decomp.rank == 0) {
-            // migrated count appears on the MPI: line later in the same step — don't duplicate.
             printf("DECOMP: Rebalanced (imbalance %.2f -> %.2f)\n", s_pre_imbalance, post_imbalance);
             fflush(stdout);
         }
     }
 
-#else // USE_MPI
+#else
 
     bool rebalance_decide(int, VMesh*, POINT_TYPE*) {
         return false;

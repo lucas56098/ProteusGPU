@@ -1,11 +1,7 @@
-// Shared low-level halo helpers used by halo_init / halo_build / halo_exchange.
-// Included into halo.cu inside namespace proteus_mpi.
-
-// ============================================================
-// Neighbor topology
-// ============================================================
+// helpers shared by the other halo parts (included by halo.cu)
 
 #ifdef USE_MPI
+// the Cartesian neighbours of this rank and the box shift towards each of them
 static void build_neighbor_table() {
     halo.n_neighbors = 0;
 
@@ -27,8 +23,10 @@ static void build_neighbor_table() {
                 int neighbor_rank = 0;
                 MPI_Cart_rank(decomp.cart_comm, coords, &neighbor_rank);
 
+                // with one rank on an axis the neighbour there is this rank
                 if (neighbor_rank == decomp.rank) continue;
 
+                // the direction leaves the box, so the seeds go one box further
                 double shift[3] = {0.0, 0.0, 0.0};
                 for (int a = 0; a < 3; a++) {
                     if (coords[a] < 0) shift[a] = +1.0;
@@ -50,18 +48,15 @@ static void build_neighbor_table() {
 }
 #endif
 
-// ============================================================
-// Halo width + geometric cell count
-// ============================================================
-
 #ifdef USE_MPI
+// bucket layers that cover the ghost band
 static inline int brick_halo_width(double buff, int N_grid) {
     const double w = buff * (double)N_grid / (1.0 + 2.0 * buff);
     const int    W = (int)std::ceil(w);
     return W < 1 ? 1 : W;
 }
 
-// total ghost cell count for a brick of size (Lx,Ly,Lz) and halo width W
+// buckets in the halo of all neighbours: faces, edges and corners of the brick
 static long long geom_total_cells(int Lx, int Ly, int Lz, int W) {
     long long total = 0;
 #ifdef dim_3D
@@ -86,12 +81,7 @@ static long long geom_total_cells(int Lx, int Ly, int Lz, int W) {
 }
 #endif
 
-// ============================================================
-// Brick-boundary classification
-// ============================================================
-
-// per-cell boundary-layer flags: which faces of the brick this cell sits near,
-// and whether it sits on the *outermost* bucket of each face.
+// where a bucket sits in the brick: within W of each edge, and on the outermost layer towards it
 struct BoundaryFlags {
     int x_lo, x_hi, y_lo, y_hi, z_lo, z_hi;
     int x_out_lo, x_out_hi, y_out_lo, y_out_hi, z_out_lo, z_out_hi;
@@ -132,6 +122,7 @@ static inline bool touches_brick_boundary(const BoundaryFlags& f) {
     return (f.x_lo | f.x_hi | f.y_lo | f.y_hi | f.z_lo | f.z_hi);
 }
 
+// a cell goes to a neighbour when it is near the edge in every direction of that neighbour
 static inline bool ships_to_neighbor(const BoundaryFlags& f, int dx, int dy, int dz) {
     const int x_ok = (dx == 0) ? 1 : (dx < 0 ? f.x_lo : f.x_hi);
     const int y_ok = (dy == 0) ? 1 : (dy < 0 ? f.y_lo : f.y_hi);
@@ -146,11 +137,8 @@ static inline bool ships_to_outer_layer(const BoundaryFlags& f, int dx, int dy, 
     return (x_out & y_out & z_out);
 }
 
-// ============================================================
-// Direction tags + neighbor exchange primitive
-// ============================================================
-
 #ifdef USE_MPI
+// tags: one per direction and kind of message
 enum HaloMsgKind {
     MSG_COUNTS      = 0,
     MSG_SEED        = 1,
@@ -159,14 +147,11 @@ enum HaloMsgKind {
     MSG_V_MESH      = 4,
     MSG_USED_BITMAP = 5,
     MSG_VOL         = 6,
-    // targeted moved-seed exchange (perturb cascade repair): per-neighbour count,
-    // then slot-offset + position payloads
     MSG_MOVED_COUNT = 7,
     MSG_MOVED_SLOT  = 8,
     MSG_MOVED_POS   = 9,
 };
 
-// (dx,dy,dz) -> [1, 27]
 static inline int dir_tag(int dx, int dy, int dz) {
     return (dx + 1) * 9 + (dy + 1) * 3 + (dz + 1) + 1;
 }
@@ -174,8 +159,7 @@ static inline int msg_tag(int dx, int dy, int dz, HaloMsgKind kind) {
     return dir_tag(dx, dy, dz) + (int)kind * 100;
 }
 
-// per-neighbor send/recv. uses MPI_Neighbor_alltoallv when peers are all
-// distinct; otherwise issues one direction-tagged Isend/Irecv pair per neighbor.
+// one exchange with every neighbour, in the transport mode picked at startup
 static void neighbor_exchange(const void*  sendbuf,
                               void*        recvbuf,
                               MPI_Datatype dtype,
@@ -212,6 +196,7 @@ static void neighbor_exchange(const void*  sendbuf,
                       &reqs[n_reqs++]);
         }
         if (rc > 0) {
+            // what comes back is what the other side sent in our direction
             MPI_Irecv(rbuf + (size_t)rdispls[n] * elem_bytes,
                       rc,
                       dtype,
@@ -224,11 +209,13 @@ static void neighbor_exchange(const void*  sendbuf,
     if (n_reqs > 0) MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
 }
 
+// all export slots
 static inline void exchange_full_halo(const void* sendbuf, void* recvbuf, MPI_Datatype dtype, HaloMsgKind kind) {
     neighbor_exchange(
         sendbuf, recvbuf, dtype, kind, halo.send_count, halo.send_offset, halo.recv_count, halo.ghost_offset);
 }
 
+// only the slots the other side really uses
 static inline void exchange_used_subset(const void* sendbuf, void* recvbuf, MPI_Datatype dtype, HaloMsgKind kind) {
     neighbor_exchange(sendbuf,
                       recvbuf,

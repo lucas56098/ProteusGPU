@@ -2,16 +2,11 @@
 #define UNITS_H
 #pragma once
 
-// Code-unit system. The simulation itself runs dimensionless; this type converts
-// between code units and cgs at the edges only (param load, physics constants,
-// snapshot metadata). Base units are length, mass and velocity (AREPO convention):
-// the primitive variables map onto them with no leftover — rho = mass/length^3,
-// v = velocity, E = mass*velocity^2/length^3.
-//
-// A factor named Unit<X>_in_cgs is "the cgs value of one code unit of X".
+// Code units and the factors that turn them into cgs.
 
+// set once in begrun from the param file, all 1 without ASTRO_PHYSICS
 struct Units {
-    // base factors. Defaults give a trivial system where code units == cgs.
+    // cgs value of one code length, mass and velocity
     double UnitLength_in_cm         = 1.0;
     double UnitMass_in_g            = 1.0;
     double UnitVelocity_in_cm_per_s = 1.0;
@@ -22,13 +17,13 @@ struct Units {
         UnitVelocity_in_cm_per_s = velocity_in_cm_per_s;
     }
 
-    // derived factors, computed on demand from the three base ones
+    // derived factors
     double UnitTime_in_s() const { return UnitLength_in_cm / UnitVelocity_in_cm_per_s; }
     double UnitDensity_in_cgs() const {
         return UnitMass_in_g / (UnitLength_in_cm * UnitLength_in_cm * UnitLength_in_cm);
     }
 
-    // Newton's constant expressed in code units (G_cgs has units cm^3 g^-1 s^-2)
+    // gravitational constant in code units
     double G_in_code_units() const {
         constexpr double G_cgs = 6.67430e-8;
         const double     T     = UnitTime_in_s();
@@ -36,6 +31,6 @@ struct Units {
     }
 };
 
-extern Units units;
+extern Units units; // defined in globals.cu
 
-#endif // UNITS_H
+#endif

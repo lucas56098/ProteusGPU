@@ -1,3 +1,5 @@
+// implements the domain decomposition (decomp.h)
+
 #include "decomp.h"
 
 #include "io/input.h"
@@ -13,7 +15,6 @@ namespace proteus_mpi {
 
     MpiDecomp decomp = {};
 
-    // forward declarations
     static int  compute_global_N_grid(int64_t n_total, double buff);
     static void even_split(int N, int P, int i, int* lo, int* hi);
     static void create_cart_topology();
@@ -24,10 +25,7 @@ namespace proteus_mpi {
     static void apply_splits_for_this_rank();
     static void check_bricks_nonempty(int N);
 
-    // ============================================================
-    // Public entry points
-    // ============================================================
-
+    // bucket grid, Cartesian rank grid, and an even brick per rank
     void decomp_init(int64_t n_total, double buff) {
         decomp.rank          = rank();
         decomp.nranks        = nranks();
@@ -63,6 +61,7 @@ namespace proteus_mpi {
         fflush(stdout);
     }
 
+    // new split tables for every rank; all ranks pass the same ones
     void decomp_apply_splits(const int* sx, const int* sy, const int* sz) {
         const int dx = decomp.dims[0];
         const int dy = decomp.dims[1];
@@ -74,16 +73,11 @@ namespace proteus_mpi {
         for (int i = 0; i <= dz; i++)
             decomp.splits[2][i] = sz[i];
         apply_splits_for_this_rank();
-        // dims don't change, but rebuilding the coord_to_rank table is a no-op
-        // in cost terms (small table) and keeps the invariant that it always
-        // matches the live Cart topology — cheaper than tracking when it can stale.
         fill_coord_to_rank();
         check_bricks_nonempty(decomp.N_grid_global);
     }
 
     int decomp_owner_of_bucket(int bx, int by, int bz) {
-        // Routes through the same coord_to_rank table used by the device path; both
-        // host and device callers see one source of truth for the coord -> rank map.
         return decomp_owner_of_bucket_dev(bx,
                                           by,
                                           bz,
@@ -106,8 +100,7 @@ namespace proteus_mpi {
 
 #ifdef USE_MPI
 
-    // per-particle payload shipped through Alltoallv. one struct per cell — packs all IC fields
-    // (pos, vel, rho, energy, global_id) so a single Alltoallv covers them.
+    // one IC cell on its way to the rank that owns it
     struct ICMigrant {
         double   pos[DIMENSION];
         double   vel[DIMENSION];
@@ -116,19 +109,19 @@ namespace proteus_mpi {
         uint64_t global_id;
     };
 
+    // every rank read its own rows of the IC file, this sends each cell to its owner
     void distribute_ic_parallel(ICData& ic, double buff) {
         const int n_local_in = (int)ic.header.n_seeds;
         const int my_rank    = decomp.rank;
         const int nr         = decomp.nranks;
         const int N_grid     = decomp.N_grid_global;
 
-        // single-rank: nothing to route, all cells stay here
         if (nr <= 1) {
             if (my_rank == 0) printf("DECOMP: single-rank, n_local=%d (no routing)\n", n_local_in);
             return;
         }
 
-        // assign destination rank per input cell
+        // owner of every cell we read, and how many go to each rank
         std::vector<int> send_counts(nr, 0);
         std::vector<int> per_cell_dest(n_local_in, -1);
         for (int k = 0; k < n_local_in; k++) {
@@ -157,14 +150,13 @@ namespace proteus_mpi {
             send_counts[owner]++;
         }
 
-        // exchange counts
+        // tell every rank how much it will get
         std::vector<int> recv_counts(nr, 0);
         {
             PROFILE_MPI("ICDIST_COUNTS_WAIT");
             MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, decomp.cart_comm);
         }
 
-        // displacements + totals
         std::vector<int> send_displs(nr, 0);
         std::vector<int> recv_displs(nr, 0);
         int              total_send = 0, total_recv = 0;
@@ -175,7 +167,7 @@ namespace proteus_mpi {
             total_recv += recv_counts[r];
         }
 
-        // pack outgoing
+        // cells sorted by their target rank
         std::vector<ICMigrant> sendbuf((size_t)total_send);
         std::vector<int>       cursor = send_displs;
         for (int k = 0; k < n_local_in; k++) {
@@ -191,8 +183,6 @@ namespace proteus_mpi {
             m.global_id = ic.global_id[k];
         }
 
-        // MPI datatype for ICMigrant — byte-blob, layout doesn't matter as long as senders and
-        // receivers agree on sizeof(ICMigrant). Built locally to avoid a static dependency.
         MPI_Datatype ic_migrant_t;
         MPI_Type_contiguous(sizeof(ICMigrant), MPI_BYTE, &ic_migrant_t);
         MPI_Type_commit(&ic_migrant_t);
@@ -212,8 +202,7 @@ namespace proteus_mpi {
         }
         MPI_Type_free(&ic_migrant_t);
 
-        // unpack into ic. Self-sends pass through recvbuf as well (dest = my_rank routes through
-        // MPI_Alltoallv on the local rank), so total_recv already accounts for cells we keep.
+        // what came back is the new content of ic_data
         const int n_local_out = total_recv;
         ic.pos.resize((size_t)DIMENSION * n_local_out);
         ic.vel.resize((size_t)DIMENSION * n_local_out);
@@ -241,8 +230,7 @@ namespace proteus_mpi {
                total_send - send_counts[my_rank]);
         fflush(stdout);
 
-        // conservation across all ranks — long long because the global sum is n_global
-        // (few_thousand^3) which overflows int32 from ~1300^3 upward.
+        // no cell may be lost on the way
         const long long n_local_out_ll = (long long)n_local_out;
         const long long n_local_in_ll  = (long long)n_local_in;
         long long       n_global_kept  = 0;
@@ -267,23 +255,16 @@ namespace proteus_mpi {
         }
     }
 
-#else // !USE_MPI
+#else
 
     void distribute_ic_parallel(ICData& ic, double buff) {
         (void)ic;
         (void)buff;
     }
 
-#endif // USE_MPI
+#endif
 
-    // ============================================================
-    // Static helpers
-    // ============================================================
-
-    // same N_grid formula as knn::init_once, but using the global cell count so
-    // every rank agrees. N_grid is the bucket grid resolution per axis (~few thousand
-    // for our target scale), so the return value stays int even though the input
-    // global cell count is int64.
+    // buckets per axis, at about 3 cells per bucket
     static int compute_global_N_grid(int64_t n_total, double buff) {
         double ghost_frac  = std::pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
         double max_n_total = (double)n_total + 2.0 * ghost_frac * (double)n_total + 1.0;
@@ -292,7 +273,6 @@ namespace proteus_mpi {
         return N;
     }
 
-    // even split of N items across P slots; slot i gets the i'th contiguous chunk
     static void even_split(int N, int P, int i, int* lo, int* hi) {
         int base = N / P;
         int rem  = N % P;
@@ -300,9 +280,9 @@ namespace proteus_mpi {
         *hi      = *lo + base + (i < rem ? 1 : 0);
     }
 
+    // rank grid from MPI, periodic on every axis
     static void create_cart_topology() {
 #ifdef USE_MPI
-        // 2D forces Pz = 1
         int dims[3] = {0, 0, 0};
 #ifdef dim_2D
         dims[2]    = 1;
@@ -313,8 +293,8 @@ namespace proteus_mpi {
         MPI_Dims_create(decomp.nranks, active, dims);
         if (active == 2) dims[2] = 1;
 
-        int periods[3] = {1, 1, 1}; // periodic Cart matches physical BCs
-        MPI_Cart_create(MPI_COMM_WORLD, 3, dims, periods, /*reorder=*/0, &decomp.cart_comm);
+        int periods[3] = {1, 1, 1};
+        MPI_Cart_create(MPI_COMM_WORLD, 3, dims, periods, 0, &decomp.cart_comm);
 
         int coords[3] = {0, 0, 0};
         MPI_Cart_coords(decomp.cart_comm, decomp.rank, 3, coords);
@@ -331,8 +311,6 @@ namespace proteus_mpi {
 #endif
     }
 
-    // allocate the three per-axis split tables. dims must be set by create_cart_topology first.
-    // Managed memory so device kernels can read them during pack/migrate/rebalance.
     static void allocate_split_tables() {
         for (int a = 0; a < 3; a++) {
             const int n      = decomp.dims[a] + 1;
@@ -342,7 +320,6 @@ namespace proteus_mpi {
         }
     }
 
-    // allocate the coord -> rank lookup table (managed). dims must be set first.
     static void allocate_coord_to_rank() {
         const size_t n       = (size_t)decomp.dims[0] * (size_t)decomp.dims[1] * (size_t)decomp.dims[2];
         decomp.coord_to_rank = gpu_alloc<int>(n);
@@ -350,7 +327,7 @@ namespace proteus_mpi {
             decomp.coord_to_rank[i] = 0;
     }
 
-    // fill coord_to_rank[cx,cy,cz] from MPI_Cart_rank. Single-rank build: every entry is 0.
+    // coords -> rank, so a device kernel can look the owner up
     static void fill_coord_to_rank() {
         const int dx = decomp.dims[0];
         const int dy = decomp.dims[1];
@@ -372,8 +349,7 @@ namespace proteus_mpi {
         }
     }
 
-    // populate splits[a] with the even_split positions for axis a so the initial decomposition
-    // matches the pre-rebalance behaviour bit-for-bit.
+    // same number of buckets for every rank
     static void init_splits_even(int N) {
         for (int a = 0; a < 3; a++) {
             const int P         = decomp.dims[a];
@@ -385,13 +361,12 @@ namespace proteus_mpi {
             }
         }
 #ifndef dim_3D
-        // 2D: lookups force bz=0, so the z slab collapses to a single bucket.
         decomp.splits[2][0] = 0;
         decomp.splits[2][1] = 1;
 #endif
     }
 
-    // derive this rank's b0/b1 from the current splits and Cart coords.
+    // the brick this rank owns
     static void apply_splits_for_this_rank() {
         for (int a = 0; a < 3; a++) {
             const int c  = decomp.coords[a];
@@ -400,6 +375,7 @@ namespace proteus_mpi {
         }
     }
 
+    // with too many ranks a brick can end up without a single bucket
     static void check_bricks_nonempty(int N) {
         for (int a = 0; a < 3; a++) {
             if (decomp.b1[a] <= decomp.b0[a]) {

@@ -2,6 +2,8 @@
 #define MPI_DECOMP_H
 #pragma once
 
+// Splits the box into bricks, one per rank, and says which rank owns a point.
+
 #include "global/gpu_compat.h"
 #include "mpi_compat.h"
 
@@ -9,38 +11,25 @@
 
 struct ICData;
 
-// static brick decomposition over the global KNN bucket grid. each rank owns
-// a contiguous brick of buckets; cell ownership follows the bucket containing
-// the seed position.
-
 namespace proteus_mpi {
 
+    // the decomposition of this run, set up once in decomp_init
     struct MpiDecomp {
         int rank;
         int nranks;
 
-        // Cartesian topology (Pz = 1 in 2D)
-        int dims[3];
-        int coords[3];
+        int dims[3];   // ranks per axis
+        int coords[3]; // place of this rank in that grid
 
-        // global bucket grid, shared across ranks
-        int N_grid_global;
+        int N_grid_global; // buckets per axis over the box plus both ghost bands
 
-        // this rank's brick of buckets: [b0[i], b1[i]) per axis. b0[2]=0, b1[2]=1 in 2D.
+        // bucket range of this rank, [b0, b1) per axis
         int b0[3];
         int b1[3];
 
-        // per-axis split tables, identical on every rank. size dims[a]+1; coord cx along axis a
-        // owns buckets [splits[a][cx], splits[a][cx+1]). Initial values come from even_split;
-        // rebalance overwrites them via decomp_apply_splits. 2D forces splits[2] = {0, 1}.
-        // Allocated via gpu_malloc (managed) so device kernels can read them.
-        int* splits[3];
+        int* splits[3]; // dims[a] + 1 bucket borders per axis, one brick between two of them
 
-        // coord-tuple -> rank lookup, size dims[0]*dims[1]*dims[2], managed memory.
-        // Index = (cx * dims[1] + cy) * dims[2] + cz. Built from MPI_Cart_rank at decomp_init
-        // and refreshed by decomp_apply_splits. Lets device kernels resolve an owner rank
-        // without calling MPI_Cart_rank (which is host-only).
-        int* coord_to_rank;
+        int* coord_to_rank; // rank at coords (cx, cy, cz)
 
 #ifdef USE_MPI
         MPI_Comm cart_comm;
@@ -49,22 +38,16 @@ namespace proteus_mpi {
 
     extern MpiDecomp decomp;
 
-    // initialize decomposition; computes this rank's brick and prints the partition.
-    // single-node mode is a no-op (full domain owned by rank 0).
-    // n_total is the global cell count — int64 because >= 1290^3 overflows int32.
+    // bucket grid, rank grid and an even split to start from
     void decomp_init(int64_t n_total, double buff);
 
-    // install new per-axis split tables (replaces the values for splits[0..2]) and recomputes
-    // this rank's b0/b1. Inputs must satisfy: monotone non-decreasing, splits[a][0]=0,
-    // splits[a][dims[a]]=N_grid_global (z: dims[2]=1, splits[2]={0,1}). All ranks must call
-    // with identical arrays — they hold the global decomposition.
+    // takes new split tables, from a rebalance or from a snapshot
     void decomp_apply_splits(const int* sx, const int* sy, const int* sz);
 
-    // binary search for the slab containing bucket index b. Returns coord c such that
-    // splits[c] <= b < splits[c+1]. Assumes the caller already checked b ∈ [0, N_grid_global).
+    // which slab of one axis holds bucket b
     HD inline int decomp_coord_of_bucket(const int* splits, int n_slabs, int b) {
         int lo = 0;
-        int hi = n_slabs; // upper bound on coord (exclusive)
+        int hi = n_slabs;
         while (lo + 1 < hi) {
             const int mid = (lo + hi) / 2;
             if (splits[mid] <= b)
@@ -75,13 +58,9 @@ namespace proteus_mpi {
         return lo;
     }
 
-    // owner rank of the given bucket; returns -1 if out of global range
+    // rank that owns a bucket, -1 if it is outside the grid
     int decomp_owner_of_bucket(int bx, int by, int bz);
 
-    // device-callable owner-of-bucket: same semantics as decomp_owner_of_bucket, but
-    // uses the precomputed coord_to_rank lookup (no MPI_Cart_rank, no globals). The
-    // caller passes per-axis split arrays + dims + N_grid so this works from a kernel.
-    // 2D: callers pass dims[2]=1, splits[2]={0,1}.
     HD inline int decomp_owner_of_bucket_dev(int        bx,
                                              int        by,
                                              int        bz,
@@ -97,7 +76,7 @@ namespace proteus_mpi {
 #ifdef dim_3D
         if (bz < 0 || bz >= N_grid_global) return -1;
 #else
-        (void)bz; // 2D never reads bz
+        (void)bz;
         (void)dims_z;
         (void)splits_z;
 #endif
@@ -112,8 +91,7 @@ namespace proteus_mpi {
         return coord_to_rank[idx];
     }
 
-    // bucket coords for a position. mirrors knn::cell_from_point's index math but uses
-    // the global N_grid so all ranks agree. 2D: z bucket is always 0.
+    // bucket a position falls into, clamped to the grid
     HD inline void
     decomp_bucket_of_point(double px, double py, double pz, int N_grid, double buff, int* bx, int* by, int* bz) {
         const double inv = 1.0 / (1.0 + 2.0 * buff);
@@ -142,18 +120,12 @@ namespace proteus_mpi {
 #endif
     }
 
-    // parallel-read variant: each rank arrives with its own chunk of the global IC
-    // (read via parallel HDF5 hyperslab), holding cells with global IDs [row_lo, row_lo+n_local).
-    // Routes each cell to its owner via decomp_owner_of_bucket + MPI_Alltoallv over the Cart
-    // comm. After the call, ic holds only this rank's owned cells. No-op for nranks <= 1.
+    // sends every IC cell to the rank that owns its bucket
     void distribute_ic_parallel(::ICData& ic, double buff);
 
-    // even split of N items across P slots; slot i gets the i'th contiguous chunk.
-    // Exposed so begrun can compute this rank's IC row range before the parallel read.
-    // N and the row offsets are int64 because rank R's lo grows as R*(N/P), which crosses
-    // int32 well before the global cell count itself does.
+    // rows [lo, hi) of N that part i reads, used for the parallel IC read
     void decomp_even_split(int64_t N, int P, int i, int64_t* lo, int64_t* hi);
 
 } // namespace proteus_mpi
 
-#endif // MPI_DECOMP_H
+#endif

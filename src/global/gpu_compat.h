@@ -2,6 +2,8 @@
 #define GPU_COMPAT_H
 #pragma once
 
+// Backend layer: CPU_DEBUG and CUDA behind the same names (HD, GLOBAL, gpu_alloc, ...)
+
 #include "../mpi/mpi_compat.h"
 #include <cstdio>
 #include <cstdlib>
@@ -10,12 +12,10 @@
 
 typedef unsigned char uchar;
 
-// CUDA / CPU_DEBUG mode switching
-
+// CPU build: the device macros vanish, gpu_* is plain malloc / memcpy
 #ifdef CPU_DEBUG
 #define RUN_MODE "CPU"
 
-// empty _host_ _device_ / _global_ wrappers
 #define HD
 #define GLOBAL
 #define GPU_SYNC()
@@ -23,7 +23,6 @@ typedef unsigned char uchar;
 
 #define CUDA_CHECK(call) ((void)0)
 
-// memory wrappers
 inline void* gpu_malloc(size_t bytes) {
     return malloc(bytes);
 }
@@ -40,9 +39,7 @@ inline void gpu_advise_gpu_preferred(void*, size_t) {}
 inline void gpu_prefetch_to_cpu(void*, size_t) {}
 inline void gpu_prefetch_to_gpu(void*, size_t) {}
 
-// emulate CUDA types
-
-// double
+// the CUDA vector types, defined here for the CPU build
 typedef struct {
     double x, y;
 } double2;
@@ -55,7 +52,6 @@ typedef struct {
     double x, y, z, w;
 } double4_t;
 
-// char vector types
 typedef struct {
     uchar x, y;
 } uchar2;
@@ -64,8 +60,6 @@ typedef struct {
     uchar x, y, z;
 } uchar3;
 
-// int vector types: the wide-index counterparts of uchar2/uchar3, used by the CPU
-// fallback's BigConvexCell tier (see BIG_VERT_TYPE below). CUDA supplies these itself.
 typedef struct {
     int x, y;
 } int2;
@@ -74,27 +68,28 @@ typedef struct {
     int x, y, z;
 } int3;
 
-#else // CUDA mode
+#else
+// CUDA build: managed memory, so one pointer is valid on host and device
 #define RUN_MODE "GPU"
 
-// kernel/function macros
 #define HD __host__ __device__
 #define GLOBAL __global__
 
-// kernels are tuned for fast math only, thus relaxing launch bounds when its turned off
+// min_blocks is dropped without CUDA_FAST_MATH: IEEE-faithful code needs more registers than that
+// occupancy target allows, and nvlink then refuses to link
 #ifdef CUDA_FAST_MATH
 #define LAUNCH_BOUNDS(threads, min_blocks) __launch_bounds__(threads, min_blocks)
 #else
 #define LAUNCH_BOUNDS(threads, min_blocks) __launch_bounds__(threads)
 #endif
 
-// syncs and error checking
 #define GPU_SYNC()                                                                                                     \
     do {                                                                                                               \
         CUDA_CHECK(cudaPeekAtLastError());                                                                             \
         CUDA_CHECK(cudaDeviceSynchronize());                                                                           \
     } while (0)
 
+// stops the run at the first CUDA error, naming file and line
 #define CUDA_CHECK(call)                                                                                               \
     do {                                                                                                               \
         cudaError_t err = (call);                                                                                      \
@@ -103,6 +98,7 @@ typedef struct {
         }                                                                                                              \
     } while (0)
 
+// bookkeeping for the GPU part of the memory report
 inline size_t& g_gpu_bytes_current() {
     static size_t v = 0;
     return v;
@@ -116,7 +112,6 @@ inline std::unordered_map<void*, size_t>& g_gpu_allocs() {
     return m;
 }
 
-// memory wrappers
 inline void* gpu_malloc(size_t bytes) {
     void* p = nullptr;
     CUDA_CHECK(cudaMallocManaged(&p, bytes));
@@ -143,7 +138,7 @@ inline void gpu_memcpy(void* dst, const void* src, size_t bytes) {
     CUDA_CHECK(cudaMemcpy(dst, src, bytes, cudaMemcpyDefault));
 }
 
-// advice to store on gpu
+// unified memory hints: keep these pages on the device
 inline void gpu_advise_gpu_preferred(void* ptr, size_t bytes) {
     int dev;
     cudaGetDevice(&dev);
@@ -154,7 +149,6 @@ inline void gpu_advise_gpu_preferred(void* ptr, size_t bytes) {
     CUDA_CHECK(cudaMemAdvise(ptr, bytes, cudaMemAdviseSetAccessedBy, loc));
 }
 
-// prefetch managed memory to the CPU
 inline void gpu_prefetch_to_cpu(void* ptr, size_t bytes) {
     cudaMemLocation loc = {};
     loc.type            = cudaMemLocationTypeHost;
@@ -162,9 +156,6 @@ inline void gpu_prefetch_to_cpu(void* ptr, size_t bytes) {
     CUDA_CHECK(cudaMemPrefetchAsync(ptr, bytes, loc, 0));
 }
 
-// prefetch managed memory to the current GPU device. Used after an MPI
-// receive (host-staged path) so the next compute kernel that touches the
-// buffer doesn't fault each page back in one at a time.
 inline void gpu_prefetch_to_gpu(void* ptr, size_t bytes) {
     int dev;
     cudaGetDevice(&dev);
@@ -174,9 +165,9 @@ inline void gpu_prefetch_to_gpu(void* ptr, size_t bytes) {
     CUDA_CHECK(cudaMemPrefetchAsync(ptr, bytes, loc, 0));
 }
 
-#endif // CPU_DEBUG
+#endif
 
-// allocation helpers
+// typed allocation
 template <typename T> inline T* gpu_alloc(size_t count) {
     return static_cast<T*>(gpu_malloc(count * sizeof(T)));
 }
@@ -187,7 +178,7 @@ template <typename T> inline T* gpu_calloc(size_t count) {
     return p;
 }
 
-// integer min/max
+// int min / max usable on the device
 HD inline int imin(int a, int b) {
     return a < b ? a : b;
 }
@@ -196,6 +187,7 @@ HD inline int imax(int a, int b) {
 }
 
 #ifndef CPU_DEBUG
+// CUDA 13 deprecates double4 in favour of double4_16a / double4_32a; we want the 16 byte aligned one
 #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ >= 13
 typedef double4_16a double4_t;
 #else
@@ -212,13 +204,7 @@ HD inline double4_t make_double4_t(double x, double y, double z, double w) {
     return v;
 }
 
-// typedefs
-// point and vertex types
-// VERT_TYPE holds the DIMENSION plane indices meeting at one dual-graph vertex, one
-// component per plane. Its component width caps how many clipping planes a cell may use:
-// uchar components mean plane ids must fit in a byte. BIG_VERT_TYPE is the same thing with
-// 32-bit components, used only by the CPU fallback's wide tier so a pathological cell can
-// exceed that ceiling (see BasicConvexCell in voronoi/cell.h).
+// dimension and the point / vertex types
 #ifdef dim_2D
 #define DIMENSION 2
 typedef double2 POINT_TYPE;
@@ -231,7 +217,7 @@ typedef uchar3  VERT_TYPE;
 typedef int3    BIG_VERT_TYPE;
 #endif
 
-// atomics that work on host and device
+// atomicAdd on the device, an OpenMP atomic on the host
 template <typename T> HD inline T portable_atomicAdd(T* addr, T val) {
 #if defined(__CUDA_ARCH__)
     return atomicAdd(addr, val);
@@ -248,6 +234,7 @@ template <typename T> HD inline T portable_atomicAdd(T* addr, T val) {
 #endif
 }
 
+// same for an atomic exchange
 template <typename T> HD inline T portable_atomicExch(T* addr, T val) {
 #if defined(__CUDA_ARCH__)
     return atomicExch(addr, val);
@@ -264,4 +251,4 @@ template <typename T> HD inline T portable_atomicExch(T* addr, T val) {
 #endif
 }
 
-#endif // GPU_COMPAT_H
+#endif

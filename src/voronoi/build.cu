@@ -1,6 +1,8 @@
+
+// one build of the mesh (internal.h)
+
 namespace voronoi {
 
-    // ---- forward declarations ----
     static void check_seed_capacity(const VMesh* mesh, int n_total);
     static void save_orig_to_k_for_lookup(VMesh* mesh);
     static void clear_cell_arrays(VMesh* mesh);
@@ -20,48 +22,37 @@ namespace voronoi {
 #ifndef CPU_DEBUG
 #endif
 
-    // ---- per-step scratch for cell construction ----
-    // the failed-cell list is built on both backends, so it lives outside the split
-    static int* d_failed_indices          = nullptr;
+    static int* d_failed_indices          = nullptr; // cells the fast tier could not finish
     static int  d_failed_indices_capacity = 0;
 #ifndef CPU_DEBUG
-    static uint64_t* d_face_offset   = nullptr;
+    static uint64_t* d_face_offset   = nullptr; // face counter of the cell kernels
     static int*      d_overflow_flag = nullptr;
 #else
-    static unsigned long long s_cpu_face_offset   = 0; // running face offset across fast + slow tiers
-    static int                s_cpu_overflow_flag = 0; // set if face writes exceed pre-allocated capacity
+    static unsigned long long s_cpu_face_offset   = 0;
+    static int                s_cpu_overflow_flag = 0;
 #endif
 
-    // ============================================================
-    // Main routines
-    // ============================================================
-
-    // build the Voronoi cells for the current seed + ghost buffer
-    //   iter == 0: full pipeline — atomic-counter pass1 + save orig_to_k + permute primvar
-    //   iter  > 0: lookup-mode pass1 using saved orig_to_k; primvar already aligned
+    // sorts the points, maps the indices, builds all cells
     void compute_mesh(VMesh*           mesh,
                       POINT_TYPE*      pts_data,
                       int              n_total,
                       hydro::primvars* primvar,
                       hydro::primvars* primvar_aux,
                       int              iter) {
-        // KNN spatial sort over the augmented seed buffer
         {
             PROFILE("KNN_PREP");
-            // anchor the KNN grid to this rank's current extent (W/brick already set by
-            // set_data_extent_for_build) so cell occupancy stays ~3 pts/cell at any rank count
+            // sort the points into the neighbour grid
             knn::set_local_extent(mesh->knn, mesh->data_lo, mesh->data_hi);
             knn::prepare(mesh->knn, (const POINT_TYPE*)pts_data, n_total);
         }
 
-        // commit augmented seed count + reset face counter
         check_seed_capacity(mesh, n_total);
         mesh->n_seeds   = (uint64_t)n_total;
         mesh->num_faces = 0;
 
-        // build orig <-> k <-> sid index maps; iter 0 also permutes primvar into new-k order
         {
             PROFILE("PERMUTE");
+            // the first round also fixes the cell order of this step
             build_index_maps(mesh, iter);
             if (iter == 0) {
                 save_orig_to_k_for_lookup(mesh);
@@ -70,7 +61,6 @@ namespace voronoi {
             }
         }
 
-        // reset per-cell arrays, run fast tier, then slow tier on failed cells
         {
             PROFILE("CELLS");
             clear_cell_arrays(mesh);
@@ -78,11 +68,7 @@ namespace voronoi {
         }
     }
 
-    // ============================================================
-    // Helpers
-    // ============================================================
-
-    // abort if the augmented seed count exceeds the pre-allocated capacity
+    // stops the run if the point list is longer than the arrays
     static void check_seed_capacity(const VMesh* mesh, int n_total) {
         if ((uint64_t)n_total > mesh->total_capacity) {
             proteus_mpi::exit_failure("VORONOI: Error! point count %d exceeds pre-allocated capacity %llu. "
@@ -92,13 +78,13 @@ namespace voronoi {
         }
     }
 
-    // snapshot pass-1's orig_to_k mapping so iter > 0 can reproduce the same k assignment
+    // keeps the cell order of the first round
     static void save_orig_to_k_for_lookup(VMesh* mesh) {
         const uint64_t n_hydro = mesh->n_hydro;
         gpu_memcpy(mesh->orig_to_k_save, mesh->scratch_uint, n_hydro * sizeof(unsigned int));
     }
 
-    // clear per-cell arrays and reset cell_status to security_radius_not_reached
+    // faces and status of the new build
     static void clear_cell_arrays(VMesh* mesh) {
         const uint64_t n_hydro = mesh->n_hydro;
         gpu_memset(mesh->face_counts, 0, n_hydro * sizeof(uint64_t));
@@ -107,8 +93,7 @@ namespace voronoi {
         parallel_for<_MESH_BLOCK_SIZE_>("INIT", n_hydro, [=] HD(size_t i) { stat[i] = security_radius_not_reached; });
     }
 
-    // build real_sorted_ids[k] -> sid and sid_to_neighbor[sid] -> k (both passes).
-    // The pass-1 orig->k map is stashed in scratch_uint so pass 2 can resolve periodic ghosts.
+    // maps input point <-> sorted point <-> cell k
     static void build_index_maps(VMesh* mesh, int iter) {
         const int      n_total = (int)mesh->n_seeds;
         const uint64_t n_hydro = mesh->n_hydro;
@@ -118,11 +103,11 @@ namespace voronoi {
         unsigned int*       sid_to_neighbor = mesh->sid_to_neighbor;
         unsigned int*       orig_to_k       = mesh->scratch_uint;
 
-        // pass 1: assign each real seed an output index k
         if (iter == 0) {
             unsigned int* flags   = mesh->scan_flags;
             unsigned int* scratch = mesh->scan_scratch;
 
+            // flag the real points; after the scan the flag of a real point is its cell index
             parallel_for<_MESH_BLOCK_SIZE_>(
                 "INDEX_FLAG", n_total, [=] HD(int sid) { flags[sid] = ((uint64_t)dperm[sid] < n_hydro) ? 1u : 0u; });
 
@@ -138,7 +123,7 @@ namespace voronoi {
                 }
             });
 
-            // exclusive scan, so the total is the last slot plus whether the last sid was real
+            // all real points must have got a cell
             const uint64_t n_reals =
                 (n_total > 0) ? (uint64_t)flags[n_total - 1] + (((uint64_t)dperm[n_total - 1] < n_hydro) ? 1 : 0) : 0;
 
@@ -149,7 +134,7 @@ namespace voronoi {
                     (unsigned long long)n_hydro);
             }
         } else {
-            // iter > 0: reuse iter-0's orig_to_k_save for stable k assignment
+            // later rounds keep the order of the first one
             const unsigned int* orig_to_k_save = mesh->orig_to_k_save;
             parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P1", n_total, [=] HD(int sid) {
                 const unsigned int orig = dperm[sid];
@@ -157,12 +142,12 @@ namespace voronoi {
                     const unsigned int k = orig_to_k_save[orig];
                     real_sorted_ids[k]   = (unsigned int)sid;
                     sid_to_neighbor[sid] = k;
-                    orig_to_k[orig]      = k; // populate scratch_uint so pass 2 can resolve periodic ghosts
+                    orig_to_k[orig]      = k;
                 }
             });
         }
 
-        // pass 2: resolve ghost sids — MPI ghosts hold ext-array indices, periodic ghosts hold source orig
+        // ghosts: periodic -> its cell, MPI -> its own slot
         const uint64_t* ghost_ids = mesh->ghost_ids;
         parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P2", n_total, [=] HD(int sid) {
             const unsigned int orig = dperm[sid];
@@ -174,8 +159,7 @@ namespace voronoi {
         });
     }
 
-    // gather_perm[new_k] = d_permutation[real_sorted_ids[new_k]] = old_k
-    // (step N's k IS step N+1's input orig, hence "new_k -> old_k")
+    // cell k came from input point gather_perm[k]
     static void compute_gather_perm(VMesh* mesh) {
         const uint64_t      n        = mesh->n_hydro;
         const unsigned int* perm     = mesh->knn->d_permutation;
@@ -185,33 +169,30 @@ namespace voronoi {
         parallel_for<_MESH_BLOCK_SIZE_>("GATHER_PERM", n, [=] HD(size_t k) { gathered[k] = perm[sorted[k]]; });
     }
 
-    // out-of-place gather then pointer swap. The permutation only touches [0, n);
-    // the MPI-ghost-slot region [n, ext) is copied verbatim so it survives the swap.
+    // writes live[perm[k]] into the scratch and swaps the pointers
     template <typename T> static void permute_inplace(T*& live, T*& scratch, uint64_t n, const unsigned int* perm) {
         const uint64_t ext = (uint64_t)proteus_mpi::extended_size((int)n);
         T*             src = live;
         T*             dst = scratch;
         parallel_for<_MESH_BLOCK_SIZE_>("PERMUTE", n, [=] HD(size_t k) { dst[k] = src[perm[k]]; });
 
-        // the MPI-ghost-slot region [n, ext) carries over untouched
+        // the room above the cells is copied as it is
         if (ext > n) { gpu_memcpy(scratch + n, live + n, (ext - n) * sizeof(T)); }
         std::swap(live, scratch);
     }
 
-    // permute every per-cell array that must carry across the rebuild into new-k order
+    // sorts everything that outlives the step into the new cell order
     static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
         const uint64_t      n    = mesh->n_hydro;
         const unsigned int* perm = mesh->gather_perm;
 
         permute_inplace(mesh->cell_to_original, mesh->scratch_uint, n, perm);
 
-        // primary primvars
         if (primvar) {
             permute_inplace(primvar->rho, mesh->scratch_double, n, perm);
             permute_inplace(primvar->v, mesh->scratch_point, n, perm);
             permute_inplace(primvar->E, mesh->scratch_double, n, perm);
         }
-        // auxiliary primvars (the second slot used by the RK stages)
         if (primvar_aux) {
             permute_inplace(primvar_aux->rho, mesh->scratch_double, n, perm);
             permute_inplace(primvar_aux->v, mesh->scratch_point, n, perm);
@@ -227,48 +208,32 @@ namespace voronoi {
 #endif
     }
 
-    // ============================================================
-    // Cell construction (fast tier → collect failures → slow tier)
-    //
-    // CPU-side fallback for cells that fail both GPU tiers is invoked separately
-    // by compute_periodic_mesh after the halo-widening loop, so cells can be
-    // re-attempted with wider halos before resorting to seed perturbation.
-    // ============================================================
-
-    // run fast voronoi kernel on every cell, slow voronoi kernel on cells that fail
+    // fast tier for all cells, slow tier for what failed
     static void compute_cells(VMesh* mesh) {
-        // allocate / reuse the per-step GPU scratch buffers
         allocate_cell_scratch(mesh->n_hydro);
 
-        // first attempt: fast voronoi kernel for all cells
         run_fast_cell_kernel(mesh);
 
-        // collect cells that did not converge under the fast kernel
         const int n_failed = collect_failed_cells(mesh);
         print_cell_build_summary(mesh->n_hydro, n_failed);
 
-        // second attempt: slow voronoi kernel on just the failed cells
         if (n_failed > 0) run_slow_cell_kernel(mesh, n_failed);
 
-        // copy total face count back from device and check for overflow
         read_face_count_from_gpu(mesh);
     }
 
-    // allocate / resize the per-step scratch buffers used by the cell-construction kernels
+    // scratch of the cell kernels, kept between builds
     static void allocate_cell_scratch(uint64_t n_hydro) {
-        // grow the failed-indices buffer if n_hydro outgrew it (one-shot per growth)
         if (d_failed_indices_capacity < (int)n_hydro) {
             if (d_failed_indices) gpu_free(d_failed_indices);
             d_failed_indices          = gpu_alloc<int>((int)n_hydro);
             d_failed_indices_capacity = (int)n_hydro;
         }
 #ifndef CPU_DEBUG
-        // first call: allocate the singleton scratch slots
         if (!d_face_offset) {
             d_face_offset   = gpu_calloc<uint64_t>(1);
             d_overflow_flag = gpu_calloc<int>(1);
         }
-        // zero the per-step counters
         gpu_memset(d_face_offset, 0, sizeof(uint64_t));
         gpu_memset(d_overflow_flag, 0, sizeof(int));
 #else
@@ -293,7 +258,7 @@ namespace voronoi {
 #endif
     }
 
-    // dispatch the fast voronoi kernel over n_hydro cells
+    // all cells, small capacities
     static void run_fast_cell_kernel(VMesh* mesh) {
         double*             pts   = (double*)mesh->knn->d_stored_points;
         const knn_problem*  knn   = mesh->knn;
@@ -308,10 +273,7 @@ namespace voronoi {
         });
     }
 
-    // List the cells that did not finish under the fast kernel, in index order, on both
-    // backends. The slot used to come from an atomic cursor, so the slow tier's work list was
-    // ordered by which thread got there first; and the CPU built no list at all, leaving its
-    // slow tier to rescan all n_hydro looking for the few failures.
+    // index list of the cells that did not end with success
     static int collect_failed_cells(VMesh* mesh) {
         const int n_hydro = (int)mesh->n_hydro;
         if (n_hydro == 0) return 0;
@@ -331,11 +293,9 @@ namespace voronoi {
             if (stat[k] != success) out[flags[k]] = k;
         });
 
-        // exclusive scan, so the total is the last offset plus whether the last cell failed
         return (int)flags[n_hydro - 1] + ((stat[n_hydro - 1] != success) ? 1 : 0);
     }
 
-    // print "Generated N cells. (X% slow tier)" for the current build
     static void print_cell_build_summary(uint64_t n_hydro, int n_failed) {
         const int n_global        = logging::sum_global((int)n_hydro);
         const int n_failed_global = logging::sum_global(n_failed);
@@ -343,7 +303,7 @@ namespace voronoi {
                         << (100.0 * n_failed_global / (double)n_global) << "% slow tier)" << std::endl;
     }
 
-    // dispatch the slow voronoi kernel over the cells that failed the fast tier
+    // again with the full capacities
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed) {
         const int*          failed_ks = d_failed_indices;
         double*             pts       = (double*)mesh->knn->d_stored_points;
@@ -360,7 +320,7 @@ namespace voronoi {
         });
     }
 
-    // sync the device, copy num_faces back to host, abort on face-buffer overflow
+    // total faces, aborts if they did not fit
     static void read_face_count_from_gpu(VMesh* mesh) {
 #ifndef CPU_DEBUG
         GPU_SYNC();

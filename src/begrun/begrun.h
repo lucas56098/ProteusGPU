@@ -1,7 +1,9 @@
 #ifndef BEGRUN_H
 #define BEGRUN_H
 
-// Config.sh define checks
+// Starts the run and shuts it down.
+
+// flag combinations that must not build, caught before anything else compiles
 #if (!defined(dim_3D) && !defined(dim_2D)) || (defined(dim_3D) && defined(dim_2D))
 #error "Choose a dimension in Config.sh: [dim_3D] OR [dim_2D]"
 #endif
@@ -17,10 +19,11 @@
 
 namespace begrun {
 
-    // setup/end simulation run
+    // parameters, IC or snapshot, decomposition, hydro arrays and the first mesh
     void begrun(int argc, char* argv[]);
+    // frees mesh and hydro, closes the profile log, prints the totals
     void endrun();
 
 } // namespace begrun
 
-#endif // BEGRUN_H
+#endif

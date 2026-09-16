@@ -1,6 +1,8 @@
 #ifndef HYDRO_GRADIENTS_H
 #define HYDRO_GRADIENTS_H
 
+// Gradients of the primitive variables, one set per cell.
+
 #include "../global/allvars.h"
 #include "../voronoi/voronoi.h"
 #include <cmath>
@@ -8,7 +10,7 @@
 
 namespace gradients {
 
-    // alloc real arrays (sized to max_n_local) + ghost arrays (sized to n_mpi_capacity)
+    // cells with growth headroom, plus one entry per MPI ghost
     inline void allocate_grad(size_t n, PrimGradients* g) {
         const size_t ext = (size_t)proteus_mpi::alloc_per_cell_size((int)n);
         g->rho           = gpu_alloc<POINT_TYPE>(ext);
@@ -88,8 +90,6 @@ namespace gradients {
         g->E_g = nullptr;
     }
 
-    // resize the ghost arrays to new_cap. Contents discarded; halo_exchange_gradients
-    // repopulates them. Called by proteus_mpi::halo_grow_capacity.
     inline void grad_grow_ghosts(PrimGradients* g, int new_cap) {
         if (g->rho_g) gpu_free(g->rho_g);
         if (g->vx_g) gpu_free(g->vx_g);
@@ -107,12 +107,12 @@ namespace gradients {
         g->E_g = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
     }
 
-    // calc spatial gradients
+    // gradient of every cell, limited so the reconstruction stays in range
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads);
 
-    // calc "time gradients" (dW/dt)
+    // how the state changes in time, from the gradients
     HD void time_gradient(hydro::prim state_i, PrimGradient grad_i, hydro::prim* dWdt);
 
 } // namespace gradients
 
-#endif // HYDRO_GRADIENTS_H
+#endif

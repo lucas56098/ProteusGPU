@@ -1,9 +1,4 @@
-// Per-step halo data exchanges and dt allreduce.
-// Included into halo.cu inside namespace proteus_mpi.
-
-// ============================================================
-// CUDA kernels (CUDA mode only)
-// ============================================================
+// the exchanges themselves (included by halo.cu)
 
 #if !defined(CPU_DEBUG) && defined(USE_MPI)
 GLOBAL static void kernel_pack_seed(int                  total_send,
@@ -17,20 +12,13 @@ GLOBAL static void kernel_pack_seed(int                  total_send,
     pack::pack_seed_body(s, pts, export_indices, dir_of_slot, neighbor_shift_flat, sendbuf);
 }
 
-#endif // !CPU_DEBUG && USE_MPI
+#endif
 
 #ifdef USE_MPI
-// Small managed staging buffer holding the per-direction counts is_outer_layer needs
-// (recv_n_outer, ghost_offset (n+1 entries), recv_count), because they live in host-side
-// inline arrays a device body cannot reach. Lazily allocated on first use; freed in halo_free.
-//   layout: [recv_n_outer | ghost_offset (n+1) | recv_count]
 static int* s_is_outer_meta_dev = nullptr;
 #endif
 
-// ============================================================
-// Public entry points
-// ============================================================
-
+// sends the export seeds and writes the ones that come back into the point list
 void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
 #ifndef USE_MPI
     (void)mesh;
@@ -61,8 +49,6 @@ void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
 #pragma omp parallel for schedule(static)
 #endif
         for (int s = 0; s < total_send; s++) {
-            // CPU_DEBUG: neighbor_shift inline array is flat-equivalent (3 doubles per direction,
-            // row-major); cast to flat double* matches what the kernel sees.
             pack::pack_seed_body(s,
                                  pts,
                                  halo.export_indices,
@@ -87,14 +73,13 @@ void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
         parallel_for<_MPI_PACK_BLOCK_SIZE_>(
             "UNPACK", n_mpi, [=] HD(int slot) { pack::unpack_seed_body(slot, pts_mpi_base, recvbuf, pts, seeds_g); });
 
-        // is_outer_layer reads three host-side inline arrays. Stage them into one managed
-        // buffer the body can reach on either backend, then fill one entry per direction.
+        // the kernel cannot read the per neighbour arrays of the struct
         if (s_is_outer_meta_dev == nullptr) {
             s_is_outer_meta_dev = (int*)gpu_malloc(sizeof(int) * (3 * HALO_MAX_NEIGHBORS + 1));
         }
         int* recv_n_outer = s_is_outer_meta_dev;
         int* ghost_offset = s_is_outer_meta_dev + HALO_MAX_NEIGHBORS;
-        int* recv_count   = s_is_outer_meta_dev + 2 * HALO_MAX_NEIGHBORS + 1; // ghost_offset has n+1
+        int* recv_count   = s_is_outer_meta_dev + 2 * HALO_MAX_NEIGHBORS + 1;
         for (int n = 0; n < nn; n++) {
             recv_n_outer[n] = halo.recv_n_outer[n];
             ghost_offset[n] = halo.ghost_offset[n];
@@ -110,6 +95,7 @@ void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
 #endif
 }
 
+// state of the used ghosts
 void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar) {
 #ifndef USE_MPI
     (void)mesh;
@@ -117,7 +103,8 @@ void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar) {
     return;
 #else
     if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
-    if (!halo.used_subset_ready) return; // nothing to do until mesh exists
+    // the mesh build tells us which ghosts matter; before that there is nothing to send
+    if (!halo.used_subset_ready) return;
     (void)mesh;
 
     PROFILE("HALO_PRIM");
@@ -147,6 +134,7 @@ void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar) {
 #endif
 }
 
+// their gradients, all components in one message
 void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
 #ifndef USE_MPI
     (void)mesh;
@@ -187,6 +175,7 @@ void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
 #endif
 }
 
+// and their mesh velocity
 void halo_exchange_v_mesh(VMesh* mesh) {
 #ifndef USE_MPI
     (void)mesh;
@@ -228,10 +217,9 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 #endif
 }
 
+// the smallest timestep of all ranks
 void halo_dt_allreduce(double* dt) {
 #ifdef USE_MPI
-    // 1 double — launch-overhead-bound, no GPU-aware benefit. Stays host even when
-    // GPU_AWARE_MPI is on; no sync_before/after_recv calls.
     PROFILE_MPI("DT_ALLREDUCE");
     double local = *dt;
     MPI_Allreduce(&local, dt, 1, MPI_DOUBLE, MPI_MIN, decomp.cart_comm);
@@ -240,11 +228,7 @@ void halo_dt_allreduce(double* dt) {
 #endif
 }
 
-// Scan the frozen export layout for slots shipping one of `moved_ks`. Positions are read
-// from mesh->seeds (the fallback rewrites them at emit, so they hold the post-perturbation
-// values) and pre-shifted per direction exactly like pack_seed_body. Cost is one pass over
-// the export list with a hash lookup per slot — a few ms at worst, paid only on the rare
-// steps where a perturbation happened at all.
+// exported cells whose seed the fallback moved, sorted by neighbour
 int halo_collect_moved_exports(const VMesh* mesh, const std::vector<int>& moved_ks, MovedExportLists* lists) {
     for (int n = 0; n < HALO_MAX_NEIGHBORS; n++) {
         lists->js[n].clear();
@@ -279,10 +263,7 @@ int halo_collect_moved_exports(const VMesh* mesh, const std::vector<int>& moved_
 #endif
 }
 
-// Counts handshake, then slot-offset + position payloads per neighbour, all requests in one
-// Waitall. Buffers are plain host vectors: the payload is a handful of entries on the rare
-// repair rounds, so there is nothing for GPU-aware MPI to win here and no sync_before/after
-// wrappers are needed.
+// tells every neighbour which of its ghosts moved, and where to
 void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedSeed>* received) {
     received->clear();
     if (halo.n_neighbors == 0) return;
@@ -290,7 +271,6 @@ void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedS
 #ifdef USE_MPI
     const int nn = halo.n_neighbors;
 
-    // phase 1: per-neighbour counts (same pattern as exchange_send_recv_counts)
     int sendcnt[HALO_MAX_NEIGHBORS] = {0};
     int recvcnt[HALO_MAX_NEIGHBORS] = {0};
     for (int n = 0; n < nn; n++)
@@ -319,8 +299,6 @@ void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedS
         MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
     }
 
-    // phase 2: payloads. Point-to-point unconditionally — the neighbour-collective path
-    // would need flattened displacement arrays for a message of a few dozen bytes.
     std::vector<int>        recv_js[HALO_MAX_NEIGHBORS];
     std::vector<POINT_TYPE> recv_pos[HALO_MAX_NEIGHBORS];
     {
@@ -370,7 +348,6 @@ void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedS
         if (n_reqs > 0) MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
     }
 
-    // unpack: slot offset j within neighbour n's receive range -> full ghost slot
     for (int n = 0; n < nn; n++) {
         for (int i = 0; i < recvcnt[n]; i++) {
             const int j = recv_js[n][i];
@@ -392,6 +369,7 @@ void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedS
 }
 
 #ifdef VOL_REGULARIZE
+// cell volumes of the used ghosts
 void halo_exchange_volumes(VMesh* mesh) {
 #ifndef USE_MPI
     (void)mesh;
@@ -428,10 +406,9 @@ void halo_exchange_volumes(VMesh* mesh) {
     }
 #endif
 }
-#endif // VOL_REGULARIZE
+#endif
 
-// global SUM of one double across ranks (e.g. AGN cold-accretion mass). Same lightweight
-// pattern as halo_dt_allreduce — no-op on single-rank builds.
+// one number summed over all ranks
 void halo_sum_allreduce(double* v) {
 #ifdef USE_MPI
     PROFILE_MPI("SUM_ALLREDUCE");

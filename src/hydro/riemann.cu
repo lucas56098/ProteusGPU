@@ -1,25 +1,27 @@
-/* hllc riemann solver : computes flux given st_L and st_R */
+// implements the HLLC solver (riemann.h)
+
 #include "../global/allvars.h"
 #include "riemann.h"
 
 namespace hydro {
 
+    // flux through the face between a left and a right state
     HD flux_t riemann_hllc(prim st_l, prim st_r) {
 
-        // compute pressure once per side (avoids triple-computation via get_flux->get_P)
         double v2_l = st_l.v.x * st_l.v.x + st_l.v.y * st_l.v.y;
         double v2_r = st_r.v.x * st_r.v.x + st_r.v.y * st_r.v.y;
 #ifdef dim_3D
         v2_l += st_l.v.z * st_l.v.z;
         v2_r += st_r.v.z * st_r.v.z;
 #endif
+        // pressure of both sides
         double P_l = fmax(0.0, (gamma_eos - 1.0) * (st_l.E - 0.5 * st_l.rho * v2_l));
         double P_r = fmax(0.0, (gamma_eos - 1.0) * (st_r.E - 0.5 * st_r.rho * v2_r));
 
-        // inline flux computation (reuses P_l, P_r)
         double rho_vx_l = st_l.rho * st_l.v.x;
         double rho_vx_r = st_r.rho * st_r.v.x;
 
+        // flux each side would have on its own
         flux_t f_l, f_r;
         f_l.rho = rho_vx_l;
         f_l.v.x = rho_vx_l * st_l.v.x + P_l;
@@ -35,23 +37,23 @@ namespace hydro {
         f_r.v.z = rho_vx_r * st_r.v.z;
 #endif
 
-        // wave speeds (precompute sound speed factors)
+        // fastest wave to the left and to the right
         double c_l = sqrt(gamma_eos * P_l / st_l.rho);
         double c_r = sqrt(gamma_eos * P_r / st_r.rho);
         double SL  = fmin(st_l.v.x - c_l, st_r.v.x - c_r);
         double SR  = fmax(st_l.v.x + c_l, st_r.v.x + c_r);
 
-        // contact speed
         double dSL = SL - st_l.v.x;
         double dSR = SR - st_r.v.x;
+        // speed of the contact wave in between
         double S_star =
             (P_r - P_l + st_l.rho * st_l.v.x * dSL - st_r.rho * st_r.v.x * dSR) / (st_l.rho * dSL - st_r.rho * dSR);
 
-        // HLLC solver
+        // which of the four regions the face sits in
         flux_t flux;
-        if (0.0 <= SL) {
+        if (0.0 <= SL) { // left state
             flux = f_l;
-        } else if (S_star >= 0.0) {
+        } else if (S_star >= 0.0) { // left of the contact
             double inv_SL_Sstar = 1.0 / (SL - S_star);
             double P_star       = P_l + st_l.rho * dSL * (S_star - st_l.v.x);
             flux.rho            = (S_star * (SL * st_l.rho - f_l.rho)) * inv_SL_Sstar;
@@ -61,7 +63,7 @@ namespace hydro {
             flux.v.z = (S_star * (SL * st_l.rho * st_l.v.z - f_l.v.z)) * inv_SL_Sstar;
 #endif
             flux.E = (S_star * (SL * st_l.E - f_l.E) + SL * P_star * S_star) * inv_SL_Sstar;
-        } else if (0.0 <= SR) {
+        } else if (0.0 <= SR) { // right of the contact
             double inv_SR_Sstar = 1.0 / (SR - S_star);
             double P_star       = P_r + st_r.rho * dSR * (S_star - st_r.v.x);
             flux.rho            = (S_star * (SR * st_r.rho - f_r.rho)) * inv_SR_Sstar;
@@ -71,7 +73,7 @@ namespace hydro {
             flux.v.z = (S_star * (SR * st_r.rho * st_r.v.z - f_r.v.z)) * inv_SR_Sstar;
 #endif
             flux.E = (S_star * (SR * st_r.E - f_r.E) + SR * P_star * S_star) * inv_SR_Sstar;
-        } else {
+        } else { // right state
             flux = f_r;
         }
 

@@ -1,8 +1,7 @@
-// Halo allocation, deallocation, and capacity estimation.
-// Included into halo.cu inside namespace proteus_mpi.
+// halo setup and teardown (included by halo.cu)
 
 #ifdef USE_MPI
-// forward declarations
+// what the capacity estimate is made of, for the startup line
 struct HaloCapacityInfo {
     int       n_capacity;
     int       W_alloc;
@@ -17,10 +16,7 @@ static void             sync_neighbor_shift_to_flat();
 static void             register_mpi_datatypes();
 #endif
 
-// ============================================================
-// Public entry points
-// ============================================================
-
+// neighbour table, transport mode, buffers
 void halo_init(int n_local, double buff) {
 #ifndef USE_MPI
     (void)n_local;
@@ -31,6 +27,7 @@ void halo_init(int n_local, double buff) {
 #else
     build_neighbor_table();
 
+    // a single rank, or a rank that only ever sees itself
     if (halo.n_neighbors == 0) {
         halo.n_mpi_capacity    = 0;
         n_mpi_capacity         = 0;
@@ -51,8 +48,6 @@ void halo_init(int n_local, double buff) {
 
     allocate_halo_buffers(info.n_capacity);
 
-    // Topology metadata mirror: small fixed-size managed buffer that doesn't grow with capacity.
-    // Allocated here (once) and freed in halo_free.
     halo.neighbor_shift_flat = (double*)gpu_malloc(sizeof(double) * HALO_MAX_NEIGHBORS * 3);
     sync_neighbor_shift_to_flat();
 
@@ -76,6 +71,7 @@ void halo_init(int n_local, double buff) {
 #endif
 }
 
+// buffers, MPI types and the graph communicator
 void halo_free() {
 #ifdef USE_MPI
     if (halo.export_indices) gpu_free(halo.export_indices);
@@ -115,6 +111,7 @@ void halo_free() {
 #endif
 }
 
+// bucket layers that cover the ghost band
 int halo_default_width(double buff) {
 #ifdef USE_MPI
     return brick_halo_width(buff, decomp.N_grid_global);
@@ -124,14 +121,9 @@ int halo_default_width(double buff) {
 #endif
 }
 
-// ============================================================
-// Static helpers
-// ============================================================
-
 #ifdef USE_MPI
 
-// use MPI_Neighbor collectives via a dist-graph comm only when peers are
-// all distinct (one message per neighbor); otherwise fall back to Isend/Irecv
+// the neighbour collective needs every neighbour rank to appear once, else send one message per direction
 static void pick_neighbor_collective_mode() {
     int distinct = 1;
     for (int i = 0; i < halo.n_neighbors && distinct; i++)
@@ -140,9 +132,9 @@ static void pick_neighbor_collective_mode() {
     halo.use_neighbor_coll = distinct;
 
     if (halo.use_neighbor_coll) {
-        // Built from MPI_COMM_WORLD, not cart_comm
         MPI_Info info;
         MPI_Info_create(&info);
+        // built from MPI_COMM_WORLD: on cart_comm the neighbour collectives fail in some MPI versions
         MPI_Dist_graph_create_adjacent(MPI_COMM_WORLD,
                                        halo.n_neighbors,
                                        halo.neighbor_ranks,
@@ -151,7 +143,7 @@ static void pick_neighbor_collective_mode() {
                                        halo.neighbor_ranks,
                                        MPI_UNWEIGHTED,
                                        info,
-                                       /*reorder=*/0,
+                                       0,
                                        &halo.graph_comm);
         MPI_Info_free(&info);
     } else {
@@ -159,27 +151,21 @@ static void pick_neighbor_collective_mode() {
     }
 }
 
-// halo capacity sizing — uses the global mean density invariant:
-//   after any cost-balanced rebalance, every rank's local cell density tends to the global
-//   mean = n_global / N_grid^DIM, because each rank gets ~n_global/nranks cells in a brick of
-//   volume ~N_grid^DIM/nranks. Sizing from this invariant means each rank's halo can
-//   accommodate the densest possible neighbouring rank after any rebalance, with one safety
-//   factor for spread around the mean. n_mpi_capacity may still grow at runtime via
-//   halo_grow_capacity if reality exceeds the estimate (e.g., highly anisotropic density).
+// buffer size: cells in the widest halo we may ever need, at the local cell density
 static HaloCapacityInfo estimate_halo_capacity(int n_local, double buff) {
     constexpr int    MAX_WIDEN_ITERS  = 4;
     constexpr int    W_STARTUP_MARGIN = 2;
     constexpr double SAFETY           = 1.5;
 
     HaloCapacityInfo info;
+    // the widest the build can ask for: start width plus every widening round
     info.W_alloc    = halo_default_width(buff) + W_STARTUP_MARGIN + 2 * (MAX_WIDEN_ITERS - 1);
     info.Lx         = decomp.b1[0] - decomp.b0[0];
     info.Ly         = decomp.b1[1] - decomp.b0[1];
     info.Lz         = decomp.b1[2] - decomp.b0[2];
     info.geom_cells = geom_total_cells(info.Lx, info.Ly, info.Lz, info.W_alloc);
 
-    // global mean density: n_global / N_grid^DIM. Independent of which rank or its brick shape.
-    // long long because the global sum is n_global (few_thousand^3), past int32 from ~1300^3 up.
+    // a thin rank still uses the global mean density
     const long long n_local_ll = (long long)n_local;
     long long       n_global   = 0;
     MPI_Allreduce(&n_local_ll, &n_global, 1, MPI_LONG_LONG, MPI_SUM, decomp.cart_comm);
@@ -190,9 +176,6 @@ static HaloCapacityInfo estimate_halo_capacity(int n_local, double buff) {
 #endif
     const double rho_global_mean = (global_volume > 0) ? (double)n_global / (double)global_volume : 1.0;
 
-    // local rho is what we'd use if no rebalance were ever to fire; global rho is the
-    // post-rebalance ceiling. take whichever is larger so static-decomp runs don't pay
-    // the global penalty unless they explicitly enable rebalance.
     const long long total_buckets = (long long)info.Lx * (long long)info.Ly * (long long)info.Lz;
     const double    rho_local     = (total_buckets > 0) ? (double)n_local / (double)total_buckets : 1.0;
     info.rho_cells                = std::max(rho_local, rho_global_mean);
@@ -203,7 +186,6 @@ static HaloCapacityInfo estimate_halo_capacity(int n_local, double buff) {
     return info;
 }
 
-// free every halo struct buffer; safe to call on a partially-initialized halo (nullptr-tolerant).
 static void free_halo_buffers() {
     if (halo.export_indices) gpu_free(halo.export_indices);
     if (halo.dir_of_slot) gpu_free(halo.dir_of_slot);
@@ -226,6 +208,7 @@ static void free_halo_buffers() {
     if (halo.is_outer_layer) gpu_free(halo.is_outer_layer);
 }
 
+// every buffer holds one entry per slot
 static void allocate_halo_buffers(int n_capacity) {
     halo.export_indices      = (int*)gpu_malloc(sizeof(int) * n_capacity);
     halo.dir_of_slot         = (unsigned char*)gpu_malloc(sizeof(unsigned char) * n_capacity);
@@ -252,8 +235,7 @@ static void allocate_halo_buffers(int n_capacity) {
     halo.is_outer_layer = (unsigned char*)gpu_malloc(sizeof(unsigned char) * n_capacity);
 }
 
-// after build_neighbor_table has populated halo.neighbor_shift, mirror it into
-// the managed flat array so kernels can read it device-side.
+// the kernels cannot read the 2D array of the struct
 static void sync_neighbor_shift_to_flat() {
     if (halo.neighbor_shift_flat == nullptr) return;
     for (int n = 0; n < HALO_MAX_NEIGHBORS; n++) {
@@ -263,6 +245,7 @@ static void sync_neighbor_shift_to_flat() {
     }
 }
 
+// the payloads travel as plain bytes
 static void register_mpi_datatypes() {
     const int grad_components = 3 + DIMENSION;
     MPI_Type_contiguous(sizeof(HaloPrimCell), MPI_BYTE, &halo.mpi_prim_t);
@@ -273,4 +256,4 @@ static void register_mpi_datatypes() {
     MPI_Type_commit(&halo.mpi_grad_cell_t);
 }
 
-#endif // USE_MPI
+#endif

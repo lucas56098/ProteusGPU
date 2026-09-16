@@ -2,6 +2,8 @@
 #define ASTRO_GRAVITY_H
 #pragma once
 
+// A fixed outside potential: dark matter halo, central galaxy and black hole.
+
 #include "../global/gpu_compat.h"
 
 #if defined(NFW) || defined(HERNQUIST) || defined(SMBH)
@@ -12,28 +14,28 @@ namespace astro {
 
 #ifdef GRAVITY_ENABLED
 
-    // precomputed potential constants, all in code units (filled once by gravity_init)
+    // set once in gravity_init, in code units
     struct GravityParams {
-        double cx, cy, cz; // potential center = box center
+        double cx, cy, cz; // centre of the potential, the middle of the box
 #ifdef NFW
-        double nfw_A;  // G*M_NFW / (ln(1+c) - c/(1+c))
-        double nfw_Rs; // scale radius
+        double nfw_A;
+        double nfw_Rs;
 #endif
 #ifdef HERNQUIST
-        double hq_GM; // G*M_BCG
-        double hq_R;  // Hernquist scale radius
+        double hq_GM;
+        double hq_R;
 #endif
 #ifdef SMBH
-        double bh_GM;   // G*M_BH
-        double bh_eps2; // Plummer softening, squared
+        double bh_GM;
+        double bh_eps2;
 #endif
     };
 
     void gravity_init();
-    void gravity_apply(double dt_half); // kick every local cell by g*dt_half
+    void gravity_apply(double dt_half);
 
-#endif // GRAVITY_ENABLED
+#endif
 
 } // namespace astro
 
-#endif // ASTRO_GRAVITY_H
+#endif

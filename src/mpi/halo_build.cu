@@ -1,8 +1,6 @@
-// Build the export list (full halo + used subset) and remap indices after a
-// local reorder. Included into halo.cu inside namespace proteus_mpi.
+// picks the cells to export and finds the ghosts they become (included by halo.cu)
 
 #ifdef USE_MPI
-// forward declarations
 static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, double buff, int W);
 static void fill_export_slots(const POINT_TYPE* local_seeds, int n_local, double buff, int W);
 static void exchange_send_recv_counts();
@@ -11,10 +9,7 @@ static int  build_used_recv_layout();
 static int  pack_used_export_indices();
 #endif
 
-// ============================================================
-// Public entry points
-// ============================================================
-
+// export lists for every neighbour, from the current seed positions
 void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff, int W_in) {
     halo.n_mpi_ghosts      = 0;
     halo.used_subset_ready = 0;
@@ -32,17 +27,18 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
     PROFILE("HALO_BUILD");
 
     const int nn = halo.n_neighbors;
-    const int W  = (W_in > 0) ? W_in : brick_halo_width(buff, decomp.N_grid_global);
+    const int W  = (W_in > 0) ? W_in : brick_halo_width(buff, decomp.N_grid_global); // 0 asks for the default
 
     count_send_per_neighbor(local_seeds, n_local, buff, W);
 
-    // send_offset prefix scan + capacity check (grow on overflow rather than abort)
+    // one block of slots per neighbour
     int total_send = 0;
     for (int n = 0; n < nn; n++) {
         halo.send_offset[n] = total_send;
         total_send += halo.send_count[n];
     }
     halo.send_offset[nn] = total_send;
+    // more cells to send than the buffers hold
     if (total_send > halo.n_mpi_capacity) { halo_grow_capacity(total_send); }
 
     fill_export_slots(local_seeds, n_local, buff, W);
@@ -52,7 +48,7 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
         exchange_send_recv_counts();
     }
 
-    // ghost_offset prefix scan + capacity check
+    // the ghosts arrive in the same order, one block per neighbour
     int sum = 0;
     for (int n = 0; n < nn; n++) {
         halo.ghost_offset[n] = sum;
@@ -61,9 +57,7 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
     halo.ghost_offset[nn] = sum;
     halo.n_mpi_ghosts     = sum;
 
-    // recv might exceed (rare: dense rank ships to sparse rank that itself didn't overflow on send).
-    // Re-run fill_export_slots after the grow because halo_grow_capacity reallocates
-    // export_indices and dir_of_slot to fresh empty buffers.
+    // the export lists are gone after the grow, so fill them again
     if (sum > halo.n_mpi_capacity) {
         halo_grow_capacity(sum);
         fill_export_slots(local_seeds, n_local, buff, W);
@@ -76,6 +70,7 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
 #endif
 }
 
+// the build sorted the cells into k-order, the stored cell indices follow
 void halo_remap_export_indices(const unsigned int* inv_gather, int n_local) {
 #ifndef USE_MPI
     (void)inv_gather;
@@ -92,13 +87,12 @@ void halo_remap_export_indices(const unsigned int* inv_gather, int n_local) {
         if (old_k < 0 || old_k >= n_local) continue;
         halo.export_indices[s] = (int)inv_gather[old_k];
     }
-    // used-subset will be rebuilt after the mesh converges on the post-remap layout
     halo.used_subset_ready = 0;
 #endif
 }
 
+// finds the ghosts a local cell really touches, and tells their owner
 void halo_build_used_subset(VMesh* mesh) {
-    // default: empty subset — lets mesh-only paths (no MPI neighbors) skip the rest
     for (int n = 0; n < HALO_MAX_NEIGHBORS; n++) {
         halo.used_send_count[n]  = 0;
         halo.used_recv_count[n]  = 0;
@@ -118,14 +112,13 @@ void halo_build_used_subset(VMesh* mesh) {
     const int n_hydro = (int)mesh->n_hydro;
     const int n_mpi   = halo.n_mpi_ghosts;
 
+    // a ghost is used when it is a face neighbour of a local cell
     mark_used_recv_bitmap(mesh, n_hydro, n_mpi);
     halo.n_used_recv = build_used_recv_layout();
 
-    // exchange bitmap so each sender learns which of its cells are used.
-    // the bitmap lives in receive-side layout on us; remotely it lands in
-    // send-side layout — i.e. roles are flipped vs the data path.
     {
         PROFILE_MPI("BITMAP_WAIT");
+        // the owner of the cell needs to know that, so the bitmap goes back
         neighbor_exchange(halo.recv_used_bitmap,
                           halo.send_used_bitmap,
                           MPI_BYTE,
@@ -142,12 +135,9 @@ void halo_build_used_subset(VMesh* mesh) {
 #endif
 }
 
-// ============================================================
-// Static helpers
-// ============================================================
-
 #ifdef USE_MPI
 
+// the cells are counted in fixed chunks, so every slot has the same place in every run
 static constexpr int EXPORT_CHUNKS = 1024;
 
 static int s_chunk_outer[EXPORT_CHUNKS][HALO_MAX_NEIGHBORS];
@@ -163,6 +153,7 @@ static inline void export_chunk_range(int c, int n_local, int* lo, int* hi) {
     *hi = (int)b;
 }
 
+// how many cells each chunk sends to each neighbour
 static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, double buff, int W) {
     const int nn     = halo.n_neighbors;
     const int N_grid = decomp.N_grid_global;
@@ -196,6 +187,7 @@ static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, 
             int bx, by, bz;
             decomp_bucket_of_point(px, py, pz, N_grid, buff, &bx, &by, &bz);
 
+            // a cell deep inside the brick goes nowhere
             const BoundaryFlags f = classify_brick_boundary(bx, by, bz, b0x, b1x, b0y, b1y, b0z, b1z, W);
             if (!touches_brick_boundary(f)) continue;
 
@@ -215,6 +207,7 @@ static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, 
         }
     }
 
+    // turn the counts into the first slot of every chunk, outer layer cells before the inner ones
     for (int n = 0; n < nn; n++) {
         int run = 0;
         for (int c = 0; c < EXPORT_CHUNKS; c++) {
@@ -232,6 +225,7 @@ static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, 
     }
 }
 
+// second pass: every chunk writes its cells into the slots it got
 static void fill_export_slots(const POINT_TYPE* local_seeds, int n_local, double buff, int W) {
     const int nn     = halo.n_neighbors;
     const int N_grid = decomp.N_grid_global;
@@ -285,7 +279,7 @@ static void fill_export_slots(const POINT_TYPE* local_seeds, int n_local, double
     }
 }
 
-// ship (send_count, send_n_outer) as a paired-int handshake per neighbor
+// trade the counts, so every rank knows how many ghosts it gets
 static void exchange_send_recv_counts() {
     const int nn = halo.n_neighbors;
     int       sendpair[2 * HALO_MAX_NEIGHBORS];
@@ -322,9 +316,7 @@ static void exchange_send_recv_counts() {
     }
 }
 
-// mark recv_used_bitmap[i]=1 for every MPI ghost referenced by a local face.
-// periodic ghosts get remapped to their source-real local k (< n_hydro) by
-// sid_to_neighbor, so they never appear here as ghosts.
+// walk the faces: every ghost behind one of them is used
 static void mark_used_recv_bitmap(VMesh* mesh, int n_hydro, int n_mpi) {
     const int  num_faces = (int)mesh->num_faces;
     const int* nc        = mesh->neighbor_cell;
@@ -340,7 +332,7 @@ static void mark_used_recv_bitmap(VMesh* mesh, int n_hydro, int n_mpi) {
     });
 }
 
-// from the bitmap: per-direction counts/offsets + used_to_full_slot
+// pack the used ghosts of every neighbour into one block
 static int build_used_recv_layout() {
     const int nn = halo.n_neighbors;
 
@@ -367,7 +359,7 @@ static int build_used_recv_layout() {
     return total_used_recv;
 }
 
-// compact used_export_indices using send_used_bitmap (received from peers)
+// same on the send side, from the bitmap the neighbour sent back
 static int pack_used_export_indices() {
     const int nn              = halo.n_neighbors;
     int       total_used_send = 0;
@@ -389,4 +381,4 @@ static int pack_used_export_indices() {
     return total_used_send;
 }
 
-#endif // USE_MPI
+#endif

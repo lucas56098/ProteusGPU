@@ -2,10 +2,7 @@
 #define MPI_MIGRATE_PACKING_H
 #pragma once
 
-// Per-element migrate pack/unpack bodies. Same HD-inline functions called from
-// both __global__ CUDA kernels (CUDA build) and OpenMP loops (CPU_DEBUG build).
-// All bodies are pure: no globals, no MPI calls. The MigrantCell type is the
-// caller's (defined in migrate.cu) and forwarded as a template-free POD type.
+// Bodies of the migration loops, the same code on CPU and GPU.
 
 #include "decomp.h"
 #include "global/gpu_compat.h"
@@ -14,22 +11,8 @@
 namespace proteus_mpi {
     namespace pack {
 
-        // ============================================================
-        // assign_destinations: per-cell bucket -> owner-rank lookup, atomic count
-        // ============================================================
-
-        // for a single cell k, compute its post-advance bucket, find the owner, decide
-        // whether to migrate (= owner != my_rank). On a migrant, returns:
-        //   slot_id_out >= 0  (per-step variant: neighbor-slot index from neighbor_lookup,
-        //                      rebalance variant: dest_rank directly)
-        //   slot_id_out == -1 -> non-migrant (stays local)
-        //   slot_id_out == -2 -> invalid owner (caller exits)
-        //   slot_id_out == -3 -> not a Cart neighbor (caller exits; CFL violation)
-        //
-        // For per-step (variant=0) caller supplies a neighbor_rank->slot lookup via
-        // a flat array (rank -> slot, or -1 if not a neighbor). For rebalance
-        // (variant=1) the slot IS the rank.
         template <typename M_PerCellSlot, typename M_SendCounts>
+        // slot a cell has to go to, or -1 when it stays here
         HD inline void assign_destination_body(int               k,
                                                const POINT_TYPE* pts,
                                                int               my_rank,
@@ -42,11 +25,11 @@ namespace proteus_mpi {
                                                const int*        splits_y,
                                                const int*        splits_z,
                                                const int*        coord_to_rank,
-                                               const int*     neighbor_rank_to_slot, // size nranks; -1 for non-neighbor
-                                               int            variant,
-                                               M_PerCellSlot* per_cell_slot,
-                                               M_SendCounts*  send_counts,
-                                               int*           error_flag) {
+                                               const int*        neighbor_rank_to_slot,
+                                               int               variant,
+                                               M_PerCellSlot*    per_cell_slot,
+                                               M_SendCounts*     send_counts,
+                                               int*              error_flag) {
             const double px = pts[k].x;
             const double py = pts[k].y;
 #ifdef dim_3D
@@ -64,19 +47,18 @@ namespace proteus_mpi {
             }
             if (owner < 0) {
                 per_cell_slot[k] = -1;
-                portable_atomicExch(error_flag, 1); // ERR_INVALID_OWNER
+                portable_atomicExch(error_flag, 1);
                 return;
             }
             int slot;
             if (variant == 1) {
-                // rebalance: dest = rank itself
                 slot = owner;
             } else {
-                // per-step: owner must be one of our Cart neighbors
+                // per step a cell may only reach a Cartesian neighbour, more than that breaks the CFL
                 slot = neighbor_rank_to_slot[owner];
                 if (slot < 0) {
                     per_cell_slot[k] = -1;
-                    portable_atomicExch(error_flag, 2); // ERR_NOT_NEIGHBOR
+                    portable_atomicExch(error_flag, 2);
                     return;
                 }
             }
@@ -84,11 +66,8 @@ namespace proteus_mpi {
             portable_atomicAdd(&send_counts[slot], 1);
         }
 
-        // ============================================================
-        // pack_outgoing_migrants: per-cell scatter into sendbuf at a precomputed position
-        // ============================================================
-
         template <typename MigrantCell>
+        // one leaving cell into its place in the send buffer
         HD inline void pack_migrant_body(int               k,
                                          const int*        per_cell_slot,
                                          const int*        dest_pos,
@@ -119,10 +98,6 @@ namespace proteus_mpi {
 #endif
             sendbuf[dest_pos[k]] = mc;
         }
-
-        // ============================================================
-        // append_incoming_migrants: per-recv scatter into local arrays
-        // ============================================================
 
         template <typename MigrantCell>
         HD inline void unpack_migrant_body(int                j,
@@ -165,4 +140,4 @@ namespace proteus_mpi {
     } // namespace pack
 } // namespace proteus_mpi
 
-#endif // MPI_MIGRATE_PACKING_H
+#endif

@@ -1,21 +1,16 @@
+
+// CPU rebuild of the cells no GPU tier could finish (internal.h)
+
 namespace voronoi {
 
-    // ---- file-local types ----
     namespace {
         enum class FallbackOutcome { ok_unchanged, ok_perturbed, failed };
 
-        // Sparse cell -> sids lookup. Only cells that need a perturb-retry build (the rare
-        // failed set, plus any cascade-affected cell that compute_single_voronoi_cell can't
-        // rebuild on its own) get an entry. Replaces an older dense (n_hydro-wide) flat
-        // layout that walked all n_seeds three times even when only a handful of cells
-        // failed. Build is one O(n_seeds) pass over the target set; lazy extension is a
-        // single linear scan per newly-needed cell, executed from ensure_built_for().
+        // the points that stand for a cell: itself and its ghost copies
         struct CellSids {
             std::unordered_map<int, std::vector<int>> per_cell;
             const VMesh*                              mesh = nullptr;
 
-            // ensure cell k has its sid list materialised. Called lazily by
-            // rebuild_cell_with_perturb_retry when k wasn't in the initial failed set.
             void ensure_built_for(int k) {
                 if (per_cell.count(k)) return;
                 std::vector<int>& sids    = per_cell[k];
@@ -30,7 +25,6 @@ namespace voronoi {
         };
     } // namespace
 
-    // ---- forward declarations ----
     static int             count_failed_and_prefetch_status(VMesh* mesh);
     static CellSids        build_cell_sids_for(const VMesh* mesh, const std::vector<int>& target_ks);
     static FallbackOutcome rebuild_cell_with_perturb_retry(
@@ -71,10 +65,9 @@ namespace voronoi {
                                                                  unsigned long long  off_before);
     static std::vector<int>               collect_unique_neighbors(const VMesh* mesh, const std::vector<int>& sources);
 
-    // counters returned by cascade_rebuild_affected so callers can log in their own voice
     struct CascadeResult {
-        int rebuilt = 0; // cells rebuilt across all rounds
-        int rounds  = 0; // cascade rounds executed
+        int rebuilt = 0;
+        int rounds  = 0;
     };
     static CascadeResult cascade_rebuild_affected(VMesh*                  mesh,
                                                   double*                 d_stored_points,
@@ -93,28 +86,15 @@ namespace voronoi {
 #ifndef CPU_DEBUG
 #endif
 
-    // cells escalated to the wide tier during one cpu_fallback_failed_cells call; reported
-    // once at the end rather than per cell, since a stressed mesh can escalate many at once
     static int s_wide_tier_rebuilds = 0;
 
-    // cells the fallback emitted without being able to certify them against the rank's data
-    // extent; the widen loop has already finished by then, so a wider halo is no longer an
-    // option and the count is reported so an under-sized halo never passes silently
     static int s_uncertified_rebuilds = 0;
 
-    // ============================================================
-    // Main routines
-    // ============================================================
-
-    // retry cells that failed both GPU tiers with hash-based seed perturbation;
-    // perturbed cells trigger a symmetry pass to rebuild affected neighbours.
-    // `dt > 0` enables the v_mesh correction inside rebuild_cell_with_perturb_retry so the
-    // perturbed cell's mesh velocity offsets by delta/dt; pass 0.0 for the initial build.
+    // rebuilds every failed cell, returns how many needed a moved seed
     int cpu_fallback_failed_cells(VMesh* mesh, int* num_failed_out, double dt, std::vector<int>* perturbed_ks_out) {
         Status* stat            = mesh->cell_status;
         double* d_stored_points = (double*)mesh->knn->d_stored_points;
 
-        // count failed cells (and pull cell_status to host on GPU)
         const int num_failed = count_failed_and_prefetch_status(mesh);
         if (num_failed_out) *num_failed_out = num_failed;
         if (num_failed == 0) return 0;
@@ -123,19 +103,12 @@ namespace voronoi {
         s_wide_tier_rebuilds   = 0;
         s_uncertified_rebuilds = 0;
 
-        // first pass: enumerate failed cells once so we can build a sparse cell_sids for
-        // exactly that set (one O(n_seeds) walk instead of three over the entire mesh).
         std::vector<int> failed_ks;
         failed_ks.reserve(num_failed);
         for (int k = 0; k < n_hydro; k++) {
             if (stat[k] == success) continue;
             const Status original = stat[k];
-            // Overflow statuses are recoverable now: they mean the cell needed more plane or
-            // triangle slots than the 8-bit tier can index, which the wide tier addresses.
-            // Raising _MAX_P_/_MAX_T_ at build time cannot fix them -- plane ids are uchar with
-            // 255 as the no-such-plane sentinel, and Euler (V = 2F - 4) ties _MAX_T_ to the same
-            // ceiling. The wide tier is the runtime answer; this gate is what kept it
-            // unreachable. Anything genuinely unknown still aborts.
+            // only these statuses can be repaired
             if (original != security_radius_not_reached && original != needs_exact_predicates &&
                 original != inconsistent_boundary && original != vertex_overflow && original != triangle_overflow &&
                 original != security_radius_beyond_data) {
@@ -143,19 +116,11 @@ namespace voronoi {
                     "VORONOI: cell %d failed with unrecoverable status: %d\n", (int)k, (int)original);
             }
             failed_ks.push_back(k);
-            // a failed cell owns no live face slice this step: the build tiers write
-            // face_ptr/face_counts only on success, so both still hold the PREVIOUS build's
-            // layout and point into data now owned by other cells. face_counts == 0 tells
-            // write_cell_to_mesh "no slot to reuse or retire — append".
             mesh->face_counts[k] = 0;
         }
 
-        // sparse cell_sids targeted at the failed set; run_symmetry_pass extends it lazily
-        // if compute_single_voronoi_cell can't rebuild some cascade neighbour and we end up
-        // calling rebuild_cell_with_perturb_retry for it.
         CellSids cell_sids = build_cell_sids_for(mesh, failed_ks);
 
-        // perturb-retry each failed cell; track which got permanently perturbed
         std::vector<int> perturbed_ks;
         for (int k : failed_ks) {
             Status last_status = success;
@@ -171,11 +136,7 @@ namespace voronoi {
             }
         }
 
-        // every failed cell was recovered on this rank (otherwise exit_failure fired).
-        // The caller does a single sum_global on num_failed and logs the global total
-        // via logging::root() — see cpu_perturb_and_rebuild.
-
-        // if any cell stuck at a perturbation, rebuild its neighbours
+        // a moved seed also changes the cells around it
         if (!perturbed_ks.empty()) {
             run_symmetry_pass(mesh, d_stored_points, cell_sids, perturbed_ks, dt, perturbed_ks_out);
         }
@@ -191,11 +152,7 @@ namespace voronoi {
         return (int)perturbed_ks.size();
     }
 
-    // ============================================================
-    // Helpers
-    // ============================================================
-
-    // count cells whose status is not success; on GPU also pull cell_status to host
+    // count, and bring the status array to the host
     static int count_failed_and_prefetch_status(VMesh* mesh) {
         const int     n_hydro = (int)mesh->n_hydro;
         const Status* stat    = mesh->cell_status;
@@ -204,29 +161,21 @@ namespace voronoi {
             "COUNT_FAILED", n_hydro, [=] HD(size_t k) { return (stat[k] != success) ? 1 : 0; });
 
 #ifndef CPU_DEBUG
-        // pull cell_status to host so the fallback loop can read it
         if (n_failed > 0) gpu_prefetch_to_cpu(mesh->cell_status, n_hydro * sizeof(Status));
 #endif
         return n_failed;
     }
 
-    // Build a sparse cell->sids lookup containing entries only for the given target cells.
-    // A single linear sweep over n_seeds (vs the old three full passes), and the result
-    // is a small unordered_map keyed by target k instead of a flat n_hydro-wide array.
-    // Cascade-triggered cells that aren't in target_ks get their sid list materialised
-    // on demand by CellSids::ensure_built_for().
+    // one walk over the point list for all wanted cells
     static CellSids build_cell_sids_for(const VMesh* mesh, const std::vector<int>& target_ks) {
         CellSids cs;
         cs.mesh = mesh;
         if (target_ks.empty()) return cs;
 
-        // empty bucket per target so size_for(k) on a hit doesn't throw
         std::unordered_set<int> target_set(target_ks.begin(), target_ks.end());
         for (int k : target_ks)
             cs.per_cell[k];
 
-        // the sweep below streams the whole array; bulk-prefetch instead of paying a
-        // page fault per 4 KiB of GPU-resident managed memory
         gpu_prefetch_to_cpu(mesh->sid_to_neighbor, mesh->n_seeds * sizeof(unsigned int));
 
         const int n_seeds = (int)mesh->n_seeds;
@@ -237,18 +186,9 @@ namespace voronoi {
         return cs;
     }
 
-    // K' = max candidates for the bounded-by-distance first pass. Big enough that for a
-    // mostly-cartesian mesh the security radius is reached within these planes for any cell;
-    // small enough that the per-cell sort runs in microseconds vs ~2 s for the n_seeds-wide
-    // exhaustive sort. If the bounded set fails (rare; only on truly pathological geometry),
-    // rebuild_cell_with_perturb_retry escalates to the full sort as a correctness safety net.
-    static constexpr int FALLBACK_BOUNDED_K = 2048;
+    static constexpr int FALLBACK_BOUNDED_K = 2048; // candidates of the bounded search
 
-    // run the perturb-retry ladder against a pre-computed sorted clip list. Returns
-    // FallbackOutcome::failed if every attempt (unperturbed + 12 scales) ran out without
-    // producing a security-radius-certified cell. `require_security` is forwarded to
-    // try_build_cell_from_neighbours: TRUE means treat list-exhaustion as failure, used when
-    // `sorted` is bounded; FALSE means trust the list (used for the full-sort escalation).
+    // build, and on failure again with the seed moved, the step ten times larger each try
     static FallbackOutcome run_perturb_ladder(VMesh*                                     mesh,
                                               int                                        k,
                                               int                                        seed_id,
@@ -260,7 +200,6 @@ namespace voronoi {
                                               double                                     dt,
                                               bool                                       require_security,
                                               Status&                                    last_status_out) {
-        // ladder: attempt 0 unperturbed, then attempts 1..12 with 10x growing scale.
         constexpr int max_perturb = 12;
         double        scale       = 1e-13;
         for (int attempt = 0; attempt <= max_perturb; attempt++) {
@@ -276,8 +215,6 @@ namespace voronoi {
             if (ok) {
                 if (attempt == 0) return FallbackOutcome::ok_unchanged;
 #ifdef MOVING_MESH
-                // perturbation is a non-physical position jump; treat it as an extra step in
-                // seed motion so face velocities downstream match the new geometry
                 apply_vmesh_perturbation_correction(mesh, k, delta, dt);
 #else
                 (void)dt;
@@ -292,28 +229,16 @@ namespace voronoi {
         return FallbackOutcome::failed;
     }
 
-    // try the unperturbed cell first, then perturb the seed with growing scale on each retry.
-    // First pass uses a KNN-grid-bounded clip list (K' nearest seeds) — typical fallback cells
-    // converge well within K'. If every perturb attempt with the bounded list fails, escalate
-    // to the n_seeds-exhaustive sort as a correctness safety net. The exhaustive list is more
-    // robust than KNN's K-nearest sample for stubborn degeneracies. On ok_perturbed, the
-    // surviving delta is folded into v_mesh (when dt > 0) so face velocities stay consistent
-    // with the perturbed geometry.
+    // one cell through the ladder: near points, all points, wide tier
     static FallbackOutcome rebuild_cell_with_perturb_retry(
         VMesh* mesh, int k, double* d_stored_points, CellSids& cell_sids, double dt, Status& last_status_out) {
-        // lazy-build cell_sids[k] if a cascade in run_symmetry_pass brought us a cell that
-        // wasn't in the initial failed-set; no-op when build_cell_sids_for already populated it
         cell_sids.ensure_built_for(k);
 
         const int seed_id = (int)mesh->real_sorted_ids[k];
 
-        // clip list for both paths below: K' nearest candidates from the KNN grid
         const auto bounded = gather_nearby_seeds_sorted(d_stored_points, seed_id, mesh->knn, FALLBACK_BOUNDED_K);
 
-        // The cell exhausted the 8-bit tier's plane/triangle slots. The perturb ladder cannot
-        // help -- it addresses numerical near-degeneracies, and this cell simply needs more
-        // slots than _MAX_P_/_MAX_T_ can express -- so go straight to the wide tier. Running
-        // the ladder first would burn 13 clip passes only to overflow again on every one.
+        // out of slots: only the wide tier can help
         const Status incoming = mesh->cell_status[k];
         if (incoming == vertex_overflow || incoming == triangle_overflow) {
             return rebuild_on_wide_tier(mesh, k, seed_id, d_stored_points, bounded, last_status_out)
@@ -324,45 +249,19 @@ namespace voronoi {
         const int*   sids   = cell_sids.begin_for(k);
         const size_t n_sids = (size_t)cell_sids.size_for(k);
 
-        // snapshot original positions so a failed perturb attempt can be rewound
         std::vector<double4_t> orig_positions(n_sids);
         for (size_t i = 0; i < n_sids; i++)
             orig_positions[i] = point_from_ptr(d_stored_points + DIMENSION * sids[i]);
 
-        // first pass: perturb ladder against the bounded clip list
-        FallbackOutcome outcome = run_perturb_ladder(mesh,
-                                                     k,
-                                                     seed_id,
-                                                     d_stored_points,
-                                                     bounded,
-                                                     sids,
-                                                     n_sids,
-                                                     orig_positions.data(),
-                                                     dt,
-                                                     /*require_security=*/true,
-                                                     last_status_out);
+        FallbackOutcome outcome = run_perturb_ladder(
+            mesh, k, seed_id, d_stored_points, bounded, sids, n_sids, orig_positions.data(), dt, true, last_status_out);
         if (outcome != FallbackOutcome::failed) return outcome;
 
-        // escalation: exhaustive sort against every other seed. Rare path; only hit when the
-        // bounded list was geometrically insufficient. Sorting all n_seeds is O(n log n) but
-        // we only pay it for cells the bounded pass couldn't handle.
         const auto full = sort_neighbours_by_distance(d_stored_points, seed_id, (int)mesh->n_seeds);
-        outcome         = run_perturb_ladder(mesh,
-                                     k,
-                                     seed_id,
-                                     d_stored_points,
-                                     full,
-                                     sids,
-                                     n_sids,
-                                     orig_positions.data(),
-                                     dt,
-                                     /*require_security=*/false,
-                                     last_status_out);
+        outcome         = run_perturb_ladder(
+            mesh, k, seed_id, d_stored_points, full, sids, n_sids, orig_positions.data(), dt, false, last_status_out);
         if (outcome != FallbackOutcome::failed) return outcome;
 
-        // Final escalation: the wide tier, but only when the ladder died on a capacity
-        // overflow. A cell that arrived already overflowed took the direct path above, so
-        // reaching here means the overflow first appeared during the ladder.
         if (last_status_out != vertex_overflow && last_status_out != triangle_overflow) {
             return FallbackOutcome::failed;
         }
@@ -371,15 +270,8 @@ namespace voronoi {
                    : FallbackOutcome::failed;
     }
 
-    // gather up to `max_candidates` seeds closest to `seed_id` from the KNN spatial grid,
-    // returned sorted ascending by distance². Walks the pre-computed ring offsets in
-    // distance order (knn->d_cell_offsets / d_cell_offset_dists) and early-exits once the
-    // next ring's lower-bound distance² exceeds the worst entry currently in the top-K' set,
-    // so we touch only the buckets that can plausibly contribute. ~3 orders of magnitude
-    // faster than sort_neighbours_by_distance on the 30M-seed mesh; sufficient for any
-    // non-pathological cell. Caller must check `try_build_cell_from_neighbours`'s
-    // require_security flag to escalate to the full sort if the bounded set is too small.
     static std::vector<std::pair<double, int>>
+    // nearest max_candidates points, sorted, read straight from the grid
     gather_nearby_seeds_sorted(double* d_stored_points, int seed_id, const knn_problem* knn, int max_candidates) {
         const double4_t seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
         const int       seed_cell =
@@ -390,7 +282,6 @@ namespace voronoi {
 
         double kth_dist = DBL_MAX;
         for (int ring = 0; ring < knn->N_cell_offsets; ring++) {
-            // early-out: have enough candidates and next ring's lower bound is past our worst
             if ((int)candidates.size() >= max_candidates && knn->d_cell_offset_dists[ring] >= kth_dist) break;
 
             const int cell = seed_cell + knn->d_cell_offsets[ring];
@@ -408,7 +299,7 @@ namespace voronoi {
                 candidates.push_back({dx * dx + dy * dy + dz * dz, sid});
             }
 
-            // refresh the kth-worst distance to bound the next early-out check
+            // distance of the last candidate, the ring loop stops beyond it
             if ((int)candidates.size() >= max_candidates) {
                 std::nth_element(candidates.begin(), candidates.begin() + max_candidates - 1, candidates.end());
                 kth_dist = candidates[max_candidates - 1].first;
@@ -420,9 +311,8 @@ namespace voronoi {
         return candidates;
     }
 
-    // sort every other seed by distance² from seed_id; the exhaustive correctness-safety-net
-    // clip list invoked only when the bounded gather couldn't yield a security-certified cell.
     static std::vector<std::pair<double, int>>
+    // every point on the rank, sorted by distance
     sort_neighbours_by_distance(double* d_stored_points, int seed_id, int n_seeds) {
         const double4_t                     seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
         std::vector<std::pair<double, int>> dists;
@@ -439,12 +329,7 @@ namespace voronoi {
         return dists;
     }
 
-    // attempt one cell build by clipping against every seed in the provided distance-sorted list.
-    // Returns true and writes the cell into mesh on success. When `require_security` is true,
-    // a list-exhaustion without is_security_radius_reached is treated as failure — the bounded
-    // gather can run out before the cell is fully enclosed, in which case we need to escalate
-    // to the exhaustive sort. When false (full-sort caller) the list is already exhaustive, so
-    // exhaustion is fine: the cell has been clipped against every seed and is correct.
+    // clips the cell with the sorted points and writes it if it came out complete
     template <typename CellT>
     static bool try_build_cell_from_neighbours_as(VMesh*                                     mesh,
                                                   int                                        k,
@@ -456,7 +341,6 @@ namespace voronoi {
         Status status = success;
         CellT  cell(seed_id, d_stored_points, &status, mesh->buff);
 
-        // clip plane-by-plane in distance order until security radius is hit or status fails
         bool security_reached = false;
         for (size_t di = 0; di < sorted.size(); di++) {
             const int j = sorted[di].second;
@@ -471,15 +355,12 @@ namespace voronoi {
             last_status_out = status;
             return false;
         }
+        // the last resort takes the cell without this check
         if (require_security && !security_reached) {
             last_status_out = security_radius_not_reached;
             return false;
         }
 
-        // The fallback emits cells the GPU tiers could not, so it owes the same data-extent
-        // bookkeeping they do. The ratio is computed unconditionally: even a full-sort build
-        // that never formally reached its security radius is emitted, and its stored security
-        // diameter must reflect the emitted geometry.
         double r2_num, r2_denom;
         cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
 #ifdef USE_MPI
@@ -495,12 +376,7 @@ namespace voronoi {
         return true;
     }
 
-    // Rebuild cell k on the wide (32-bit index) tier. Tries the bounded clip list first and
-    // only pays the n_seeds-wide exhaustive sort if those candidates could not enclose the
-    // cell, since that sort costs seconds per cell on a large mesh.
-    //
-    // No perturbation here: a capacity overflow is not a numerical near-degeneracy, and moving
-    // the seed does not change how many planes the security radius requires.
+    // the same with the big capacities
     static bool rebuild_on_wide_tier(VMesh*                                     mesh,
                                      int                                        k,
                                      int                                        seed_id,
@@ -508,15 +384,13 @@ namespace voronoi {
                                      const std::vector<std::pair<double, int>>& bounded,
                                      Status&                                    last_status_out) {
         Status st = success;
-        if (try_build_cell_from_neighbours_as<BigConvexCell>(
-                mesh, k, seed_id, d_stored_points, bounded, /*require_security=*/true, st)) {
+        if (try_build_cell_from_neighbours_as<BigConvexCell>(mesh, k, seed_id, d_stored_points, bounded, true, st)) {
             s_wide_tier_rebuilds++;
             return true;
         }
 
         const auto full = sort_neighbours_by_distance(d_stored_points, seed_id, (int)mesh->n_seeds);
-        if (try_build_cell_from_neighbours_as<BigConvexCell>(
-                mesh, k, seed_id, d_stored_points, full, /*require_security=*/false, st)) {
+        if (try_build_cell_from_neighbours_as<BigConvexCell>(mesh, k, seed_id, d_stored_points, full, false, st)) {
             s_wide_tier_rebuilds++;
             return true;
         }
@@ -525,9 +399,8 @@ namespace voronoi {
         return false;
     }
 
-    // hash-deterministic perturbation: each (seed_id, attempt, scale) maps to the same delta
+    // offset from a hash of seed and attempt, so a rebuild gives the same one
     static double3 compute_perturbation_delta(int seed_id, int attempt, double scale) {
-        // mix seed_id + attempt into a 16-bit field used for each axis offset
         unsigned int hash = (unsigned int)(seed_id * 2654435761u + attempt * 40503u);
         hash              = hash * 1103515245u + 12345u;
         const double dx   = ((double)(hash & 0xFFFF) / 32768.0 - 1.0) * scale;
@@ -541,7 +414,7 @@ namespace voronoi {
         return {dx, dy, dz};
     }
 
-    // shift each sid that touches this cell by the same (dx, dy, dz)
+    // moves every copy of the seed, ghosts included
     static void apply_perturbation(
         double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4_t* orig_positions) {
         for (size_t i = 0; i < n_sids; i++) {
@@ -555,32 +428,15 @@ namespace voronoi {
     }
 
 #ifdef MOVING_MESH
-    // The fallback shifts a degenerate seed by `delta` at time t_n+dt. The mesh velocity used
-    // for the half-step's face velocities was computed before the move, so v_mesh * dt
-    // accounts for only part of the seed's effective displacement. Adding delta / dt brings
-    // v_mesh in line with the post-perturbation geometry, keeping face velocities consistent
-    // in the second flux update. dt <= 0 (e.g. the initial mesh build) is a no-op.
-    // Safety cap on the IMPLIED velocity delta/dt (not on |delta| alone): during CFL-emergency
-    // steps dt collapses to ~1e-11, so even a scale-1e-12 perturbation gives dv ~ 0.1 code
-    // (~c/10) when written into v_mesh, which then cascades into the flux update and NaNs
-    // adjacent cells. Above the cap the correction is skipped: face velocities are slightly
-    // inconsistent for one step, but bounded by the pre-perturb v_mesh.
-    //
-    // The cap is RELATIVE to the cell's own mesh velocity. A fixed absolute cap is scale-blind
-    // and lets through kicks thousands of times larger than the physical velocity in a
-    // low-amplitude setup. A cell with |v_mesh| ~ 0 gets cap ~ 0 and is skipped, which is
-    // right: inventing motion for a static cell is the failure mode this guards against.
-    //
-    // The reference scale must come from a per-cell array valid in the CURRENT k-ordering.
-    // v_mesh qualifies (permute_persistent_state permutes it with the mesh).
+    // the seed keeps the offset, so add it to the mesh velocity, but only if it is small
     static void apply_vmesh_perturbation_correction(VMesh* mesh, int k, double3 delta, double dt) {
         if (dt <= 0.0) return;
         const double inv_dt = 1.0 / dt;
         const double d_mag  = sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
         const double dv_mag = d_mag * inv_dt;
 
-        constexpr double DV_REL     = 1e-3; // fraction of the cell's own mesh speed
-        constexpr double DV_MAX_ABS = 1e-2; // absolute backstop
+        constexpr double DV_REL     = 1e-3;
+        constexpr double DV_MAX_ABS = 1e-2;
 #ifdef dim_3D
         const double vm_mag = sqrt(mesh->v_mesh[k].x * mesh->v_mesh[k].x + mesh->v_mesh[k].y * mesh->v_mesh[k].y +
                                    mesh->v_mesh[k].z * mesh->v_mesh[k].z);
@@ -597,7 +453,6 @@ namespace voronoi {
     }
 #endif
 
-    // restore the pre-perturb positions if an attempt did not succeed
     static void
     rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4_t* orig_positions) {
         for (size_t i = 0; i < n_sids; i++) {
@@ -610,24 +465,7 @@ namespace voronoi {
         }
     }
 
-    // ---- face-slot management ----
-    //
-    // The parallel build hands out face_ptr[k] via an atomic counter, so face storage order is
-    // a random permutation of cells and a rebuilt cell can never shift its neighbours' slices.
-    // The fallback therefore manages the face array as a slot store: a rebuilt cell reuses its
-    // own slot when the new face count fits (the common case — a perturb rebuild rarely changes
-    // the face count), otherwise it appends at num_faces and retires its old slice. Retired
-    // entries stay inside [0, num_faces) marked inert (neighbor_cell = -1, zero area/f_mid):
-    // every physics consumer walks face_ptr[k]/face_counts[k] slices and never sees them, and
-    // the one flat iteration over [0, num_faces) (halo_build's mark_used_bitmap) skips negative
-    // neighbour ids. This keeps the whole recovery path O(faces of rebuilt cells).
-    //
-    // An earlier design appended and then compacted the ENTIRE face array — an O(num_faces)
-    // serial host rewrite every time a single cell was perturbed. Do not reintroduce it:
-    // partial compaction is unsound (face_ptr is not k-ordered, see above) and full compaction
-    // buys nothing the inert-entry invariant doesn't already provide.
-
-    // mark [first, first + count) as retired/inert
+    // unused slots become wall faces of zero area
     static void retire_face_range(VMesh* mesh, uint64_t first, uint64_t count) {
         for (uint64_t i = first; i < first + count; i++) {
             mesh->neighbor_cell[i] = -1;
@@ -639,14 +477,7 @@ namespace voronoi {
         }
     }
 
-    // write a successfully built cell into mesh's face arrays: in place when it fits the
-    // cell's existing slot, appended otherwise. face_counts[k] == 0 marks "no live slot".
-    //
-    // fc_max (count_cell_faces) only bounds the slot-fit decision and the capacity check;
-    // face_counts[k] and num_faces advance by what extract_cell_all actually wrote, so a
-    // degenerate cell that closes fewer faces than planes leaves no unwritten entry inside
-    // its live slice. This path is serial, so unlike the atomic build there is no reservation
-    // to give back — the append advances by the true count.
+    // into the old block of faces if it fits, else a new block at the end
     template <typename CellT> static void write_cell_to_mesh(VMesh* mesh, int k, const CellT& cell) {
         const uint64_t fc_max = (uint64_t)count_cell_faces(cell);
         const uint64_t fp_old = mesh->face_ptr[k];
@@ -665,16 +496,7 @@ namespace voronoi {
         }
     }
 
-    // compute_single_voronoi_cell (shared with the GPU kernels, so left untouched) always
-    // appends the rebuilt slice at *face_offset and repoints face_ptr[k] there. Relocate the
-    // slice back into the cell's original slot when it fits and roll the append back — the
-    // cascade is serial and owns the counter, so the rollback is safe. Otherwise keep the
-    // appended location and retire the original slice.
-    //
-    // `off_before` is the counter value from before the rebuild. The rollback restores it
-    // exactly rather than subtracting face_counts[k]: the cell reserved count_cell_faces
-    // slots but face_counts[k] now holds the (possibly smaller) number extract_cell_all
-    // wrote, so subtracting the latter would leave the reservation's slack behind forever.
+    // moves an appended block back into the old one and gives the tail back
     static void reclaim_appended_slice(VMesh*              mesh,
                                        int                 k,
                                        uint64_t            fp_old,
@@ -701,7 +523,7 @@ namespace voronoi {
         }
     }
 
-    // collect unique neighbour-k indices touched by any source cell
+    // the cells that share a face with one of these
     static std::vector<int> collect_unique_neighbors(const VMesh* mesh, const std::vector<int>& sources) {
         const int         n_hydro = (int)mesh->n_hydro;
         std::vector<bool> seen(n_hydro, false);
@@ -711,7 +533,7 @@ namespace voronoi {
             const uint64_t fc = mesh->face_counts[k];
             for (uint64_t f = 0; f < fc; f++) {
                 const int kn = mesh->neighbor_cell[fp + f];
-                if (kn < 0 || kn >= n_hydro) continue; // box-boundary face
+                if (kn < 0 || kn >= n_hydro) continue;
                 if (seen[kn]) continue;
                 seen[kn] = true;
                 result.push_back(kn);
@@ -720,32 +542,20 @@ namespace voronoi {
         return result;
     }
 
-    // Rebuild every cell in `initial_affected` against the CURRENT seed positions, cascading:
-    // a rebuild that itself has to fall back to the perturb ladder moves another seed, so its
-    // face-neighbours join the next round. Runs until no rebuild perturbs (or MAX_ROUNDS).
-    // Rebuilt slices are folded back into each cell's existing face slot via
-    // reclaim_appended_slice / write_cell_to_mesh, so the face array needs no compaction.
-    //
-    // Shared by the two consumers of "some seeds moved, repair the cells that saw them":
-    //   - run_symmetry_pass (local perturbations; affected = face-neighbours of the moved cell)
-    //   - repair_cells_for_moved_ghosts (a neighbour rank moved a ghost seed; affected =
-    //     security-radius query around the moved position)
-    // Cells the cascade permanently perturbs are appended to newly_perturbed_out — the MPI
-    // cascade must test THOSE against the export list too, exactly like ladder perturbations.
+    // rebuilds the affected cells, and the neighbours of those that moved again
     static CascadeResult cascade_rebuild_affected(VMesh*                  mesh,
                                                   double*                 d_stored_points,
                                                   CellSids&               cell_sids,
                                                   const std::vector<int>& initial_affected,
                                                   double                  dt,
                                                   std::vector<int>*       newly_perturbed_out) {
-        // each round only rebuilds the cells that actually changed in the previous round,
-        // so cost is bounded by the propagation neighbourhood and ramping this up is cheap.
         constexpr int MAX_ROUNDS = 12;
 
-        CascadeResult      result;
-        std::vector<int>   work_affected = initial_affected;
-        unsigned long long face_offset   = (unsigned long long)mesh->num_faces;
-        int                overflow      = 0;
+        CascadeResult    result;
+        std::vector<int> work_affected = initial_affected;
+        // a rebuilt cell appends its faces and gives the room back when they fit in the old block
+        unsigned long long face_offset = (unsigned long long)mesh->num_faces;
+        int                overflow    = 0;
 
         while (!work_affected.empty()) {
             if (++result.rounds > MAX_ROUNDS) {
@@ -753,21 +563,13 @@ namespace voronoi {
                                           MAX_ROUNDS);
             }
 
-            // rebuild each affected cell; track which ones get perturbed for the next round
             std::vector<int> perturbed_this_round;
             for (int kn : work_affected) {
-                mesh->cell_status[kn] = security_radius_not_reached;
-                const int seed_id     = (int)mesh->real_sorted_ids[kn];
-                // snapshot the cell's live slot; on success the appended rebuild is folded
-                // back into it (affected cells were built successfully this step, so the
-                // slot is valid — unlike the initial failed set)
+                mesh->cell_status[kn]               = security_radius_not_reached;
+                const int                seed_id    = (int)mesh->real_sorted_ids[kn];
                 const uint64_t           fp_old     = mesh->face_ptr[kn];
                 const uint64_t           fc_old     = mesh->face_counts[kn];
                 const unsigned long long off_before = face_offset;
-                // deliberately the 8-bit tier: cascade neighbours are ordinary cells and this is
-                // the cheap common case. One that genuinely needs more capacity fails here and
-                // falls through to rebuild_cell_with_perturb_retry below, which ends in the wide
-                // tier -- so widening this call would only move the same work earlier.
                 compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(
                     kn, seed_id, d_stored_points, mesh->knn, mesh->cell_status, mesh, &face_offset, &overflow);
                 if (overflow) {
@@ -778,7 +580,7 @@ namespace voronoi {
                     reclaim_appended_slice(mesh, kn, fp_old, fc_old, &face_offset, off_before);
                 }
 
-                // KNN rebuild failed for this neighbour: fall through to the perturb path
+                // the cell code failed here too, so take the CPU ladder
                 if (mesh->cell_status[kn] != success) {
                     mesh->num_faces             = (uint64_t)face_offset;
                     Status          last_status = success;
@@ -794,8 +596,6 @@ namespace voronoi {
                 result.rebuilt++;
             }
 
-            // perturbed cells report up (the MPI cascade needs their identities) and seed
-            // the next round: THEIR face-neighbours were just invalidated in turn
             if (newly_perturbed_out)
                 newly_perturbed_out->insert(
                     newly_perturbed_out->end(), perturbed_this_round.begin(), perturbed_this_round.end());
@@ -805,8 +605,7 @@ namespace voronoi {
         return result;
     }
 
-    // after perturbation, neighbours of perturbed cells were built against the OLD seed
-    // positions and need rebuilding: hand their face-neighbour set to the shared cascade.
+    // the cells next to a moved seed are wrong now
     static void run_symmetry_pass(VMesh*                  mesh,
                                   double*                 d_stored_points,
                                   CellSids&               cell_sids,
@@ -821,17 +620,8 @@ namespace voronoi {
                   << " neighbour rebuild(s) over " << result.rounds << " round(s)." << std::endl;
     }
 
-    // ============================================================
-    // Targeted repair after a neighbour rank moved a ghost seed
-    // ============================================================
-
-    // Max of security_d2 over this rank's cells — the search-radius bound for the moved-ghost
-    // query below. Recomputed per repair event rather than maintained incrementally: the
-    // reduction is one pass over n_hydro doubles on the device (the array is GPU-resident
-    // after a build) and repair events are rare, so simple beats clever here.
     static double compute_max_security_d2(const VMesh* mesh) {
         const double* sec = mesh->security_d2;
-        // security_d2 is non-negative, so 0.0 is a true identity here
         return parallel_reduce<_MESH_BLOCK_SIZE_, double>(
             "MAX_SEC_D2",
             mesh->n_hydro,
@@ -840,15 +630,7 @@ namespace voronoi {
             [=] HD(size_t k) { return sec[k]; });
     }
 
-    // Collect every real cell a ghost move from g_old to g_new can influence, by walking the
-    // KNN bucket grid outward from g_old until the ring lower-bound distance exceeds
-    // search_l2 (= (sqrt(max security_d2) + |move|)^2, so both positions are covered).
-    //
-    // The certificate is exact per candidate: seed s can clip cell k only if s lies inside
-    // k's security sphere, |s - seeds[k]|^2 <= security_d2[k] (see voronoi.h). Testing the
-    // ghost's old AND new position catches both sides of an adjacency change — the cell that
-    // must drop a stale face and the cell that must gain one — which makes this a strict
-    // superset of any face-adjacency scan, at the cost of a purely local bucket walk.
+    // cells that had the ghost inside their security radius
     static void collect_affected_by_moved_ghost(
         const VMesh* mesh, double4_t g_old, double4_t g_new, double search_l2, std::unordered_set<int>* affected) {
         const knn_problem* knn = mesh->knn;
@@ -862,7 +644,7 @@ namespace voronoi {
         const int center = knn::cell_from_point(knn->N_grid, knn->grid_lo, knn->inv_cell_size, gp);
 
         for (int ring = 0; ring < knn->N_cell_offsets; ring++) {
-            if (knn->d_cell_offset_dists[ring] > search_l2) break; // rings sorted by lower bound
+            if (knn->d_cell_offset_dists[ring] > search_l2) break;
             const int cell = center + knn->d_cell_offsets[ring];
             if (cell < 0 || cell >= knn->Npow) continue;
 
@@ -871,12 +653,9 @@ namespace voronoi {
             for (int i = 0; i < count; i++) {
                 const int sid = base + i;
                 const int k   = (int)mesh->sid_to_neighbor[sid];
-                if (k >= (int)mesh->n_hydro) continue; // MPI ghost: its owner repairs its own mesh
+                if (k >= (int)mesh->n_hydro) continue;
                 if (affected->count(k)) continue;
 
-                // certificate against the REAL seed position: a periodic copy of k sitting
-                // near the ghost lands k in this walk, but only the real position decides
-                // whether the ghost's bisector can reach k's cell
                 const double3 s   = mesh->seeds[k];
                 const double  dox = s.x - g_old.x, doy = s.y - g_old.y, doz = s.z - g_old.z;
                 const double  dnx = s.x - g_new.x, dny = s.y - g_new.y, dnz = s.z - g_new.z;
@@ -887,21 +666,7 @@ namespace voronoi {
         }
     }
 
-    // Repair this rank's mesh after neighbour ranks moved the given ghost seeds (targeted
-    // replacement for the full mesh rebuild the perturb cascade used to do):
-    //   1. locate each moved ghost's KNN point (one prefetched pass over sid_to_neighbor),
-    //   2. collect the union of cells any move can influence (security-radius query),
-    //   3. apply the new positions to d_stored_points (what rebuilds clip against) and
-    //      seeds_g (what hydro face loops read),
-    //   4. rebuild the affected set through the shared cascade.
-    // scratch_pts is deliberately NOT updated: it is consumed only by compute_mesh/KNN
-    // prepare, and the next consumer overwrites the ghost band from a fresh exchange.
-    // The moved ghost keeps its (now slightly stale) KNN bucket, the same in-place semantics
-    // apply_perturbation has always used for local seed moves.
-    //
-    // Cells the repair itself has to perturb are appended to newly_perturbed_out; the caller
-    // feeds them into the next cascade round so THEIR ghost copies get repaired in turn.
-    // Returns the number of cells rebuilt.
+    // takes the new position of ghost seeds a neighbour rank moved and rebuilds around them
     int repair_cells_for_moved_ghosts(VMesh*                                     mesh,
                                       const std::vector<proteus_mpi::MovedSeed>& moved,
                                       double                                     dt,
@@ -914,7 +679,7 @@ namespace voronoi {
         s_wide_tier_rebuilds   = 0;
         s_uncertified_rebuilds = 0;
 
-        // ---- moved ghost slot -> KNN sorted index, one prefetched linear pass ----
+        // point of the list behind each moved ghost slot
         std::unordered_map<int, int> slot_to_sid;
         {
             std::unordered_set<int> wanted;
@@ -929,7 +694,6 @@ namespace voronoi {
             }
         }
 
-        // ---- affected set + position updates ----
         const double max_sec = sqrt(compute_max_security_d2(mesh));
 
         std::unordered_set<int> affected_set;
@@ -950,7 +714,8 @@ namespace voronoi {
             const double ddx = g_new.x - g_old.x;
             const double ddy = g_new.y - g_old.y;
             const double ddz = g_new.z - g_old.z;
-            const double L   = max_sec + sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+            // a cell is affected if the old or the new position is inside its security radius
+            const double L = max_sec + sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
 
             collect_affected_by_moved_ghost(mesh, g_old, g_new, L * L, &affected_set);
 
@@ -962,14 +727,9 @@ namespace voronoi {
             mesh->seeds_g[m.ghost_slot] = double3{g_new.x, g_new.y, g_new.z};
         }
 
-        // ---- rebuild through the shared cascade, deterministic order ----
         std::vector<int> affected(affected_set.begin(), affected_set.end());
         std::sort(affected.begin(), affected.end());
 
-        // affected cells are live successful builds, so the cascade folds rebuilt slices back
-        // into their existing face slots. The empty-target CellSids fills lazily if a rebuild
-        // has to enter the perturb ladder (sid_to_neighbor is already host-resident from the
-        // slot scan above, so the lazy fill is a warm pass).
         CellSids cell_sids = build_cell_sids_for(mesh, std::vector<int>());
 
         const CascadeResult result =

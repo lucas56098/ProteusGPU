@@ -2,26 +2,26 @@
 #define ASTRO_COOLING_H
 #pragma once
 
+// Radiative cooling from a table of temperature and cooling rate.
+
 #include "../global/gpu_compat.h"
 
 #ifdef COOLING
 
 namespace astro {
 
-    // Piecewise-power-law cooling table with the precomputed Townsend (2009) TEF. Node arrays are
-    // physical cgs and live in managed memory; C_T and C_dY fold the unit system into the per-cell
-    // update so the kernel stays in code units.
+    // the table and the factors that go with it, filled in cooling_init
     struct CoolingTable {
-        int     N;     // node count
-        double* T;     // node temperatures [K]         (size N, ascending)
-        double* L;     // Lambda_N at nodes [erg cm^3/s] (size N)
-        double* alpha; // power-law slope per segment    (size N-1)
-        double* Y;     // TEF at nodes                   (size N)
-        double  T_ref; // reference (top) node
+        int     N;     // rows in the table
+        double* T;     // temperature of each row
+        double* L;     // cooling rate there
+        double* alpha; // power law slope between two rows
+        double* Y;     // cooling time function, see cooling.cu
+        double  T_ref;
         double  L_ref;
-        double  T_floor; // cooling stops at/below this [K]
-        double  C_T;     // T[K]     = C_T  * (e_int_code / rho_code)
-        double  C_dY;    // TEF step = C_dY * rho_code * dt_code
+        double  T_floor; // no cell cools below this
+        double  C_T;     // specific energy -> temperature
+        double  C_dY;    // cooling rate -> steps in Y
     };
 
     void cooling_init();
@@ -29,5 +29,5 @@ namespace astro {
 
 } // namespace astro
 
-#endif // COOLING
-#endif // ASTRO_COOLING_H
+#endif
+#endif

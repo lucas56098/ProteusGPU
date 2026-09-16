@@ -1,6 +1,8 @@
 #ifndef VORONOI_H
 #define VORONOI_H
 
+// The mesh of one rank: cells, faces and the index maps of a build.
+
 #include "../global/allvars.h"
 #include "../knn/knn.h"
 #include <cstdint>
@@ -9,145 +11,94 @@ namespace hydro {
     struct primvars;
 }
 
-// Voronoi mesh data — allocated once at startup with worst-case capacity, reused every step.
-//
-// Index spaces a cell can be addressed in:
-//   orig: [0, n_seeds): position in the unsorted KNN input (real if orig < n_hydro, ghost if >=)
-//   sid:  [0, n_seeds): KNN's spatial-sort index;  d_permutation[sid] -> orig
-//   k:    [0, n_hydro): real-sorted-id; the canonical address for all per-cell data below
+// allocated once in allocate_mesh, lives until endrun
 struct VMesh {
 
-    // current counts
-    uint64_t n_seeds; // n_total = reals + ghosts fed to KNN this build
-    uint64_t n_hydro; // number of real cells; size of every per-cell array below
-    // face array entries in use this build. The CPU fallback reuses a rebuilt cell's slot
-    // where it fits and retires the old slice in place, so this range can contain inert
-    // holes (neighbor_cell = -1, zero area). Slice-based consumers never see them; a flat
-    // scan over [0, num_faces) must skip negative neighbour ids.
+    uint64_t n_seeds; // points of the current build: cells + ghosts
+    uint64_t n_hydro; // cells on this rank
     uint64_t num_faces;
 
-    // fixed capacities (set in allocate_mesh)
     uint64_t face_capacity;
     uint64_t ghost_capacity;
-    uint64_t total_capacity; // max n_seeds = n_hydro + max_ghosts
+    uint64_t total_capacity;
 
-    // per-cell arrays (size n_hydro, indexed by k)
+    // per cell
     double3*         seeds;
     double3*         com;
     double*          volumes;
     uint64_t*        face_counts;
-    uint64_t*        face_ptr;
+    uint64_t*        face_ptr; // first face of the cell
     voronoi::Status* cell_status;
 #ifdef MOVING_MESH
     POINT_TYPE* v_mesh;
-    double*     old_volumes;
+    double*     old_volumes; // volume before the move
 #endif
 
-    // per-cell squared security diameter (2R)^2, R = distance from seed to the farthest cell
-    // vertex, stored by store_security_d2 (cell.cu) from the pair every successful build
-    // already computes for data-extent certification. A seed can influence cell k only if it
-    // lies within distance 2R of seed k, so
-    //     |s - seeds[k]|^2 > security_d2[k]  =>  cell k provably unaffected by seed s.
-    // Valid for cells with cell_status == success; failed cells carry the previous build's
-    // value until the CPU fallback rebuilds them. nullptr on non-MPI builds: nothing reads it
-    // there, and the array would cost HBM the single-rank runs do not have to spare.
-    double* security_d2;
+    double* security_d2; // (2 x farthest vertex)^2, a seed outside of that cannot cut the cell
 
 #ifdef VOL_REGULARIZE
-    double* volumes_g; // ghost cell volumes, populated by halo_exchange_volumes
+    double* volumes_g;
 #endif
 
-    // MPI ghost SoA storage (size proteus_mpi::n_mpi_capacity). seeds_g[slot] is the
-    // ghost cell's seed position; v_mesh_g[slot] its mesh velocity. Populated by
-    // halo_exchange_seeds and halo_exchange_v_mesh. nullptr on single-rank.
+    // per MPI ghost slot
     double3* seeds_g;
 #ifdef MOVING_MESH
     POINT_TYPE* v_mesh_g;
 #endif
 
-    // per-face arrays (size face_capacity)
-    // [face_idx] -> neighbour k, or -1 for a bounding-box plane. k < n_hydro is a real local
-    // cell; k >= n_hydro is an MPI ghost and indexes the _g arrays at k - n_hydro (periodic
-    // ghosts are remapped back to their source real cell, so they never appear here).
-    // Decode with get_seed_at / PrimGradients::load_at rather than indexing seeds directly.
-    int*    neighbor_cell;
+    // per face, cell k owns [face_ptr[k], face_ptr[k] + face_counts[k])
+    int*    neighbor_cell; // -1 on the box wall
     double* face_area;
 #ifdef MOVING_MESH
-    double* f_mid_local;
+    double* f_mid_local; // face centre - middle of the two seeds, tangential
 #endif
 
-    // ghost slot -> source-real previous-step k  (size ghost_capacity)
-    uint64_t* ghost_ids;
+    uint64_t* ghost_ids; // periodic ghost -> its cell, MPI ghost -> n_hydro + slot
 
-    // index maps rebuilt every step
-    unsigned int* real_sorted_ids;  // [k] -> sid;       size n_hydro
-    unsigned int* sid_to_neighbor;  // [sid] -> k;       size total_capacity
-    unsigned int* cell_to_original; // [k] -> file id;   size n_hydro
-    unsigned int* gather_perm;      // [new_k] -> old_k; size n_hydro
+    // index maps of the current build
+    unsigned int* real_sorted_ids; // cell k -> sorted point
+    unsigned int* sid_to_neighbor; // sorted point -> neighbour index
+    unsigned int* cell_to_original;
+    unsigned int* gather_perm; // cell k -> input point
 
-    // stable [orig] -> k mapping captured after iter 0 of the halo-widening loop,
-    // reused by later iterations so primvar order stays aligned across them
-    unsigned int* orig_to_k_save; // [orig] -> k;      size n_hydro
-    unsigned int* scan_flags;     // per-sid predicate, then its exclusive scan; size n_seeds
-    unsigned int* scan_scratch;   // block sums for that scan
+    unsigned int* orig_to_k_save; // input point -> cell k, reused by the later rounds
+    unsigned int* scan_flags;
+    unsigned int* scan_scratch;
 
-    // typed scratch pools — one per type, reused across every permute_inplace<T> call
-    unsigned int* scratch_uint;   // size n_hydro
-    double*       scratch_double; // size n_hydro
-    POINT_TYPE*   scratch_point;  // size n_hydro
+    // scratch
+    unsigned int* scratch_uint;
+    double*       scratch_double;
+    POINT_TYPE*   scratch_point;
 
-    // mesh-build scratch
-    POINT_TYPE* scratch_pts;  // ghost-augmented point buffer; size total_capacity
-    POINT_TYPE* scratch_move; // post-move seed buffer;        size n_hydro
+    POINT_TYPE* scratch_pts;  // point list of the build
+    POINT_TYPE* scratch_move; // seeds after the move
 
-    // minimum specific internal energy for the hydro positivity/temperature floor (0 disables).
-    // Mirror of sim.min_egy_spec, copied here so the flux kernel can read it device-side.
     double min_egy_spec;
 
-    // effective radius of the mean-volume cell (V_ref = 1/N_global, unit box); reference
-    // for the size-equalizing mesh drift. Set once in allocate_mesh.
-    double Ri_ref;
+    double Ri_ref; // radius of a cell of the reference volume
 
-    // periodic-buffer width: bounding box covers [-buff, 1+buff]^d; reals stay in [0, 1]^d
-    double buff;
+    double buff; // ghost band width
 
     int n_mpi_ghosts;
 
-    // Soundness guard: physical extent of valid neighbour data this rank can see — own brick
-    // plus W buckets of MPI halo, clamped to the extended [-buff, 1+buff]^d domain. Every cell
-    // that reaches its security radius is checked against this in both build tiers
-    // (cell_certified_within_data): if 2R exceeds the seed's distance to the nearest face, a
-    // seed the rank does not hold could still clip the cell, and it is flagged
-    // security_radius_beyond_data so the widen-W loop grows the halo rather than silently
-    // tessellating against an incomplete neighbour set.
-    // data_hi[a] == data_lo[a] disables the check (single rank, where the periodic ghost band
-    // already covers every direction; also the 2D z-axis).
+    // box this rank has points for, all zero without MPI
     double data_lo[3];
     double data_hi[3];
 
-    // KNN cache
     knn_problem* knn;
 };
 
 namespace voronoi {
 
+    // allocate and grow
     VMesh* allocate_mesh(uint64_t n_hydro);
     void   free_mesh(VMesh* mesh);
 
-    // resize MPI ghost arrays (seeds_g, v_mesh_g) to new_cap. Contents discarded;
-    // halo_exchange_seeds / _v_mesh repopulate before any reader.
     void mesh_grow_ghosts(VMesh* mesh, int new_cap);
 
-    // resize mesh-build buffers (scratch_pts, ghost_ids, sid_to_neighbor) to fit a new
-    // halo capacity. Existing periodic-ghost data in scratch_pts is preserved through the
-    // realloc so an in-progress compute_periodic_mesh build survives the grow.
     void mesh_grow_build_buffers(VMesh* mesh, int new_mpi_capacity);
 
-    // periodic ghost generation + mesh rebuild over the extended [-buff, 1+buff]^d domain.
-    // `dt` is the timestep of the move that produced these seed positions; passed through to
-    // the CPU fallback so a perturbed cell can offset v_mesh by delta/dt and keep face
-    // velocities consistent with the perturbed geometry. Pass 0.0 for the initial build,
-    // where no v_mesh correction applies.
+    // build the mesh for the current seed positions
     void compute_periodic_mesh(VMesh*           mesh,
                                POINT_TYPE*      pts_data,
                                uint64_t         num_points,
@@ -155,15 +106,13 @@ namespace voronoi {
                                hydro::primvars* primvar_aux,
                                double           dt);
 
-    // mesh-point velocity (gas velocity + Lloyd regularization)
+    // move it
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);
 
-    // advance seeds by v_mesh*dt with periodic wrap, then rebuild the mesh
     void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::primvars* primvar_aux);
 
 } // namespace voronoi
 
-// own-cell read: k strictly < n_hydro guaranteed by callers.
 HD inline hydro::prim get_state(uint64_t k, const hydro::primvars* primvar) {
     hydro::prim s;
     s.rho = primvar->rho[k];
@@ -176,7 +125,7 @@ HD inline hydro::prim get_state(uint64_t k, const hydro::primvars* primvar) {
     return s;
 }
 
-// ghost-aware seed read.
+// k < n_hydro: cell, above: MPI ghost
 HD inline double3 get_seed_at(int k, int n_hydro, const VMesh* mesh) {
     return (k < n_hydro) ? mesh->seeds[k] : mesh->seeds_g[k - n_hydro];
 }
@@ -187,15 +136,12 @@ HD inline POINT_TYPE get_vmesh_at(int k, int n_hydro, const VMesh* mesh) {
 }
 
 #ifdef VOL_REGULARIZE
-// ghost-aware cell-volume read; neighbours in a face loop may be MPI ghosts (>= n_hydro).
 HD inline double get_volume_at(int k, int n_hydro, const VMesh* mesh) {
     return (k < n_hydro) ? mesh->volumes[k] : mesh->volumes_g[k - n_hydro];
 }
 #endif
 #endif
 
-// ghost-aware read: k may be a neighbor at >= n_hydro; falls back to primvar->*_g[].
-// Used in flux + gradient face loops where neighbours may be MPI ghosts.
 HD inline hydro::prim get_state_at(int k, int n_hydro, const hydro::primvars* primvar) {
     hydro::prim s;
     if (k < n_hydro) {
@@ -219,4 +165,4 @@ HD inline hydro::prim get_state_at(int k, int n_hydro, const hydro::primvars* pr
     return s;
 }
 
-#endif // VORONOI_H
+#endif

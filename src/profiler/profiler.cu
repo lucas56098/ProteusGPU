@@ -1,3 +1,5 @@
+// implements Profiler (profiler.h)
+
 #include "../global/allvars.h"
 #include "../io/h5.h"
 #include "../mpi/mpi_compat.h"
@@ -18,40 +20,30 @@
 
 namespace {
 
-    // ---------- Path stack + per-timer state ----------------------------------
+    // ==========================================================
+    // timers
+    // ==========================================================
 
-    // Thread-local scope stack. All current call sites fire from the main thread;
-    // OpenMP regions inside a timed scope don't push their own timers. Keeping it
-    // thread_local just future-proofs nested-thread use without giving up
-    // hierarchy on the main path.
-    thread_local std::vector<std::string> s_path_stack;
+    thread_local std::vector<std::string> s_path_stack; // scope stack of this thread
 
-    // CPU/MPI: microseconds. GPU: microseconds derived from cudaEventElapsedTime.
-    // All timers share this map; the kind tag tells you what the number means.
-    std::unordered_map<std::string, long long> s_cum_us;
+    std::unordered_map<std::string, long long> s_cum_us; // microseconds per path, closed scopes only
 
-    // 'c' = cpu, 'm' = mpi, 'g' = gpu. Set on first Start; later Starts under the
-    // same path don't downgrade an already-tagged timer.
-    std::unordered_map<std::string, char> s_kind;
+    std::unordered_map<std::string, char> s_kind; // cpu, mpi or gpu per path
 
-    std::unordered_map<std::string, long long> s_restart_baseline;
+    std::unordered_map<std::string, long long> s_restart_baseline; // totals a restart started from
 
-    // Live start times for currently-open scopes. collect_current uses these to
-    // extend long-running timers (TOTAL, HYDRO) to "now" each step.
-    std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point> s_live_start;
-
-    // ---------- GPU event pool + pending queue --------------------------------
+    std::unordered_map<std::string, std::chrono::high_resolution_clock::time_point>
+        s_live_start; // start time of the open scopes
 
 #ifdef CUDA_PROFILING
-    // Recycled cudaEvent_t — created lazily, never destroyed (life of process).
+    // recycled events, one pair per kernel scope
     std::vector<cudaEvent_t> s_event_pool;
 
     struct GpuPending {
         cudaEvent_t start;
         cudaEvent_t stop;
     };
-    // Per-timer queue of un-queried event pairs. Drained non-blocking at every
-    // log_timestep and force-synced once at end-of-run.
+    // recorded, not read back yet
     std::unordered_map<std::string, std::deque<GpuPending>> s_pending_gpu;
 
     static cudaEvent_t acquire_event() {
@@ -69,39 +61,34 @@ namespace {
     }
 #endif
 
-    // ---------- HDF5 state ----------------------------------------------------
-
-    hid_t s_file       = -1;    // open on every rank
-    bool  s_log_active = false; // true on every rank while profiling is open
+    // profile.hdf5 handles, closed by hand (see close_profile_log)
+    hid_t s_file       = -1;
+    bool  s_log_active = false;
     int   s_my_rank    = 0;
     int   s_nranks     = 1;
 
-    hid_t   s_per_step = -1; // /per_step    [step, rank, timer]
-    hid_t   s_cum      = -1; // /cumulative  [step, rank, timer]
-    hid_t   s_names    = -1; // /timer_names [timer]
-    hid_t   s_kinds    = -1; // /timer_kinds [timer]
-    hsize_t s_rows     = 0;  // step extent of the two tables
+    hid_t   s_per_step = -1;
+    hid_t   s_cum      = -1;
+    hid_t   s_names    = -1;
+    hid_t   s_kinds    = -1;
+    hsize_t s_rows     = 0;
 
-    // The timer axis, identical on every rank: a timer's index is its row in /timer_names.
-    std::unordered_map<std::string, size_t> s_timer_index;
+    std::unordered_map<std::string, size_t> s_timer_index; // row of a timer in the file
 
-    // This rank's cumulative microseconds at the previous log_timestep, by timer index.
-    std::vector<long long> s_prev_cum;
+    std::vector<long long> s_prev_cum; // last cumulative per row, for the difference
 
-    // This rank's timer names and kinds as of the last time any rank's list changed (sorted by
-    // name), and each one's index on the timer axis.
+    // what this rank reported last
     std::vector<std::string> s_sent_names;
     std::vector<char>        s_sent_kinds;
     std::vector<size_t>      s_sent_slots;
 
-    // ---------- Helpers -------------------------------------------------------
-
-    // full_path = (stack top) + "." + short_name; top-level if stack empty.
+    // parent path plus this name
     static std::string build_full_path(const char* short_name) {
         if (s_path_stack.empty()) return std::string(short_name);
         return s_path_stack.back() + "." + short_name;
     }
 
+    // kind as the 3 byte string in the file
     static const char* kind_str(char k) {
         switch (k) {
         case 'm':
@@ -115,20 +102,18 @@ namespace {
 
 } // namespace
 
-// ============================================================
-// RAII scopes
-// ============================================================
-
+// start a cpu timer, push the path
 Profiler::Scope::Scope(const char* short_name) {
     m_path = build_full_path(short_name);
     s_path_stack.push_back(m_path);
-    if (s_kind.find(m_path) == s_kind.end()) s_kind[m_path] = 'c';
+    if (s_kind.find(m_path) == s_kind.end()) s_kind[m_path] = 'c'; // do not overwrite an mpi or gpu kind
     s_live_start[m_path] = std::chrono::high_resolution_clock::now();
 #ifdef CUDA_PROFILING
     nvtxRangePushA(m_path.c_str());
 #endif
 }
 
+// add the elapsed time, pop the path
 Profiler::Scope::~Scope() {
     const auto end = std::chrono::high_resolution_clock::now();
     auto       it  = s_live_start.find(m_path);
@@ -142,6 +127,7 @@ Profiler::Scope::~Scope() {
     if (!s_path_stack.empty()) s_path_stack.pop_back();
 }
 
+// like Scope, marks the path mpi (wins over cpu)
 Profiler::MpiScope::MpiScope(const char* short_name) {
     m_path = build_full_path(short_name);
     s_path_stack.push_back(m_path);
@@ -165,11 +151,10 @@ Profiler::MpiScope::~MpiScope() {
     if (!s_path_stack.empty()) s_path_stack.pop_back();
 }
 
+// record the start event, no wall clock
 Profiler::KernelScope::KernelScope(const char* short_name) {
     m_path = build_full_path(short_name);
     s_path_stack.push_back(m_path);
-    // GPU build: this region brackets a CUDA kernel launch. CUDA_PROFILING
-    // additionally records device-side events for accurate kernel timing.
     s_kind[m_path] = 'g';
 #ifdef CUDA_PROFILING
     nvtxRangePushA(m_path.c_str());
@@ -179,6 +164,7 @@ Profiler::KernelScope::KernelScope(const char* short_name) {
 #endif
 }
 
+// record the stop event, read back later
 Profiler::KernelScope::~KernelScope() {
 #ifdef CUDA_PROFILING
     cudaEvent_t stop = acquire_event();
@@ -189,25 +175,18 @@ Profiler::KernelScope::~KernelScope() {
     if (!s_path_stack.empty()) s_path_stack.pop_back();
 }
 
-// ============================================================
-// TOTAL root timer
-// ============================================================
-
-// TOTAL spans begrun() through endrun(), so it can't be a stack-RAII scope.
-// Held on the heap here; stop_total_timer destructs it, accumulating the final time.
+// TOTAL is a normal scope, open all run
 static std::unique_ptr<Profiler::Scope> s_total_scope;
 
 void Profiler::start_total_timer() {
     s_total_scope  = std::make_unique<Scope>("TOTAL");
-    sim.wall_start = std::chrono::steady_clock::now(); // session wall clock for ETA + final runtime
+    sim.wall_start = std::chrono::steady_clock::now();
 }
 
 void Profiler::stop_total_timer() {
     s_total_scope.reset();
 }
 
-// cumulative TOTAL seconds for this rank (folds the live offset if still open).
-// Includes runtime resumed from a restart, since seed_from_cumulative rewinds TOTAL's start.
 double Profiler::total_seconds() {
     long long us = 0;
     auto      it = s_cum_us.find("TOTAL");
@@ -221,10 +200,7 @@ double Profiler::total_seconds() {
     return us / 1e6;
 }
 
-// ============================================================
-// GPU drain
-// ============================================================
-
+// add up finished pairs, force_sync waits for the rest
 void Profiler::drain_gpu_events(bool force_sync) {
 #ifdef CUDA_PROFILING
     for (auto& kv : s_pending_gpu) {
@@ -249,18 +225,14 @@ void Profiler::drain_gpu_events(bool force_sync) {
 #endif
 }
 
-// ============================================================
-// collect_current / current_cumulative
-// ============================================================
-
+// totals of every path, open scopes included
 std::vector<std::pair<std::string, long long>> Profiler::collect_current() {
-    drain_gpu_events(/*force_sync=*/false);
+    drain_gpu_events(false);
     const auto end_time = std::chrono::high_resolution_clock::now();
 
     std::vector<std::pair<std::string, long long>> rows;
     rows.reserve(s_cum_us.size() + s_live_start.size());
 
-    // every accumulated timer, plus live offset if it's currently open
     for (const auto& kv : s_cum_us) {
         long long us   = kv.second;
         auto      live = s_live_start.find(kv.first);
@@ -269,7 +241,6 @@ std::vector<std::pair<std::string, long long>> Profiler::collect_current() {
         }
         rows.emplace_back(kv.first, us);
     }
-    // open scopes that haven't accumulated anything yet
     for (const auto& kv : s_live_start) {
         if (s_cum_us.find(kv.first) != s_cum_us.end()) continue;
         long long us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - kv.second).count();
@@ -278,6 +249,7 @@ std::vector<std::pair<std::string, long long>> Profiler::collect_current() {
     return rows;
 }
 
+// totals in seconds, as a snapshot stores them
 std::unordered_map<std::string, double> Profiler::current_cumulative() {
     auto                                    rows = collect_current();
     std::unordered_map<std::string, double> out;
@@ -286,15 +258,10 @@ std::unordered_map<std::string, double> Profiler::current_cumulative() {
     return out;
 }
 
-// ============================================================
-// seed_from_cumulative — restart resume
-// ============================================================
-
+// restart: old totals back, TOTAL start shifted
 void Profiler::seed_from_cumulative(const std::unordered_map<std::string, double>& cum_sec) {
     for (const auto& kv : cum_sec) {
         const long long us = (long long)(kv.second * 1e6 + 0.5);
-        // For TOTAL we rewind its live start time below rather than seeding the
-        // cumulative — otherwise we'd double-count once the live offset kicks in.
         if (kv.first != "TOTAL") s_cum_us[kv.first] = us;
         s_restart_baseline[kv.first] = us;
     }
@@ -306,13 +273,13 @@ void Profiler::seed_from_cumulative(const std::unordered_map<std::string, double
     }
 }
 
-// ============================================================
-// print_results — tree dump with cross-rank stats
-// ============================================================
-
 namespace {
 #ifdef USE_MPI
-    // Pack/unpack helpers reused for the end-of-run all-ranks name catalogue.
+    // ==========================================================
+    // report
+    // ==========================================================
+
+    // names as one blob of null terminated strings
     std::vector<char> pack_names(const std::vector<std::string>& names) {
         std::vector<char> buf;
         for (const auto& n : names) {
@@ -336,8 +303,8 @@ namespace {
 #endif
 
 #ifdef USE_MPI
-    // Every rank's buffer, concatenated in rank order. Rank r's bytes are [displs[r], displs[r] + lens[r]).
     std::vector<char>
+    // allgather of byte blobs
     allgather_bytes(const std::vector<char>& mine, int nranks, std::vector<int>& lens, std::vector<int>& displs) {
         int my_len = (int)mine.size();
         lens.assign(nranks, 0);
@@ -386,17 +353,17 @@ namespace {
         return result;
     }
 
-    // Tree node for the printable output.
+    // one node of the printed tree
     struct TreeNode {
         std::string              full_path;
         std::string              leaf;
         char                     kind      = 'c';
-        double                   cum_sum_s = 0.0; // summed across ranks — the headline number
-        double                   imbalance = 1.0; // max / avg across ranks
-        std::vector<std::string> children;        // full paths
+        double                   cum_sum_s = 0.0;
+        double                   imbalance = 1.0;
+        std::vector<std::string> children;
     };
 
-    // Split "A.B.C" → parent="A.B", leaf="C". Top-level: parent="", leaf=path.
+    // splits DOMAIN.SUB.LEAF into parent and leaf
     void split_path(const std::string& p, std::string& parent, std::string& leaf) {
         const auto pos = p.rfind('.');
         if (pos == std::string::npos) {
@@ -408,12 +375,7 @@ namespace {
         }
     }
 
-    // Column widths chosen so the header titles ("time", "percentage", "imbalance") fit
-    // exactly above their data columns. Tag column is fixed-width so [mpi]/[gpu] line up
-    // and cpu entries get the same indentation.
-    //
-    //   <name 30>  <tag 5>  <time 8>  <pct 10>  <imbal 9>
-    //   total: 30+2+5+2+8+2+10+2+9 = 70 chars.
+    // print a node and its children, largest first
     void print_subtree(std::ostream&                                    out,
                        const std::unordered_map<std::string, TreeNode>& nodes,
                        const std::string&                               path,
@@ -440,7 +402,6 @@ namespace {
                       n.imbalance);
         out << buf;
 
-        // children, sorted by summed time desc
         std::vector<const TreeNode*> kids;
         for (const auto& c : n.children) {
             auto cit = nodes.find(c);
@@ -454,14 +415,13 @@ namespace {
 
 } // namespace
 
+// gather the timers of all ranks, print the tree on rank 0
 void Profiler::print_results() {
-    // 1) make sure GPU times are fully accounted for
-    drain_gpu_events(/*force_sync=*/true);
+    drain_gpu_events(true);
 
     const int nranks = proteus_mpi::nranks();
     const int rank   = proteus_mpi::rank();
 
-    // 2) build the union name set across ranks
     std::vector<std::string> my_names;
     my_names.reserve(s_cum_us.size());
     for (const auto& kv : s_cum_us)
@@ -473,12 +433,11 @@ void Profiler::print_results() {
         for (const auto& n : v)
             union_names.insert(n);
 
-    // 3) per-rank cum vectors aligned to the union order
     std::vector<std::string> ordered(union_names.begin(), union_names.end());
     const int                ntimers = (int)ordered.size();
     std::vector<double>      my_cum(ntimers, 0.0);
     {
-        auto                                    live = collect_current(); // live values, not just frozen s_cum_us
+        auto                                    live = collect_current();
         std::unordered_map<std::string, double> mine;
         for (const auto& r : live)
             mine[r.first] = r.second / 1e6;
@@ -488,8 +447,7 @@ void Profiler::print_results() {
         }
     }
 
-    // 4) cross-rank sum + max reductions. The headline number is the sum over all
-    // ranks; max feeds the imbalance = max / avg column (avg = sum / nranks).
+    // sum for the time, max for the imbalance
     std::vector<double> cum_sum = my_cum, cum_max = my_cum;
 #ifdef USE_MPI
     if (nranks > 1 && ntimers > 0) {
@@ -498,9 +456,6 @@ void Profiler::print_results() {
     }
 #endif
 
-    // 5) gather kind tags from every rank too — a timer may exist on only some
-    // ranks, so an Allreduce over a tiny byte-per-timer buffer is the easy way
-    // to fill in a consistent kind label.
     std::vector<char> my_kind(ntimers, 0), out_kind(ntimers, 0);
     for (int i = 0; i < ntimers; i++) {
         auto it = s_kind.find(ordered[i]);
@@ -516,9 +471,9 @@ void Profiler::print_results() {
     out_kind = my_kind;
 #endif
 
+    // the reductions above need every rank
     if (rank != 0) return;
 
-    // 6) build the tree (rank 0 only — values are the cross-rank sum / max)
     std::unordered_map<std::string, TreeNode> nodes;
     for (int i = 0; i < ntimers; i++) {
         TreeNode n;
@@ -528,10 +483,9 @@ void Profiler::print_results() {
         n.kind             = out_kind[i] ? out_kind[i] : 'c';
         n.cum_sum_s        = cum_sum[i];
         const double avg   = cum_sum[i] / (double)nranks;
-        n.imbalance        = (avg > 0.0) ? cum_max[i] / avg : 1.0;
+        n.imbalance        = (avg > 0.0) ? cum_max[i] / avg : 1.0; // slowest rank over the average
         nodes[n.full_path] = n;
     }
-    // wire parent → children
     std::vector<std::string> roots;
     for (auto& kv : nodes) {
         std::string parent, leaf;
@@ -543,11 +497,10 @@ void Profiler::print_results() {
             if (pit != nodes.end())
                 pit->second.children.push_back(kv.first);
             else
-                roots.push_back(kv.first); // orphan — print at top level
+                roots.push_back(kv.first);
         }
     }
 
-    // 7) print
     std::ostream&     out   = logging::root();
     constexpr int     WIDTH = 70;
     const std::string title = " Profiling Results ";
@@ -555,12 +508,11 @@ void Profiler::print_results() {
     const int         rside = WIDTH - side - (int)title.size();
     out << "\n" << std::string(side, '=') << title << std::string(rside, '=') << "\n";
 
-    // "sum of N ranks (T threads, G GPUs)" sits in the name/tag area; column titles to its right.
     const int total_threads = nranks * logging::omp_threads();
 #ifdef CPU_DEBUG
     const int total_gpus = 0;
 #else
-    const int total_gpus = nranks; // one GPU per rank
+    const int total_gpus = nranks;
 #endif
     char left[64];
     std::snprintf(left, sizeof(left), "sum of %d ranks (%d threads, %d GPUs)", nranks, total_threads, total_gpus);
@@ -569,19 +521,16 @@ void Profiler::print_results() {
     out << hdr;
     out << std::string(WIDTH, '-') << "\n";
 
-    // TOTAL anchors the % column.
     double total_s = 0.0;
     auto   it_tot  = nodes.find("TOTAL");
     if (it_tot != nodes.end()) total_s = it_tot->second.cum_sum_s;
 
-    // sort roots by summed time desc
     std::sort(roots.begin(), roots.end(), [&](const std::string& a, const std::string& b) {
         return nodes[a].cum_sum_s > nodes[b].cum_sum_s;
     });
     for (const auto& r : roots)
         print_subtree(out, nodes, r, 0, total_s);
 
-    // 8) total time spent in [mpi] / [gpu] leaves (summed across ranks)
     double mpi_total_s = 0.0, gpu_total_s = 0.0;
     for (const auto& kv : nodes) {
         if (kv.second.kind == 'm') mpi_total_s += kv.second.cum_sum_s;
@@ -604,18 +553,19 @@ void Profiler::print_results() {
     out << std::string(WIDTH, '=') << "\n\n";
 }
 
-// ============================================================
-// HDF5 logging
-// ============================================================
-
 namespace {
 
-    constexpr hsize_t PROFILE_STEP_CHUNK  = 16;  // rows per chunk
-    constexpr hsize_t PROFILE_TIMER_CHUNK = 256; // timers per chunk
-    constexpr size_t  PROFILE_NAME_LEN    = 256; // bytes per stored timer name
-    constexpr size_t  PROFILE_KIND_LEN    = 3;   // "cpu" | "mpi" | "gpu"
+    // ==========================================================
+    // profile.hdf5
+    // ==========================================================
 
-    // True when the log is shared through MPI-IO. A single rank keeps the default driver.
+    // chunk [16 steps, nranks, 256 timers], name 256 bytes
+    constexpr hsize_t PROFILE_STEP_CHUNK  = 16;
+    constexpr hsize_t PROFILE_TIMER_CHUNK = 256;
+    constexpr size_t  PROFILE_NAME_LEN    = 256;
+    constexpr size_t  PROFILE_KIND_LEN    = 3;
+
+    // more than one rank: MPI-IO
     bool parallel_log() {
 #ifdef USE_MPI
         return s_nranks > 1;
@@ -624,6 +574,7 @@ namespace {
 #endif
     }
 
+    // string type of the two name lists
     h5::Type fixed_string(size_t len) {
         h5::Type t(H5Tcopy(H5T_C_S1));
         H5Tset_size(t, len);
@@ -631,9 +582,7 @@ namespace {
         return t;
     }
 
-    // [step, rank, timer]. A chunk spans all ranks, so every rank's block lands in the same chunk
-    // and all ranks touch the same chunk index entries.
-
+    // [step, rank, timer] table, grows in both
     hid_t create_table(const char* name) {
         hsize_t   dims[3]  = {0, (hsize_t)s_nranks, 0};
         hsize_t   max[3]   = {H5S_UNLIMITED, (hsize_t)s_nranks, H5S_UNLIMITED};
@@ -641,10 +590,12 @@ namespace {
         h5::Space space(H5Screate_simple(3, dims, max));
         h5::Plist dcpl(H5Pcreate(H5P_DATASET_CREATE));
         H5Pset_chunk(dcpl, 3, chunk);
+        // the default fill would make all ranks zero the chunk first
         if (parallel_log()) H5Pset_fill_time(dcpl, H5D_FILL_TIME_NEVER);
         return H5Dcreate(s_file, name, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT);
     }
 
+    // growing list of fixed length strings
     hid_t create_list(const char* name, size_t len) {
         hsize_t   dims = 0, max = H5S_UNLIMITED, chunk = PROFILE_TIMER_CHUNK;
         h5::Space space(H5Screate_simple(1, &dims, &max));
@@ -654,6 +605,7 @@ namespace {
         return H5Dcreate(s_file, name, type, space, H5P_DEFAULT, dcpl, H5P_DEFAULT);
     }
 
+    // reads names or kinds back on a restart
     std::vector<std::string> read_list(hid_t dset, size_t len) {
         std::vector<std::string> out;
         h5::Space                space(H5Dget_space(dset));
@@ -669,12 +621,14 @@ namespace {
         return out;
     }
 
+    // both tables keep the same shape
     void resize_tables(hsize_t rows, hsize_t ntimers) {
         hsize_t dims[3] = {rows, (hsize_t)s_nranks, ntimers};
         H5Dset_extent(s_per_step, dims);
         H5Dset_extent(s_cum, dims);
     }
 
+    // closed by hand, like the file
     void close_datasets() {
         for (hid_t* d : {&s_per_step, &s_cum, &s_names, &s_kinds}) {
             if (*d >= 0) H5Dclose(*d);
@@ -682,14 +636,14 @@ namespace {
         }
     }
 
-    // A timer's first cumulative value to diff against: its snapshot value on a restart, else 0.
+    // give a timer its row and starting value
     void register_timer(const std::string& name) {
         auto it             = s_restart_baseline.find(name);
         s_timer_index[name] = s_prev_cum.size();
         s_prev_cum.push_back(it != s_restart_baseline.end() ? it->second : 0);
     }
 
-    // New timers go to the end of the timer axis, so no existing index ever moves.
+    // appended, so a row never moves, restart included
     void append_timers(const std::vector<std::string>& names, const std::vector<char>& kinds) {
         const hsize_t old_n = s_prev_cum.size();
         const hsize_t add   = names.size();
@@ -721,8 +675,7 @@ namespace {
             register_timer(n);
     }
 
-    // Every rank learns every rank's timers and appends the unknown ones, all ranks in the same sorted
-    // order. Kind rule: the first rank (in rank order) with a non-cpu kind wins.
+    // append every name the file does not have yet
     void add_new_timers(const std::vector<std::string>& my_names, const std::vector<char>& my_kinds) {
         const auto all_names = allgather_timer_names(my_names, s_nranks);
         const auto all_kinds = allgather_timer_kinds(my_kinds, s_nranks);
@@ -752,7 +705,7 @@ namespace {
         append_timers(names, kinds);
     }
 
-    // One rank's row of one table: [step, my_rank, 0..ntimers).
+    // this rank's [step, rank] block of one table
     void write_block(hid_t dset, int step, const std::vector<double>& values) {
         if (values.empty()) return;
         h5::Space fspace(H5Dget_space(dset));
@@ -763,6 +716,7 @@ namespace {
         H5Dwrite(dset, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, values.data());
     }
 
+    // continue an existing log if layout and rank count match
     bool open_existing_log(int restart_step) {
         if (H5Lexists(s_file, "timer_names", H5P_DEFAULT) <= 0 || H5Lexists(s_file, "timer_kinds", H5P_DEFAULT) <= 0 ||
             H5Lexists(s_file, "per_step", H5P_DEFAULT) <= 0 || H5Lexists(s_file, "cumulative", H5P_DEFAULT) <= 0) {
@@ -798,6 +752,7 @@ namespace {
 
         for (const auto& n : names)
             register_timer(n);
+        // cut the tables back to the resumed step
         s_rows = (hsize_t)restart_step;
         resize_tables(s_rows, names.size());
         return true;
@@ -805,6 +760,7 @@ namespace {
 
 } // namespace
 
+// continue on a restart, else a new file; MPI-IO from two ranks up
 void Profiler::open_profile_log(const std::string& path, int restart_step) {
     s_my_rank    = proteus_mpi::rank();
     s_nranks     = proteus_mpi::nranks();
@@ -840,10 +796,11 @@ void Profiler::open_profile_log(const std::string& path, int restart_step) {
         s_rows     = 0;
     }
 
-    // so a rank that aborts before the first log_timestep still leaves a readable file
     H5Fflush(s_file, H5F_SCOPE_GLOBAL);
 }
 
+// closes the log at the end of the run
+// by hand: a destructor would run after HDF5's atexit handler
 void Profiler::close_profile_log() {
     if (!s_log_active) return;
     s_log_active = false;
@@ -853,6 +810,7 @@ void Profiler::close_profile_log() {
     s_file = -1;
 }
 
+// error path: no HDF5 under MPI, H5Fclose is collective and would block
 void Profiler::abort_profile_log() {
 
     if (parallel_log()) {
@@ -862,11 +820,12 @@ void Profiler::abort_profile_log() {
     close_profile_log();
 }
 
+// one row per step: totals and the difference to the row before
 void Profiler::log_timestep(int step) {
     if (!s_log_active) return;
 
-    // sorted by name, so the list only compares unequal to last step's when the timers changed
     auto rows = collect_current();
+    // sorted, so all ranks propose new timers in the same order
     std::sort(rows.begin(),
               rows.end(),
               [](const std::pair<std::string, long long>& a, const std::pair<std::string, long long>& b) {
@@ -885,6 +844,7 @@ void Profiler::log_timestep(int step) {
         my_vals.push_back(r.second);
     }
 
+    // growing the tables is collective, so all ranks must agree
     int changed = (my_names != s_sent_names || my_kinds != s_sent_kinds) ? 1 : 0;
 #ifdef USE_MPI
     if (parallel_log()) MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
@@ -904,7 +864,6 @@ void Profiler::log_timestep(int step) {
         resize_tables(s_rows, ntimers);
     }
 
-    // This rank's block covers every timer on the axis, 0 for one it does not have.
     std::vector<long long> cum_us(ntimers, 0);
     for (size_t j = 0; j < my_vals.size(); j++)
         cum_us[s_sent_slots[j]] = my_vals[j];
@@ -918,21 +877,18 @@ void Profiler::log_timestep(int step) {
     write_block(s_per_step, step, per_step);
     write_block(s_cum, step, cumulative);
 
-    // flush each step so an MPI_Abort on any rank still leaves a readable file
     H5Fflush(s_file, H5F_SCOPE_GLOBAL);
 }
 
-#endif // ENABLE_PROFILING
+#endif
 
-// ============================================================
-// Peak memory dump (unchanged)
-// ============================================================
-
+// peak memory of rank 0, GPU bytes in a CUDA build
 void print_max_memory_usage() {
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
 
         double rss_bytes = 0.0;
+// ru_maxrss is bytes on macOS and kilobytes on linux
 #if defined(__APPLE__) && defined(__MACH__)
         rss_bytes = static_cast<double>(usage.ru_maxrss);
 #elif defined(__linux__)

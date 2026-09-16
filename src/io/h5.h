@@ -1,24 +1,29 @@
 #ifndef IO_H5_H
 #define IO_H5_H
 
+// Wraps the HDF5 C API in handles that close themselves, plus typed read / write helpers.
+
 #include "hdf5.h"
 #include <cstdint>
 #include <iostream>
 #include <vector>
 
-// Thin layer over the HDF5 API.
-
-// NOTE: exit() does not run destructors of local objects, so a fatal error must leave every
-//       h5:: scope before it exits or the file is never flushed and the snapshot is
-//       truncated. Report the failure up to the caller and exit there.
 namespace h5 {
 
+    // hsize_t is an HDF5 typedef and not always uint64_t, only the width is fixed;
+    // so pass it by value here and never take a hsize_t* or hsize_t& in this interface
     static_assert(sizeof(hsize_t) == sizeof(uint64_t), "hsize_t is expected to be 64 bits wide");
 
+    // ==========================================================
+    // handles
+    // ==========================================================
+
+    // owns one hid_t and closes it at the end of the scope; movable, not copyable
     template <herr_t (*CLOSE)(hid_t)> class Handle {
       public:
         Handle() : m_id(H5I_INVALID_HID) {}
         explicit Handle(hid_t id) : m_id(id) {}
+        // exit() does not run destructors, so leave every h5 scope before aborting a run
         ~Handle() { reset(); }
 
         Handle(const Handle&)            = delete;
@@ -47,6 +52,7 @@ namespace h5 {
         hid_t m_id;
     };
 
+    // one alias per HDF5 object kind
     using File    = Handle<H5Fclose>;
     using Group   = Handle<H5Gclose>;
     using Space   = Handle<H5Sclose>;
@@ -55,6 +61,7 @@ namespace h5 {
     using Plist   = Handle<H5Pclose>;
     using Type    = Handle<H5Tclose>;
 
+    // C++ type -> H5T_NATIVE_* id
     template <typename T> struct native;
     template <> struct native<double> {
         static hid_t id() { return H5T_NATIVE_DOUBLE; }
@@ -66,6 +73,7 @@ namespace h5 {
         static hid_t id() { return H5T_NATIVE_INT64; }
     };
 
+    // checks that a dataset has the expected rank
     inline bool check_rank(hid_t space, const char* name, int expected) {
         const int ndims = H5Sget_simple_extent_ndims(space);
         if (ndims != expected) {
@@ -76,10 +84,11 @@ namespace h5 {
         return true;
     }
 
-    // ------------------------------------------------------------
-    // writing
-    // ------------------------------------------------------------
+    // ==========================================================
+    // write
+    // ==========================================================
 
+    // writes one scalar attribute
     template <typename T> inline bool write_attr(hid_t parent, const char* name, T value) {
         const hid_t type = native<T>::id();
         Space       space(H5Screate(H5S_SCALAR));
@@ -91,6 +100,7 @@ namespace h5 {
         return true;
     }
 
+    // creates a dataset of the given shape and writes it
     template <typename T>
     inline bool write_dataset(hid_t parent, const char* name, const T* data, int rank, const hsize_t* dims) {
         const hid_t type = native<T>::id();
@@ -107,21 +117,24 @@ namespace h5 {
         return true;
     }
 
+    // writes n values
     template <typename T> inline bool write_dataset_1d(hid_t parent, const char* name, const T* data, hsize_t n) {
         const hsize_t dims[1] = {n};
         return write_dataset(parent, name, data, 1, dims);
     }
 
+    // writes n rows of dim values
     template <typename T>
     inline bool write_dataset_2d(hid_t parent, const char* name, const T* data, hsize_t n, hsize_t dim) {
         const hsize_t dims[2] = {n, dim};
         return write_dataset(parent, name, data, 2, dims);
     }
 
-    // ------------------------------------------------------------
-    // reading
-    // ------------------------------------------------------------
+    // ==========================================================
+    // read
+    // ==========================================================
 
+    // reads one scalar attribute
     template <typename T> inline bool read_attr(hid_t parent, const char* name, T& out) {
         const hid_t type = native<T>::id();
         Attr        attr(H5Aopen(parent, name, H5P_DEFAULT));
@@ -132,7 +145,7 @@ namespace h5 {
         return true;
     }
 
-    // Whole 1D dataset; `out` is resized to the extent stored in the file.
+    // reads a whole 1D dataset into out (resized to the dataset size)
     template <typename T> inline bool read_dataset_1d(hid_t parent, const char* name, std::vector<T>& out) {
         const hid_t type = native<T>::id();
         Dataset     dset(H5Dopen(parent, name, H5P_DEFAULT));
@@ -152,7 +165,7 @@ namespace h5 {
         return true;
     }
 
-    // Whole 2D dataset, flattened row-major. `out_rows` optionally receives the row count.
+    // reads a whole 2D dataset into out as flat rows; out_rows gets the row count
     template <typename T>
     inline bool read_dataset_2d(hid_t parent, const char* name, std::vector<T>& out, uint64_t* out_rows = NULL) {
         const hid_t type = native<T>::id();
@@ -176,7 +189,11 @@ namespace h5 {
 
 #ifdef USE_MPI
 
-    // Collective read of rows [row_lo, row_lo + n_local) from a 1D dataset.
+    // ==========================================================
+    // parallel read (USE_MPI)
+    // ==========================================================
+
+    // reads rows [row_lo, row_lo + n_local) of a 1D dataset
     template <typename T>
     inline bool
     read_hyperslab_1d(hid_t parent, const char* name, hsize_t row_lo, hsize_t n_local, std::vector<T>& out) {
@@ -190,6 +207,8 @@ namespace h5 {
         if (!check_rank(filespace, name, 1)) { return false; }
         hsize_t offset = row_lo;
         hsize_t count  = n_local;
+
+        // a rank without rows still takes part, it just selects nothing
         if (n_local > 0) {
             H5Sselect_hyperslab(filespace, H5S_SELECT_SET, &offset, NULL, &count, NULL);
         } else {
@@ -200,12 +219,13 @@ namespace h5 {
 
         out.resize(n_local);
 
+        // all ranks read in one call
         Plist dxpl(H5Pcreate(H5P_DATASET_XFER));
         H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE);
         return H5Dread(dset, type, memspace, filespace, dxpl, out.data()) >= 0;
     }
 
-    // Collective read of rows [row_lo, row_lo + n_local) x expected_dim from a 2D dataset.
+    // same for a 2D dataset (trailing dim must be expected_dim)
     template <typename T>
     inline bool read_hyperslab_2d(
         hid_t parent, const char* name, hsize_t row_lo, hsize_t n_local, hsize_t expected_dim, std::vector<T>& out) {
@@ -237,13 +257,14 @@ namespace h5 {
 
         out.resize(n_local * expected_dim);
 
+        // all ranks read in one call
         Plist dxpl(H5Pcreate(H5P_DATASET_XFER));
         H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE);
         return H5Dread(dset, type, memspace, filespace, dxpl, out.data()) >= 0;
     }
 
-#endif // USE_MPI
+#endif
 
 } // namespace h5
 
-#endif // IO_H5_H
+#endif

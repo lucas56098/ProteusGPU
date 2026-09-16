@@ -2,10 +2,7 @@
 #define MPI_HALO_PACKING_H
 #pragma once
 
-// Per-element halo pack/unpack bodies. Same function called from both an
-// `__global__` CUDA kernel (CUDA build) and an OpenMP loop (CPU_DEBUG build);
-// behaviour is identical by construction. Bodies are pure: no globals, no MPI,
-// no allocation — every input pointer is passed explicitly.
+// Bodies of the halo pack and unpack loops, the same code on CPU and GPU.
 
 #include "global/gpu_compat.h"
 #include "global/structs.h"
@@ -14,13 +11,7 @@
 namespace proteus_mpi {
     namespace pack {
 
-        // ============================================================
-        // Seeds (full halo: every export slot ships)
-        // ============================================================
-
-        // neighbor_shift_flat is a flat HALO_MAX_NEIGHBORS*3 array (host's [n][a] flattened
-        // row-major). The kernel can't take a 2D-array argument cleanly across CUDA/HD,
-        // so we flatten the indexing here.
+        // an exported seed, shifted if its neighbour is across the box border
         HD inline void pack_seed_body(int                  s,
                                       const POINT_TYPE*    pts,
                                       const int*           export_indices,
@@ -38,6 +29,7 @@ namespace proteus_mpi {
             sendbuf[s] = p;
         }
 
+        // a received seed becomes a ghost: one point for the build, one seed for the mesh
         HD inline void
         unpack_seed_body(int slot, int pts_mpi_base, const POINT_TYPE* recvbuf, POINT_TYPE* pts, double3* seeds_g) {
             const POINT_TYPE p     = recvbuf[slot];
@@ -50,10 +42,7 @@ namespace proteus_mpi {
 #endif
         }
 
-        // is_outer_layer fill: one thread per direction n, marks the first
-        // recv_n_outer[n] slots in that direction's receive range as outer (1),
-        // remaining as inner (0). Bodies are *not* per-element here — caller
-        // launches with one work item per neighbor direction.
+        // the ghosts from the outermost bucket layer come first
         HD inline void fill_is_outer_layer_body(int            n,
                                                 const int*     recv_n_outer,
                                                 const int*     ghost_offset,
@@ -67,10 +56,6 @@ namespace proteus_mpi {
             for (int j = n_out; j < n_tot; j++)
                 is_outer_layer[base + j] = 0;
         }
-
-        // ============================================================
-        // Primvars (used subset)
-        // ============================================================
 
         HD inline void
         pack_prim_body(int s, const int* used_export_indices, const hydro::primvars* primvar, HaloPrimCell* sendbuf) {
@@ -90,10 +75,6 @@ namespace proteus_mpi {
             primvar->v_g[slot]      = pkt.v;
             primvar->E_g[slot]      = pkt.E;
         }
-
-        // ============================================================
-        // Gradients (used subset, N_COMP = 3 + DIMENSION fields per cell)
-        // ============================================================
 
         HD inline void pack_grad_body(int                             slot,
                                       const int*                      used_export_indices,
@@ -129,10 +110,6 @@ namespace proteus_mpi {
             grads->E_g[g] = recvbuf[s + c++];
         }
 
-        // ============================================================
-        // Mesh velocity (used subset, MOVING_MESH only)
-        // ============================================================
-
 #ifdef MOVING_MESH
         HD inline void
         pack_v_mesh_body(int s, const int* used_export_indices, const POINT_TYPE* v_mesh, POINT_TYPE* sendbuf) {
@@ -147,14 +124,6 @@ namespace proteus_mpi {
         }
 #endif
 
-        // ============================================================
-        // Used-recv bitmap construction (idempotent writes of 1 — race-safe)
-        // ============================================================
-
-        // ============================================================
-        // Cell volume (used subset, VOL_REGULARIZE only)
-        // ============================================================
-
 #ifdef VOL_REGULARIZE
         HD inline void pack_vol_body(int s, const int* used_export_indices, const double* volumes, double* sendbuf) {
             const int k = used_export_indices[s];
@@ -168,6 +137,7 @@ namespace proteus_mpi {
         }
 #endif
 
+        // a face to an MPI ghost marks that ghost as used
         HD inline void mark_used_bitmap_body(
             int f, const int* neighbor_cell, int mpi_base, int mpi_top, unsigned char* recv_used_bitmap) {
             const int kn = neighbor_cell[f];
@@ -178,4 +148,4 @@ namespace proteus_mpi {
     } // namespace pack
 } // namespace proteus_mpi
 
-#endif // MPI_HALO_PACKING_H
+#endif

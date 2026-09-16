@@ -1,14 +1,15 @@
 #ifndef GLOBALS_H
 #define GLOBALS_H
 #pragma once
+
+// Compile-time capacities and constants, plus the state that lives across the main loop.
 #include "log.h"
 #include <chrono>
 #include <cstddef>
 
-// Defaults for Config.sh compile-time constants. Any value set in
-// Config.sh overrides these.
-
-// voronoi compile time settings
+// Voronoi capacities per tier, separate for 2D and 3D; each one can be set in Config.sh
+// _K_ neighbours searched, _MAX_P_ clip planes, _MAX_T_ cell vertices, _FAST_* the fast tier,
+// _FACE_CAPACITY_MULT_ faces budgeted per cell
 #ifdef dim_2D
 #ifndef _K_
 #define _K_ 35
@@ -55,20 +56,7 @@
 #endif
 #endif
 
-// Wide "big" tier for the CPU fallback only (see BigConvexCell in voronoi/cell.h).
-//
-// _MAX_P_/_MAX_T_ above are bounded by the 8-bit index types the GPU tiers use: plane ids
-// live in VERT_TYPE's uchar components and 255 is reserved as the "no such plane" sentinel,
-// so _MAX_P_ <= 255, and Euler (V = 2F - 4) then caps a cell at ~129 faces. That is not a
-// limit on how many faces a cell HAS -- it is a limit on how many plane slots the
-// incremental construction burns, because a plane that clips the intermediate polytope
-// keeps its slot even after a later, closer plane erases every face it contributed.
-// A seed stranded in an evacuated cavity produces a long spike whose security radius is
-// only reached after ~1e4 neighbours, burning far more slots than its 47 real faces.
-//
-// The big tier uses 32-bit indices so the CPU fallback can build such a cell exactly.
-// Keep the pair Euler-consistent: _BIG_MAX_T_ >= 2 * _BIG_MAX_P_ - 4, or triangle overflow
-// fires before plane overflow and the extra plane capacity is unreachable.
+// wide tier of the CPU fallback
 #ifndef _BIG_MAX_P_
 #define _BIG_MAX_P_ 1024
 #endif
@@ -76,13 +64,12 @@
 #define _BIG_MAX_T_ 2048
 #endif
 
-// size-equalizing mesh drift (VOL_REGULARIZE): fraction of the local signal speed the
-// drift may use when a cell is smaller than the reference size
+// share of the signal speed used to even out cell volumes (VOL_REGULARIZE)
 #ifndef _VOL_SHAPING_SPEED_
 #define _VOL_SHAPING_SPEED_ 0.7
 #endif
 
-// GPU kernel block sizes
+// CUDA block sizes per kernel family
 #ifndef _VORO_BLOCK_SIZE_
 #define _VORO_BLOCK_SIZE_ 64
 #endif
@@ -102,10 +89,11 @@
 #define _MPI_PACK_BLOCK_SIZE_ 256
 #endif
 
-// hydro / mesh
+// adiabatic index of the ideal gas
 #ifndef _GAMMA_EOS_
 #define _GAMMA_EOS_ 5. / 3.
 #endif
+// Lloyd push: share of the sound speed, and how far the seed may sit from the centroid before it acts
 #ifndef _CELL_SHAPING_SPEED_
 #define _CELL_SHAPING_SPEED_ 0.7
 #endif
@@ -113,16 +101,12 @@
 #define _CELL_SHAPING_FACTOR_ 0.2
 #endif
 
-// ASTRO_PHYSICS is an explicit master switch set in Config.sh. It gates the code-unit
-// parameters (see global/units.h) that every astro module reads at init, so a sub-flag on
-// its own would silently run with units left at their cgs-identity defaults.
 #if !defined(ASTRO_PHYSICS) &&                                                                                         \
     (defined(NFW) || defined(HERNQUIST) || defined(SMBH) || defined(COOLING) || defined(SF_FEEDBACK) ||                \
      defined(AGN_THERMAL) || defined(AGN_KINETIC) || defined(LIMITERS))
 #error "Config.sh: an astro sub-flag is set without ASTRO_PHYSICS."
 #endif
 
-// forward declarations
 class InputHandler;
 struct ICData;
 class OutputHandler;
@@ -136,49 +120,44 @@ namespace gradients {
 
 // everything that lives across the main loop
 struct SimState {
-    // hydro + mesh
-    size_t                    n_hydro;
-    hydro::primvars*          primvar;  // current state (rho, v, E)
-    hydro::primvars*          prim_new; // swap target each step
-    gradients::PrimGradients* grads;    // per-step gradient scratch
+    size_t                    n_hydro;  // local cells
+    hydro::primvars*          primvar;  // current state
+    hydro::primvars*          prim_new; // the step writes here, the pointers swap at the end
+    gradients::PrimGradients* grads;
     VMesh*                    mesh;
-    double*                   dt;
+    double*                   dt; // managed, written by calc_timestep
 
-    // running state
     double t_sim    = 0.0;
     int    snap_num = 0;
     int    step     = 0;
-    double t_nextoutput;
+    double t_nextoutput; // time of the next snapshot
 
-    // run config
-    double t_start;
+    double t_start; // time this run started at, used for the ETA
     double t_end;
     double CFL;
     double output_dt;
+    // only read under USE_MPI
     int    rebalance_interval;
     int    imbalance_log_interval;
     double imbalance_threshold;
 
-    // minimum specific internal energy (code units) enforced on the hydro update. 0 disables it.
-    // Set from the cooling temperature floor (T_floor / C_T) when COOLING is compiled in.
-    double min_egy_spec = 0.0;
+    double min_egy_spec = 0.0; // temperature floor as specific energy, set by cooling
 
-    // wall-clock start; per-step profile log lives in profile.hdf5 (see Profiler::open_profile_log)
-    std::chrono::steady_clock::time_point wall_start;
+    std::chrono::steady_clock::time_point wall_start; // wall clock at the start of the run
 };
 
-// globals
+// defined in globals.cu
 extern InputHandler  input;
 extern ICData        ic_data;
 extern OutputHandler output;
 extern SimState      sim;
-extern double        buff; // buffer for the periodic bc (box will be 1 + 2*buff long)
+extern double        buff;
 
-// compile-time physics constants
+// run-wide constants from the values above
 constexpr double gamma_eos         = (double)_GAMMA_EOS_;
 constexpr double CellShapingSpeed  = (double)_CELL_SHAPING_SPEED_;
 constexpr double CellShapingFactor = (double)_CELL_SHAPING_FACTOR_;
 constexpr double VolShapingSpeed   = (double)_VOL_SHAPING_SPEED_;
 constexpr double PI                = 3.14159265358979323846;
 
-#endif // GLOBALS_H
+#endif

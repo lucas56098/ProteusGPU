@@ -1,3 +1,5 @@
+// implements the cell migration (migrate.h)
+
 #include "migrate.h"
 
 #include "decomp.h"
@@ -11,7 +13,7 @@
 
 namespace proteus_mpi {
 
-    // per-migrant payload — all fields shipped in one MPI message
+    // everything a cell needs to carry to its new rank
     struct MigrantCell {
         POINT_TYPE pos;
         double     rho_old;
@@ -28,8 +30,6 @@ namespace proteus_mpi {
 
 } // namespace proteus_mpi
 
-// per-element pack/unpack bodies in namespace proteus_mpi::pack (at global scope
-// so the namespace nests cleanly inside proteus_mpi).
 #include "migrate_packing.h"
 
 namespace proteus_mpi {
@@ -44,46 +44,38 @@ namespace proteus_mpi {
 
 #ifdef USE_MPI
 
-    // persistent staging buffers — managed memory so the pack/unpack/assign kernels
-    // introduced in Phase 3 can read/write without page-faulting through the host.
-    // Each pair (ptr + cap) tracks an own-grown allocation; logical sizes are
-    // tracked separately at each call site.
-    static int*         s_send_counts         = nullptr;
-    static int          s_send_counts_cap     = 0;
-    static int*         s_recv_counts         = nullptr;
-    static int          s_recv_counts_cap     = 0;
-    static int*         s_send_displs         = nullptr;
-    static int          s_send_displs_cap     = 0;
-    static int*         s_recv_displs         = nullptr;
-    static int          s_recv_displs_cap     = 0;
-    static int*         s_per_cell_slot       = nullptr;
-    static int          s_per_cell_slot_cap   = 0;
-    static MigrantCell* s_sendbuf             = nullptr;
-    static int          s_sendbuf_cap         = 0;
-    static MigrantCell* s_recvbuf             = nullptr;
-    static int          s_recvbuf_cap         = 0;
-    static int*         s_migrant_local_k     = nullptr;
-    static int          s_migrant_local_k_cap = 0;
-    // logical count of local cells currently marked for removal (= total_send post-pack)
-    static int s_n_migrant_local = 0;
-    // neighbor_rank -> Cart-neighbor slot index, or -1 if not a neighbor. Sized to nranks,
-    // refilled on each migrate_seeds call (cheap; size <= nranks).
-    static int* s_nbr_rank_to_slot     = nullptr;
-    static int  s_nbr_rank_to_slot_cap = 0;
-    // 1-int error signal for assign_destinations kernels (kernel can't exit_failure
-    // cleanly; host checks and exits after the kernel sync).
-    static int* s_assign_err       = nullptr;
-    static int* s_mig_scan         = nullptr;
-    static int  s_mig_scan_cap     = 0;
-    static int* s_scan_scratch     = nullptr;
-    static int  s_scan_scratch_cap = 0;
-    static int* s_dest_pos         = nullptr;
-    static int  s_dest_pos_cap     = 0;
-    static int* s_chunk_tab        = nullptr;
-    static int  s_chunk_tab_cap    = 0;
+    // scratch of the migration, grown when it gets too small
+    static int*         s_send_counts          = nullptr;
+    static int          s_send_counts_cap      = 0;
+    static int*         s_recv_counts          = nullptr;
+    static int          s_recv_counts_cap      = 0;
+    static int*         s_send_displs          = nullptr;
+    static int          s_send_displs_cap      = 0;
+    static int*         s_recv_displs          = nullptr;
+    static int          s_recv_displs_cap      = 0;
+    static int*         s_per_cell_slot        = nullptr;
+    static int          s_per_cell_slot_cap    = 0;
+    static MigrantCell* s_sendbuf              = nullptr;
+    static int          s_sendbuf_cap          = 0;
+    static MigrantCell* s_recvbuf              = nullptr;
+    static int          s_recvbuf_cap          = 0;
+    static int*         s_migrant_local_k      = nullptr;
+    static int          s_migrant_local_k_cap  = 0;
+    static int          s_n_migrant_local      = 0;
+    static int*         s_nbr_rank_to_slot     = nullptr;
+    static int          s_nbr_rank_to_slot_cap = 0;
+    static int*         s_assign_err           = nullptr;
+    static int*         s_mig_scan             = nullptr;
+    static int          s_mig_scan_cap         = 0;
+    static int*         s_scan_scratch         = nullptr;
+    static int          s_scan_scratch_cap     = 0;
+    static int*         s_dest_pos             = nullptr;
+    static int          s_dest_pos_cap         = 0;
+    static int*         s_chunk_tab            = nullptr;
+    static int          s_chunk_tab_cap        = 0;
 #endif
 
-    // grow a managed buffer to >= need elements (doubling, floor 64). nullptr-safe.
+    // scratch that grows and then stays
     template <typename T> static void ensure_managed(T*& ptr, int& cap, int need) {
         if (need <= cap) return;
         const int new_cap = std::max(64, std::max(need, 2 * cap));
@@ -93,14 +85,12 @@ namespace proteus_mpi {
     }
 
 #ifdef USE_MPI
-    // lazy-alloc single-int managed counters (called on first use).
     static void ensure_scratch_singletons() {
         if (!s_assign_err) s_assign_err = (int*)gpu_malloc(sizeof(int));
     }
 #endif
 
 #ifdef USE_MPI
-    // forward declarations
     static int  migrate_count_tag(int dx, int dy, int dz);
     static int  migrate_payload_tag(int dx, int dy, int dz);
     static void assign_destinations(VMesh* mesh, int n_hydro, int my_rank);
@@ -121,16 +111,13 @@ namespace proteus_mpi {
                                          int              my_rank);
     static void check_conservation(int n_new);
 
-#endif // USE_MPI
-
-    // ============================================================
-    // Public entry points
-    // ============================================================
+#endif
 
     int last_n_migrated() {
         return s_last_n_migrated;
     }
 
+    // the cell arrays never grow, so this is the ceiling
     void migrate_init(int n_local_initial) {
 #ifdef USE_MPI
         s_n_local_max = max_n_local(n_local_initial);
@@ -141,10 +128,7 @@ namespace proteus_mpi {
 #endif
     }
 
-    // rebalance variant: any-rank destination via decomp_owner_of_bucket (using updated splits);
-    // counts/payload over the full Cart comm. Reuses the existing pack/remove/append/check helpers.
-    // Called from voronoi::move_mesh after advance_seeds_by_dt has populated scratch_move with
-    // post-advance positions — those are the positions we redistribute against.
+    // after a rebalance every rank can send to every other one
     void migrate_for_rebalance(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new) {
 #ifndef USE_MPI
         (void)mesh;
@@ -164,12 +148,12 @@ namespace proteus_mpi {
 
         POINT_TYPE* pts = mesh->scratch_move;
 
-        // assign destination rank per cell — any rank, no Cart-neighbor restriction.
         (void)N_grid;
         (void)bf;
+        // target rank of every cell
         assign_destinations_rebal(mesh, n_hydro, my_rank);
 
-        // exchange counts over the full Cart comm (every rank can talk to every other rank).
+        // every rank tells every other one how much it sends
         ensure_managed(s_recv_counts, s_recv_counts_cap, nr);
         for (int r = 0; r < nr; r++)
             s_recv_counts[r] = 0;
@@ -186,7 +170,6 @@ namespace proteus_mpi {
 
         pack_outgoing_migrants(mesh, primvar, prim_new, pts, n_hydro, nr);
 
-        // payload via single Alltoallv over the full Cart comm.
         mpi_sync_before_send(s_sendbuf, sizeof(MigrantCell) * (size_t)total_send);
         {
             PROFILE_MPI("PAYLOAD_WAIT");
@@ -202,15 +185,11 @@ namespace proteus_mpi {
         }
         mpi_sync_after_recv(s_recvbuf, sizeof(MigrantCell) * (size_t)total_recv);
 
+        // out, then in; the cell arrays have no room beyond n_local_max
         const int n_after_remove = remove_migrated_local(mesh, primvar, prim_new, pts, n_hydro);
 
         const int n_new = n_after_remove + total_recv;
         if (n_new > s_n_local_max) {
-            // No adaptive realloc yet — every per-cell buffer (mesh, primvars, gradients)
-            // would need to grow in lockstep, which is a larger refactor. For homogeneous
-            // runs ALLOC_GROWTH=2.0 is generous; if this still trips, either the IC has
-            // a strong inhomogeneity we didn't expect or the imbalance threshold is too
-            // loose. Restart from the last snapshot after bumping ALLOC_GROWTH.
             exit_failure("[rank %d] REBALANCE: n_hydro_new=%d > n_local_max=%d "
                          "(post-rebalance migration overflows per-cell capacity). "
                          "Bump ALLOC_GROWTH in src/global/structs.h or tighten "
@@ -227,6 +206,7 @@ namespace proteus_mpi {
 #endif
     }
 
+    // per step, along the Cartesian neighbours only
     void migrate_seeds(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new) {
 #ifndef USE_MPI
         (void)mesh;
@@ -243,6 +223,7 @@ namespace proteus_mpi {
         const int   n_hydro = (int)mesh->n_hydro;
         POINT_TYPE* pts     = mesh->scratch_move;
 
+        // target neighbour of every cell
         assign_destinations(mesh, n_hydro, my_rank);
 
         {
@@ -261,11 +242,11 @@ namespace proteus_mpi {
             exchange_payload(total_send, total_recv);
         }
 
+        // the leavers go out of the arrays, the arrivals come behind the rest
         const int n_after_remove = remove_migrated_local(mesh, primvar, prim_new, pts, n_hydro);
 
         const int n_new = n_after_remove + total_recv;
         if (n_new > s_n_local_max) {
-            // See the REBALANCE overflow note above — same constraint, same fix.
             exit_failure("[rank %d] MIGRATE: n_hydro_new=%d > n_local_max=%d "
                          "(per-step Cart-neighbor migration overflows per-cell capacity). "
                          "Bump ALLOC_GROWTH in src/global/structs.h or enable rebalance "
@@ -284,11 +265,6 @@ namespace proteus_mpi {
 
 #ifdef USE_MPI
 
-    // ============================================================
-    // Static helpers
-    // ============================================================
-
-    // dir-encoded message tags, offset so they don't collide with halo's
     static int migrate_count_tag(int dx, int dy, int dz) {
         return (dx + 1) * 9 + (dy + 1) * 3 + (dz + 1) + 1 + 500;
     }
@@ -296,8 +272,7 @@ namespace proteus_mpi {
         return (dx + 1) * 9 + (dy + 1) * 3 + (dz + 1) + 1 + 600;
     }
 
-    // Shared assign-destinations dispatcher. variant=0 (per-step): owner must be a Cart
-    // neighbor (slot = neighbor index). variant=1 (rebalance): owner IS the slot.
+    // owner of every cell at its new position; variant 1 counts per rank, variant 0 per neighbour
     static void assign_destinations_dispatch(VMesh* mesh, int n_hydro, int my_rank, int variant, int nslots) {
         const int    N_grid = decomp.N_grid_global;
         const double bf     = mesh->buff;
@@ -308,7 +283,6 @@ namespace proteus_mpi {
         for (int n = 0; n < nslots; n++)
             s_send_counts[n] = 0;
 
-        // build neighbor_rank -> slot lookup for variant 0 (per-step)
         const int* nbr_lookup = nullptr;
         if (variant == 0) {
             const int nr = decomp.nranks;
@@ -369,15 +343,14 @@ namespace proteus_mpi {
     }
 
     static void assign_destinations(VMesh* mesh, int n_hydro, int my_rank) {
-        assign_destinations_dispatch(mesh, n_hydro, my_rank, /*variant=*/0, halo.n_neighbors);
+        assign_destinations_dispatch(mesh, n_hydro, my_rank, 0, halo.n_neighbors);
     }
 
     static void assign_destinations_rebal(VMesh* mesh, int n_hydro, int my_rank) {
-        assign_destinations_dispatch(mesh, n_hydro, my_rank, /*variant=*/1, decomp.nranks);
+        assign_destinations_dispatch(mesh, n_hydro, my_rank, 1, decomp.nranks);
     }
 
-    // neighbor-only count exchange (Neighbor_alltoall when peers distinct,
-    // Isend/Irecv per direction otherwise — never MPI_Alltoall over the full comm)
+    // how many cells every neighbour will send us
     static void exchange_counts() {
         const int nn = halo.n_neighbors;
         ensure_managed(s_recv_counts, s_recv_counts_cap, nn);
@@ -410,6 +383,7 @@ namespace proteus_mpi {
         mpi_sync_after_recv(s_recv_counts, sizeof(int) * (size_t)nn);
     }
 
+    // one block per target in both buffers
     static void build_displacements(int nn, int* total_send, int* total_recv) {
         ensure_managed(s_send_displs, s_send_displs_cap, nn);
         ensure_managed(s_recv_displs, s_recv_displs_cap, nn);
@@ -420,15 +394,13 @@ namespace proteus_mpi {
             ts += s_send_counts[n];
             tr += s_recv_counts[n];
         }
-        // grow with a floor so a transient 0-length call doesn't free + reallocate
-        // a previously-sized buffer (cap-doubling growth, no shrink).
         ensure_managed(s_sendbuf, s_sendbuf_cap, std::max(ts, 1));
         ensure_managed(s_recvbuf, s_recvbuf_cap, std::max(tr, 1));
         *total_send = ts;
         *total_recv = tr;
     }
 
-    static constexpr int PACK_TABLE_BUDGET = 1 << 20; // table entries; 4 MiB at 4 B each
+    static constexpr int PACK_TABLE_BUDGET = 1 << 20;
     static constexpr int PACK_MAX_CHUNKS   = 1024;
 
     static int pack_chunks_for(int nslots) {
@@ -438,7 +410,6 @@ namespace proteus_mpi {
         return c;
     }
 
-    // half-open range of the compacted list owned by chunk c
     HD inline void pack_chunk_range(int c, int m, int chunks, int* lo, int* hi) {
         const int span = (m + chunks - 1) / chunks;
         int       a    = c * span;
@@ -449,6 +420,7 @@ namespace proteus_mpi {
         *hi = b;
     }
 
+    // place of every migrating cell in the send buffer, found without atomics so it is the same in every run
     static void build_pack_layout(int n_hydro, int nslots) {
         ensure_managed(s_mig_scan, s_mig_scan_cap, std::max(n_hydro, 1));
         ensure_managed(s_dest_pos, s_dest_pos_cap, std::max(n_hydro, 1));
@@ -460,6 +432,7 @@ namespace proteus_mpi {
         s_n_migrant_local = 0;
         if (n_hydro <= 0) return;
 
+        // flag and scan gives every migrating cell a number
         parallel_for<_MPI_PACK_BLOCK_SIZE_>(
             "MIG_FLAG", n_hydro, [=] HD(size_t k) { off[k] = (per_cell_slot[k] >= 0) ? 1 : 0; });
 
@@ -467,7 +440,6 @@ namespace proteus_mpi {
         ensure_managed(s_scan_scratch, s_scan_scratch_cap, (int)need);
         parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_, int>("MIG_SCAN", (size_t)n_hydro, off, off, s_scan_scratch);
 
-        // exclusive scan, so the total is the last offset plus whether the last cell migrates
         const int m       = off[n_hydro - 1] + ((per_cell_slot[n_hydro - 1] >= 0) ? 1 : 0);
         s_n_migrant_local = m;
         if (m == 0) return;
@@ -477,6 +449,7 @@ namespace proteus_mpi {
             if (per_cell_slot[k] >= 0) mig_k[off[k]] = (int)k;
         });
 
+        // count per chunk and target, scan the small table, then every chunk fills from its own base
         const int chunks = pack_chunks_for(nslots);
         ensure_managed(s_chunk_tab, s_chunk_tab_cap, chunks * nslots);
         int*       tab         = s_chunk_tab;
@@ -486,7 +459,6 @@ namespace proteus_mpi {
         parallel_for<_MPI_PACK_BLOCK_SIZE_>(
             "MIG_TAB_ZERO", (size_t)chunks * (size_t)nslots, [=] HD(size_t i) { tab[i] = 0; });
 
-        // chunk c owns row c outright, so counting into it needs no atomic
         parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_TAB_COUNT", chunks, [=] HD(size_t c) {
             int lo, hi;
             pack_chunk_range((int)c, m, chunks, &lo, &hi);
@@ -514,6 +486,7 @@ namespace proteus_mpi {
         });
     }
 
+    // copy the cells into the send buffer
     static void pack_outgoing_migrants(
         VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new, POINT_TYPE* pts, int n_hydro, int nslots) {
         build_pack_layout(n_hydro, nslots);
@@ -554,7 +527,7 @@ namespace proteus_mpi {
 #endif
     }
 
-    // single neighbor-only collective for all MigrantCell fields
+    // the cells themselves
     static void exchange_payload(int total_send, int total_recv) {
         const int nn = halo.n_neighbors;
         mpi_sync_before_send(s_sendbuf, sizeof(MigrantCell) * (size_t)total_send);
@@ -603,12 +576,9 @@ namespace proteus_mpi {
         mpi_sync_after_recv(s_recvbuf, sizeof(MigrantCell) * (size_t)total_recv);
     }
 
-    // remove migrated cells via swap-with-last (largest k first)
+    // close the holes the leaving cells left: the last cell moves into the hole
     static int remove_migrated_local(
         VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new, POINT_TYPE* pts, int n_hydro) {
-        // s_migrant_local_k lives in managed memory; under CUDA the pack kernel will
-        // have written into it. Sort + the swap-with-last loop both run on host because
-        // the index array is small and access is irregular — not worth a kernel.
         std::sort(s_migrant_local_k, s_migrant_local_k + s_n_migrant_local, std::greater<int>());
         int n_after = n_hydro;
         for (int i = 0; i < s_n_migrant_local; i++) {
@@ -633,6 +603,7 @@ namespace proteus_mpi {
         return n_after;
     }
 
+    // the arrivals go behind the cells that stayed
     static void append_incoming_migrants(VMesh*           mesh,
                                          hydro::primvars* primvar,
                                          hydro::primvars* prim_new,
@@ -677,8 +648,7 @@ namespace proteus_mpi {
         });
     }
 
-    // global cell count must stay constant. Long long because the global sum is
-    // n_global (few_thousand^3), well past int32.
+    // the total cell count of the run may never change
     static void check_conservation(int n_new) {
         const long long n_new_ll = (long long)n_new;
         long long       n_global = 0;
@@ -695,6 +665,6 @@ namespace proteus_mpi {
         }
     }
 
-#endif // USE_MPI
+#endif
 
 } // namespace proteus_mpi

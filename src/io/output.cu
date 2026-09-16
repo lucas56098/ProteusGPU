@@ -1,3 +1,5 @@
+// implements OutputHandler + print_log (output.h)
+
 #include "../global/allvars.h"
 #include "../mpi/decomp.h"
 #include "../mpi/mpi_compat.h"
@@ -17,12 +19,12 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro);
 
 OutputHandler::OutputHandler(const std::string& output_dir) : output_directory(output_dir) {}
 
-// ============================================================
-// init
-// ============================================================
+// ==========================================================
+// snapshots
+// ==========================================================
 
+// creates output_directory if it does not exist (rank 0 does it)
 bool OutputHandler::initialize() {
-    // create output directory on rank 0 only
     bool ok = true;
     if (proteus_mpi::is_root()) {
         struct stat st;
@@ -38,6 +40,7 @@ bool OutputHandler::initialize() {
     }
 #ifdef USE_MPI
     {
+        // no rank may write before the directory is there
         PROFILE_MPI("OUTPUT_INIT_BARRIER");
         MPI_Barrier(MPI_COMM_WORLD);
     }
@@ -45,10 +48,7 @@ bool OutputHandler::initialize() {
     return ok;
 }
 
-// ============================================================
-// write snapshot
-// ============================================================
-
+// writes one whole snapshot file
 static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks, int rank, int64_t n_global) {
 
     h5::File file(H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT));
@@ -57,8 +57,8 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
         return false;
     }
 
-    // write header
     {
+        // header: dimension, time, step, cell counts and the ngb grid size
         h5::Group header_group(H5Gcreate(file, "header", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         if (!h5::write_attr(header_group, "dimension", DIMENSION) || !h5::write_attr(header_group, "time", sim.t_sim) ||
             !h5::write_attr(header_group, "step", sim.step) || !h5::write_attr(header_group, "n_global", n_global) ||
@@ -68,6 +68,7 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
         }
 
 #ifdef ASTRO_PHYSICS
+        // unit system, needed to read the snapshot back in cgs
         if (!h5::write_attr(header_group, "UnitLength_in_cm", units.UnitLength_in_cm) ||
             !h5::write_attr(header_group, "UnitMass_in_g", units.UnitMass_in_g) ||
             !h5::write_attr(header_group, "UnitVelocity_in_cm_per_s", units.UnitVelocity_in_cm_per_s)) {
@@ -75,6 +76,7 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
         }
 #endif
 
+        // cumulative timer values, a restart picks them up again
         h5::Group prof_group(H5Gcreate(header_group, "profiler", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         for (const auto& kv : Profiler::current_cumulative()) {
             if (!h5::write_attr(prof_group, kv.first.c_str(), kv.second)) { return false; }
@@ -83,6 +85,7 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
 
 #ifdef USE_MPI
     {
+        // split tables of this run, a restart has to start from the same bricks
         const auto& dc = proteus_mpi::decomp;
         h5::Group   decomp_group(H5Gcreate(file, "decomp", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         if (!h5::write_dataset_1d(decomp_group, "splits_x", dc.splits[0], (hsize_t)(dc.dims[0] + 1)) ||
@@ -93,6 +96,7 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
     }
 #endif
 
+    // seeds as flat rows of DIM values
     std::vector<double> pos_flat(n_hydro * DIMENSION);
     for (int i = 0; i < n_hydro; i++) {
         pos_flat[i * DIMENSION + 0] = sim.mesh->seeds[i].x;
@@ -102,8 +106,8 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
 #endif
     }
 
-    // write mesh/pos
     {
+        // mesh: seed positions, v_mesh (a restart needs it), volumes and faces with OUTPUT_MESH
         h5::Group mesh_group(H5Gcreate(file, "mesh", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         if (!h5::write_dataset_2d(mesh_group, "pos", pos_flat.data(), n_hydro, DIMENSION)) { return false; }
 
@@ -127,6 +131,7 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
     }
 
     {
+        // hydro: rho, vel and energy (total energy per volume)
         h5::Group hydro_group(H5Gcreate(file, "hydro", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         if (!h5::write_dataset_1d(hydro_group, "rho", sim.primvar->rho, n_hydro) ||
             !h5::write_dataset_2d(
@@ -139,15 +144,17 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
     return true;
 }
 
+// writes this rank's snapshot and sets the time of the next one
 void OutputHandler::write_snapshot() {
     PROFILE("IO_SNAPSHOT");
 
-    const int     n_hydro  = (int)sim.mesh->n_hydro;
-    const int     nranks   = proteus_mpi::nranks();
-    const int     rank     = proteus_mpi::rank();
+    const int n_hydro = (int)sim.mesh->n_hydro;
+    const int nranks  = proteus_mpi::nranks();
+    const int rank    = proteus_mpi::rank();
+    // total cells over all ranks
     const int64_t n_global = logging::sum_global((long long)n_hydro);
 
-    // file-per-rank under multi-rank
+    // one file per rank as soon as there is more than one
     std::string output_file = "snapshot_" + std::to_string(sim.snap_num);
     if (nranks > 1) output_file += "." + std::to_string(rank);
     output_file += ".hdf5";
@@ -159,22 +166,21 @@ void OutputHandler::write_snapshot() {
         logging::root() << "OUTPUT: Writing snapshot to: " << full_path << std::endl;
     }
 
+    // abort only out here: exit() skips destructors, so the h5 handles must be closed first
     if (!write_snapshot_file(full_path, n_hydro, nranks, rank, n_global)) {
         proteus_mpi::exit_failure("OUTPUT: failed to write snapshot %s\n", full_path.c_str());
     }
 
     sim.snap_num += 1;
-    // Skip the advance for the initial t=0 snapshot: begrun already set
-    // t_nextoutput = t_sim + output_dt, so advancing here too would put the first
-    // cadenced snapshot at 2*output_dt. The test runs post-increment, so snap_0 is 1.
+    // snapshot_0 is written before the loop, begrun already set the time of the next output
     if (sim.snap_num != 1) { sim.t_nextoutput += sim.output_dt; }
 }
 
-// ============================================================
-// per-step log line
-// ============================================================
+// ==========================================================
+// per-step log
+// ==========================================================
 
-// prints all per-step diagnostics: step, t, dt, ETA and the load-imbalance probe
+// one line per step: step, t, dt and the ETA from the wall time so far
 void print_log() {
 
     const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - sim.wall_start).count();
@@ -184,30 +190,21 @@ void print_log() {
                                       : 0.0)
                     << std::endl;
 
-    // load-imbalance probe (no-op in serial / on non-probe steps)
+    // prints the load imbalance every imbalance_log_interval steps
     proteus_mpi::rebalance_imbalance_log(sim.step, sim.mesh);
 }
 
-// ============================================================
-// OUTPUT_MESH: full Voronoi-geometry dump (verification only)
-// ============================================================
-
 #ifdef OUTPUT_MESH
 
-// Compact the ragged per-face SoA (neighbor_cell / face_area, sliced by face_ptr/face_counts)
-// into CSR arrays and write the whole mesh geometry into `mesh_group`, in ascending-k order:
-//   mesh/n_faces       [N]      : faces of cell k
-//   mesh/face_offset   [N+1]    : CSR offsets, so cell k owns faces [off[k], off[k+1])
-//   mesh/face_neighbor [F]      : neighbor cell id (real k), or -1 for a box-boundary face
-//   mesh/face_area     [F]      : Voronoi facet area (2D: edge length)
-//   mesh/face_normal   [F,D]    : unit perpendicular-bisector normal, seed_k -> seed_neighbor
-//   mesh/centroid      [N,D]    : volume-weighted cell centroid (VMesh::com)
-// mesh/volume [N] and mesh/pos [N,D] are written by the caller. The face normal is the
-// minimum-image seed-to-seed direction on the unit box — exactly how the build defines a
-// face plane — reconstructed here so the register-heavy Voronoi kernel is left untouched.
+// ==========================================================
+// full mesh geometry (OUTPUT_MESH)
+// ==========================================================
+
+// writes the mesh itself for analysis: faces per cell, neighbours, areas, normals and centroids
 static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
     const VMesh* m = sim.mesh;
 
+    // total faces on this rank
     int64_t F = 0;
     for (int k = 0; k < n_hydro; k++) {
         F += (int64_t)m->face_counts[k];
@@ -220,6 +217,7 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
     std::vector<double>  face_normal((size_t)F * DIMENSION);
     std::vector<double>  com_flat((size_t)n_hydro * DIMENSION);
 
+    // pack the per-cell face lists into flat arrays
     int64_t run = 0;
     for (int k = 0; k < n_hydro; k++) {
         const uint64_t cnt = m->face_counts[k];
@@ -244,12 +242,12 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
 #ifdef dim_3D
             double nz = 0.0;
 #endif
+            // face normal = direction to the neighbour seed (periodic wrap), 0 on a box wall face
             if (nbr >= 0) {
-                // nbr >= n_hydro is an MPI ghost living in seeds_g, not further along seeds
                 const double3 sn = get_seed_at(nbr, n_hydro, m);
                 double        dx = sn.x - sk.x;
                 double        dy = sn.y - sk.y;
-                dx -= std::round(dx); // minimum image on the unit box
+                dx -= std::round(dx);
                 dy -= std::round(dy);
                 double dz = 0.0;
 #ifdef dim_3D
@@ -275,12 +273,13 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
     face_offset[(size_t)n_hydro] = run;
 
     bool ok = true;
-    ok      = ok && h5::write_dataset_1d(mesh_group, "n_faces", n_faces.data(), (hsize_t)n_hydro);
-    ok      = ok && h5::write_dataset_1d(mesh_group, "face_offset", face_offset.data(), (hsize_t)n_hydro + 1);
-    ok      = ok && h5::write_dataset_1d(mesh_group, "face_neighbor", face_neighbor.data(), (hsize_t)F);
-    ok      = ok && h5::write_dataset_1d(mesh_group, "face_area", face_area.data(), (hsize_t)F);
-    ok      = ok && h5::write_dataset_2d(mesh_group, "face_normal", face_normal.data(), (hsize_t)F, DIMENSION);
-    ok      = ok && h5::write_dataset_2d(mesh_group, "centroid", com_flat.data(), (hsize_t)n_hydro, DIMENSION);
+    // write the arrays
+    ok = ok && h5::write_dataset_1d(mesh_group, "n_faces", n_faces.data(), (hsize_t)n_hydro);
+    ok = ok && h5::write_dataset_1d(mesh_group, "face_offset", face_offset.data(), (hsize_t)n_hydro + 1);
+    ok = ok && h5::write_dataset_1d(mesh_group, "face_neighbor", face_neighbor.data(), (hsize_t)F);
+    ok = ok && h5::write_dataset_1d(mesh_group, "face_area", face_area.data(), (hsize_t)F);
+    ok = ok && h5::write_dataset_2d(mesh_group, "face_normal", face_normal.data(), (hsize_t)F, DIMENSION);
+    ok = ok && h5::write_dataset_2d(mesh_group, "centroid", com_flat.data(), (hsize_t)n_hydro, DIMENSION);
     if (!ok) {
         std::cerr << "OUTPUT: Error! failed to write OUTPUT_MESH geometry" << std::endl;
         return false;
@@ -290,4 +289,4 @@ static bool write_mesh_geometry(hid_t mesh_group, int n_hydro) {
     return true;
 }
 
-#endif // OUTPUT_MESH
+#endif

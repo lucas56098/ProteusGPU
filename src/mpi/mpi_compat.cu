@@ -1,3 +1,5 @@
+// implements the MPI helpers (mpi_compat.h)
+
 #include "global/gpu_compat.h"
 #include "mpi_compat.h"
 #include "profiler/profiler.h"
@@ -10,8 +12,6 @@
 #include <cuda_runtime.h>
 #endif
 
-// OpenMPI exposes MPIX_Query_cuda_support via <mpi-ext.h>. Cray MPICH does not
-// ship that header — fall back to the MPICH_GPU_SUPPORT_ENABLED env var only.
 #if defined(USE_MPI) && defined(__has_include)
 #if __has_include(<mpi-ext.h>)
 #include <mpi-ext.h>
@@ -32,9 +32,9 @@ namespace proteus_mpi {
     static int s_gpus_per_node_no_mpi = -1;
 #endif
 
+    // MPI_Init, then one GPU per rank
     void init(int* argc, char*** argv) {
 #ifdef USE_MPI
-        // MPI_THREAD_FUNNELED: MPI calls only from one thread
         int provided = 0;
         MPI_Init_thread(argc, argv, MPI_THREAD_FUNNELED, &provided);
 
@@ -43,7 +43,7 @@ namespace proteus_mpi {
         MPI_Comm_rank(MPI_COMM_WORLD, &s_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &s_nranks);
 
-        // node-local rank/size for GPU pinning
+        // rank inside its node, that is what picks the GPU
         MPI_Comm node_comm;
         MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
         int local_rank = 0;
@@ -52,19 +52,19 @@ namespace proteus_mpi {
         MPI_Comm_free(&node_comm);
 
 #ifndef CPU_DEBUG
+        // ranks are spread over the GPUs of the node
         cudaError_t cerr = cudaGetDeviceCount(&s_gpus_per_node);
         if (cerr != cudaSuccess || s_gpus_per_node == 0) {
             exit_failure("[rank %d] no CUDA devices visible (err=%d)\n", s_rank, (int)cerr);
         }
-        // rank N on this node maps to GPU (N % gpus_per_node)
         int dev = local_rank % s_gpus_per_node;
         cerr    = cudaSetDevice(dev);
         if (cerr != cudaSuccess) {
             exit_failure("[rank %d] cudaSetDevice(%d) failed (err=%d)\n", s_rank, dev, (int)cerr);
         }
-        cudaDeviceSetLimit(cudaLimitStackSize, 8192); // (3D slow voronoi kernel needs ~5.7KB stack/thread -> use 8KB)
+        cudaDeviceSetLimit(cudaLimitStackSize, 8192);
 #endif
-#else // !USE_MPI
+#else
         (void)argc;
         (void)argv;
 #ifndef CPU_DEBUG
@@ -86,12 +86,14 @@ namespace proteus_mpi {
 #endif
     }
 
+    // every fatal error ends here; under MPI it aborts, so no rank is left waiting
     void exit_failure(const char* fmt, ...) {
         std::va_list args;
         va_start(args, fmt);
         std::vfprintf(stderr, fmt, args);
         va_end(args);
         std::fflush(stderr);
+        // close the profile log while HDF5 still works
         Profiler::abort_profile_log();
 #ifdef USE_MPI
         MPI_Abort(MPI_COMM_WORLD, 1);
@@ -133,10 +135,7 @@ namespace proteus_mpi {
 #endif
     }
 
-    // ============================================================
-    // GPU-aware MPI banner + sync helpers
-    // ============================================================
-
+    // what the MPI library says about GPU pointers, printed once at startup
     void report_gpu_aware_mpi() {
         if (rank() != 0) return;
 #ifdef USE_MPI
@@ -147,19 +146,15 @@ namespace proteus_mpi {
         std::printf("BEGRUN: GPU_AWARE_MPI not set\n");
 #endif
 
-        // OpenMPI runtime probe — only available when <mpi-ext.h> is present.
 #ifdef PROTEUS_HAS_MPIX_QUERY_CUDA
 #ifdef MPIX_CUDA_AWARE_SUPPORT
         std::printf("BEGRUN: MPI MPIX_Query_cuda_support() = %d\n", MPIX_Query_cuda_support());
 #endif
 #endif
-        // Cray MPICH env var — set by sites that have GPU-aware MPI enabled.
         if (const char* v = std::getenv("MPICH_GPU_SUPPORT_ENABLED")) {
             std::printf("BEGRUN: MPI MPICH_GPU_SUPPORT_ENABLED = %s\n", v);
         }
 
-        // TODO: set a warning here if GPU_AWARE_MPI is compiled but the MPI library does
-        // not support cuda/gpu
 #endif
         char version[MPI_MAX_LIBRARY_VERSION_STRING] = {0};
         int  vlen                                    = 0;
@@ -176,20 +171,18 @@ namespace proteus_mpi {
     }
 #endif
 
+    // without GPU aware MPI the buffer has to sit on the host before it is sent
     void mpi_sync_before_send(const void* buf, size_t bytes) {
 #if defined(CPU_DEBUG) || !defined(USE_MPI)
         (void)buf;
         (void)bytes;
         return;
 #else
-        // Always sync: even with GPU_AWARE_MPI on, pack kernel writes must be
-        // visible to the NIC DMA before the MPI call.
         sync_device();
 #ifndef GPU_AWARE_MPI
-        // Library expects host-resident pointer — pull the managed pages over.
         if (bytes > 0 && buf != nullptr) {
             gpu_prefetch_to_cpu(const_cast<void*>(buf), bytes);
-            sync_device(); // make sure prefetch is done before MPI reads
+            sync_device();
         }
 #else
         (void)buf;
@@ -198,6 +191,7 @@ namespace proteus_mpi {
 #endif
     }
 
+    // and goes back to the device after it arrived
     void mpi_sync_after_recv(void* buf, size_t bytes) {
 #if defined(CPU_DEBUG) || !defined(USE_MPI)
         (void)buf;
@@ -205,8 +199,6 @@ namespace proteus_mpi {
         return;
 #else
 #ifndef GPU_AWARE_MPI
-        // Library wrote into host pages — push them back to the device so the
-        // next compute kernel doesn't page-fault each cache line.
         if (bytes > 0 && buf != nullptr) { gpu_prefetch_to_gpu(buf, bytes); }
 #else
         (void)buf;

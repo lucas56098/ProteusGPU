@@ -1,3 +1,5 @@
+// implements logging (log.h)
+
 #include "../mpi/decomp.h"
 #include "../mpi/mpi_compat.h"
 #include "../profiler/profiler.h"
@@ -14,13 +16,13 @@ namespace logging {
 
     namespace {
 
-        // streambuf that discards every byte written to it
+        // stream buffer that discards everything written to it
         class NullBuf : public std::streambuf {
           protected:
             int overflow(int c) override { return traits_type::not_eof(c); }
         };
 
-        // singleton null ostream shared by all silent loggers
+        // one sink shared by all non-root ranks
         std::ostream& null_stream() {
             static NullBuf      buf;
             static std::ostream s(&buf);
@@ -29,7 +31,7 @@ namespace logging {
 
     } // namespace
 
-    // std::cout on rank 0, null sink elsewhere
+    // rank 0 gets std::cout, every other rank the sink
     std::ostream& root() {
         return proteus_mpi::is_root() ? std::cout : null_stream();
     }
@@ -37,7 +39,7 @@ namespace logging {
 #ifdef USE_MPI
     namespace {
 
-        // allreduce wrapper
+        // one Allreduce over cart_comm
         template <typename T> T reduce_global(T local, MPI_Datatype dtype, MPI_Op op) {
             PROFILE_MPI("ALLREDUCE");
             T g = local;
@@ -48,6 +50,7 @@ namespace logging {
     } // namespace
 #endif
 
+    // sum and max over all ranks, local value without USE_MPI
     int sum_global(int local) {
 #ifdef USE_MPI
         return reduce_global(local, MPI_INT, MPI_SUM);
@@ -70,6 +73,7 @@ namespace logging {
 #endif
     }
 
+    // threads this rank may use
     int omp_threads() {
 #ifdef USE_OPENMP
         return omp_get_max_threads();

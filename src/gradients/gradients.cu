@@ -1,10 +1,11 @@
+// implements the gradient estimate (gradients.h)
+
 #include "../profiler/profiler.h"
 #include "gradients.h"
 #include <cmath>
 
 namespace gradients {
 
-    // forward declarations
     HD void                 compute_gradient_for_cell(uint64_t, const VMesh*, const hydro::primvars*, PrimGradients*);
     HD static inline double limit_single_gradient(const double      value,
                                                   const double      min_value,
@@ -15,10 +16,8 @@ namespace gradients {
     recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s);
     HD static inline double
     pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor);
-    // ============================================================
-    // Main routines
-    // ============================================================
 
+    // one gradient per cell
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
         PROFILE("GRAD");
 
@@ -26,10 +25,10 @@ namespace gradients {
             "GRAD_KERNEL", mesh->n_hydro, [=] HD(size_t i) { compute_gradient_for_cell(i, mesh, primvar, grads); });
     }
 
-    // calc dW/dt ("time gradients") based on states and gradients
+    // time derivative of rho, v and E from the Euler equations
     HD void time_gradient(hydro::prim state_i, PrimGradient grad_i, hydro::prim* dWdt) {
 
-        // precomputed helpers
+        // divergence of v, and v times its gradient
         double v2   = point_dot(state_i.v, state_i.v);
         double divv = grad_i.vx.x + grad_i.vy.y;
         double kinx = state_i.v.x * grad_i.vx.x + state_i.v.y * grad_i.vy.x;
@@ -41,7 +40,7 @@ namespace gradients {
         const double kinz = state_i.v.x * grad_i.vx.z + state_i.v.y * grad_i.vy.z + state_i.v.z * grad_i.vz.z;
 #endif
 
-        // pressure and its spatial derivatives
+        // pressure and its gradient
         const double P     = (gamma_eos - 1.0) * (state_i.E - 0.5 * state_i.rho * v2);
         const double dP_dx = (gamma_eos - 1.0) * (grad_i.E.x - 0.5 * (v2 * grad_i.rho.x + 2.0 * state_i.rho * kinx));
         const double dP_dy = (gamma_eos - 1.0) * (grad_i.E.y - 0.5 * (v2 * grad_i.rho.y + 2.0 * state_i.rho * kiny));
@@ -49,13 +48,13 @@ namespace gradients {
         const double dP_dz = (gamma_eos - 1.0) * (grad_i.E.z - 0.5 * (v2 * grad_i.rho.z + 2.0 * state_i.rho * kinz));
 #endif
 
-        // compute drho/dt
+        // continuity
         dWdt->rho = -(state_i.v.x * grad_i.rho.x + state_i.v.y * grad_i.rho.y + state_i.rho * divv);
 #ifdef dim_3D
         dWdt->rho -= state_i.v.z * grad_i.rho.z;
 #endif
 
-        // compute dv/dt
+        // momentum
         double inv_rho = 1.0 / state_i.rho;
         dWdt->v.x      = -(state_i.v.x * grad_i.vx.x + state_i.v.y * grad_i.vx.y) - dP_dx * inv_rho;
         dWdt->v.y      = -(state_i.v.x * grad_i.vy.x + state_i.v.y * grad_i.vy.y) - dP_dy * inv_rho;
@@ -66,26 +65,20 @@ namespace gradients {
             -(state_i.v.x * grad_i.vz.x + state_i.v.y * grad_i.vz.y + state_i.v.z * grad_i.vz.z) - dP_dz * inv_rho;
 #endif
 
-        // compute dE/dt
+        // energy
         dWdt->E = -(state_i.v.x * (grad_i.E.x + dP_dx) + state_i.v.y * (grad_i.E.y + dP_dy) + (state_i.E + P) * divv);
 #ifdef dim_3D
         dWdt->E -= state_i.v.z * (grad_i.E.z + dP_dz);
 #endif
     }
 
-    // ============================================================
-    // CUDA kernel wrapper
-    // ============================================================
-    // ============================================================
-    // Per-cell gradient computation (the parallel_for body)
-    // ============================================================
-
+    // least squares fit over the faces of cell i, then the limiters
     HD void
     compute_gradient_for_cell(uint64_t i, const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
 
         hydro::prim state_i = get_state(i, primvar);
 
-        // weighted least-squares (M and b for each primitive variable)
+// normal equations: one matrix for all variables, one right side each
 #ifdef dim_2D
         double m00 = 0.0, m01 = 0.0, m11 = 0.0;
         double b_rho_0 = 0.0, b_rho_1 = 0.0;
@@ -101,7 +94,7 @@ namespace gradients {
         double b_E_0 = 0.0, b_E_1 = 0.0, b_E_2 = 0.0;
 #endif
 
-        // min/max over neighbours (used by the slope limiter below)
+        // range of the cell and its neighbours, for the limiter
         double min_rho = state_i.rho, max_rho = state_i.rho;
         double min_vx = state_i.v.x, max_vx = state_i.v.x;
         double min_vy = state_i.v.y, max_vy = state_i.v.y;
@@ -110,18 +103,18 @@ namespace gradients {
 #endif
         double min_E = state_i.E, max_E = state_i.E;
 
-        // accumulate over each face/neighbour
         uint64_t  face_count  = mesh->face_counts[i];
         uint64_t  face_start  = mesh->face_ptr[i];
         const int n_hydro_int = (int)mesh->n_hydro;
 
+        // every face adds its neighbour, weighted by face area over distance squared
         for (uint64_t fj = 0; fj < face_count; fj++) {
             uint64_t face_idx = face_start + fj;
             int      neighbor = mesh->neighbor_cell[face_idx];
 
-            // separation vector and inverse-distance weighting
             POINT_TYPE dx    = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
             double     dist2 = point_dot(dx, dx);
+            // a neighbour sitting on the seed would blow the weight up
             if (dist2 < 1e-24) continue;
 
             double face_area = mesh->face_area[face_idx];
@@ -136,6 +129,7 @@ namespace gradients {
             m22 += weight * dx.z * dx.z;
 #endif
 
+            // right side: the difference to the neighbour
             hydro::prim state_j = get_state_at(neighbor, n_hydro_int, primvar);
             hydro::prim d_state;
             d_state.rho = state_j.rho - state_i.rho;
@@ -178,8 +172,8 @@ namespace gradients {
             max_E = fmax(max_E, state_j.E);
         }
 
-        // solve M * grad = b for each primitive (one shared M, separate RHS per variable)
 #ifdef dim_2D
+        // same matrix, one solve per variable
         solve_weighted_lsq_2d(m00, m01, m11, b_rho_0, b_rho_1, &grads->rho[i]);
         solve_weighted_lsq_2d(m00, m01, m11, b_vx_0, b_vx_1, &grads->vx[i]);
         solve_weighted_lsq_2d(m00, m01, m11, b_vy_0, b_vy_1, &grads->vy[i]);
@@ -192,8 +186,7 @@ namespace gradients {
         solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_E_0, b_E_1, b_E_2, &grads->E[i]);
 #endif
 
-        // shrink each gradient so reconstructed face values
-        // stay between the cell's neighbour min/max
+        // limiter: scale the gradient down until no face value leaves the neighbour range
         double alpha_rho = 1.0, alpha_vx = 1.0, alpha_vy = 1.0, alpha_E = 1.0;
 #ifdef dim_3D
         double alpha_vz = 1.0;
@@ -202,7 +195,8 @@ namespace gradients {
             uint64_t   face_idx = face_start + fj;
             int        neighbor = mesh->neighbor_cell[face_idx];
             POINT_TYPE dx       = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
-            POINT_TYPE d        = point_mul(0.5, dx);
+            // halfway to the neighbour seed
+            POINT_TYPE d = point_mul(0.5, dx);
 
             alpha_rho = fmin(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));
             alpha_vx  = fmin(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads->vx[i]));
@@ -221,11 +215,7 @@ namespace gradients {
 #endif
         grads->E[i] = point_mul(alpha_E, grads->E[i]);
 
-        // pressure-floor safety: the per-variable limiter above keeps each primitive
-        // between neighbour min/max, but P = (gamma-1)*(E - 0.5*rho*v^2) is nonlinear,
-        // so the reconstructed face pressure can still go below zero. Shrink all
-        // gradients uniformly by the largest factor in [0,1] that keeps every face
-        // pressure at or above p_floor.
+        // second limiter: keep the reconstructed pressure above the floor
         const double p_floor       = 1e-12;
         PrimGradient grad_i_scaled = grads->load(i);
         double       alpha_p       = 1.0;
@@ -247,7 +237,7 @@ namespace gradients {
         }
     }
 
-    // largest fac in [0,1] such that value + fac*dp stays in [min,max]
+    // factor that keeps value + grad . d between min_value and max_value
     HD static inline double limit_single_gradient(const double      value,
                                                   const double      min_value,
                                                   const double      max_value,
@@ -280,7 +270,7 @@ namespace gradients {
         return fac;
     }
 
-    // reconstructed pressure at face offset d using gradients scaled by s in [0,1]
+    // pressure at d with the gradient scaled by s
     HD static inline double
     recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s) {
         double rho = state_i.rho + s * point_dot(grad_i.rho, d);
@@ -296,9 +286,7 @@ namespace gradients {
         return (gamma_eos - 1.0) * (E - 0.5 * rho * v2);
     }
 
-    // largest scale s in [0,1] such that reconstructed pressure at d stays >= p_floor.
-    // P(s) is cubic in s, so we bisect on s. Assumes the cell-centre pressure (s=0) is
-    // already positive — if not, returns 0 and gradients collapse to first-order in this cell.
+    // largest scale that holds the pressure at the floor, by bisection
     HD static inline double
     pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor) {
         if (recon_pressure(state_i, grad_i, d, 1.0) >= p_floor) return 1.0;

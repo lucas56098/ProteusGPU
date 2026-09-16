@@ -2,29 +2,30 @@
 #define ASTRO_LIMITERS_H
 #pragma once
 
+// Safety net around the centre: caps the temperature and the speed of a cell.
+
 #include "../global/gpu_compat.h"
 
 namespace astro {
 
 #ifdef LIMITERS
 
-    // hard clamps on T and |v| inside r < R_lim, matching the paper's central-region safety limits
-    // (Fournier et al. Sect. 2.1). Purely per-cell -- no MPI reduction needed.
+    // set once in limiters_init, in code units
     struct LimiterParams {
-        double cx, cy, cz; // box center
-        double r_lim2;     // R_lim^2 (code units)
-        double T_max;      // [K]
-        double C_T;        // T[K] = C_T * e_int/rho
-        double e_max_c;    // e_int/rho ceiling from T_max: e_int <= rho * e_max_c
-        double v_cap;      // |v| ceiling (code units)
-        double v_cap2;     // v_cap^2
+        double cx, cy, cz;
+        double r_lim2; // only inside this radius
+        double T_max;
+        double C_T;
+        double e_max_c; // T_max as specific energy
+        double v_cap;
+        double v_cap2;
     };
 
     void limiters_init();
     void limiters_apply();
 
-#endif // LIMITERS
+#endif
 
 } // namespace astro
 
-#endif // ASTRO_LIMITERS_H
+#endif

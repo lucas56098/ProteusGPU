@@ -1,3 +1,6 @@
+
+// mesh motion (voronoi.h)
+
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../hydro/riemann.h"
@@ -11,20 +14,17 @@ namespace voronoi {
 
 #ifdef MOVING_MESH
 
-    // ---- file-local types ----
     namespace {
-        // Lloyd-regularization displacement target: how far (and which way) the seed should
-        // move to reach its cell's centroid, optionally biased by the local density gradient.
+        // how far the seed sits from the centre of its cell
         struct LloydDisplacement {
-            double dx; // x-component of target offset
-            double dy; // y-component
-            double dz; // z-component (unused in 2D)
-            double di; // magnitude
-            double Ri; // effective cell radius (sphere / disk equivalent)
+            double dx;
+            double dy;
+            double dz;
+            double di; // length of dx, dy, dz
+            double Ri; // radius of a ball of the cell volume
         };
     } // namespace
 
-    // ---- forward declarations ----
     HD void compute_mesh_velocity_for_cell(uint64_t, VMesh*, const hydro::primvars*, const gradients::PrimGradients*);
     HD void move_mesh_for_cell(uint64_t, const VMesh*, double, POINT_TYPE*);
     HD void
@@ -40,35 +40,20 @@ namespace voronoi {
     static HD void              blend_into_mesh_velocity(
                      uint64_t i, VMesh* mesh, POINT_TYPE v_gas, LloydDisplacement L, const hydro::primvars* primvar);
 
-    // ============================================================
-    // Main routines
-    // ============================================================
-
-    // compute the mesh-point velocity (gas velocity + Lloyd regularization) for every cell
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads) {
         parallel_for<_MESH_BLOCK_SIZE_>(
             "V_MESH", mesh->n_hydro, [=] HD(size_t i) { compute_mesh_velocity_for_cell(i, mesh, primvar, grads); });
     }
 
-    // advance seeds by v_mesh * dt, migrate across ranks, rebuild mesh,
-    // and correct primvar_aux for the cell-volume change.
-    // mesh->scratch_move is the seed-position buffer through all three voronoi-side calls:
-    // advance_seeds_by_dt writes into it, the migrate path compacts/extends it in place,
-    // compute_periodic_mesh reads from it.
-    //
-    // On rebalance steps the per-step Cart-neighbor migrate is replaced by the full
-    // Alltoallv migrate_for_rebalance. Either way there is exactly one mesh build per
-    // step — the rebalance does not trigger a separate compute_periodic_mesh.
+    // moves the seeds, migrates cells, builds the mesh again
     void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
 
-        // store old volumes for volume correction afterwards
+        // the state is per volume, keep the old one
         gpu_memcpy(mesh->old_volumes, mesh->volumes, mesh->n_hydro * sizeof(double));
 
-        // advance seed positions by v_mesh * dt into mesh->scratch_move
         advance_seeds_by_dt(mesh, dt, mesh->scratch_move);
 
-        // migrate cells whose new bucket is owned by another rank;
-        // updates mesh->n_hydro and rewrites mesh->scratch_move in place
+        // a rebalance moves the brick borders, so more cells change rank
         if (proteus_mpi::rebalance_decide(sim.step, mesh, mesh->scratch_move)) {
             proteus_mpi::migrate_for_rebalance(mesh, primvar, primvar_aux);
             proteus_mpi::rebalance_log_after_migration(mesh);
@@ -76,25 +61,20 @@ namespace voronoi {
             proteus_mpi::migrate_seeds(mesh, primvar, primvar_aux);
         }
 
-        // rebuild the Voronoi mesh from the new seed positions; dt lets the CPU fallback
-        // fold each cell's perturbation delta into v_mesh as delta/dt
         compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, primvar_aux, dt);
 
-        // correct primvar_aux for the cell-volume change (conservation: rho, E scale with old/new ratio)
         correct_for_volume_change(mesh, primvar_aux);
     }
 
-    // ============================================================
-    // Helpers
-    // ============================================================
-
+    // writes the moved positions into pts, mesh->seeds stays
     static void advance_seeds_by_dt(VMesh* mesh, double dt, POINT_TYPE* pts) {
         const uint64_t n_hydro = mesh->n_hydro;
         parallel_for<_MESH_BLOCK_SIZE_>(
             "MOVE_MESH", n_hydro, [=] HD(size_t i) { move_mesh_for_cell(i, mesh, dt, pts); });
-        GPU_SYNC(); // migrate_seeds reads pts on the host below
+        GPU_SYNC();
     }
 
+    // the cell volume changed, so rho and E follow
     static void correct_for_volume_change(VMesh* mesh, hydro::primvars* primvar) {
         const uint64_t n_hydro     = mesh->n_hydro;
         const double*  old_volumes = mesh->old_volumes;
@@ -106,11 +86,6 @@ namespace voronoi {
             "VOL_CORRECT", n_hydro, [=] HD(size_t i) { volume_correct_for_cell(i, old_volumes, new_volumes, rho, E); });
     }
 
-    // ============================================================
-    // Per-cell work (parallel_for bodies)
-    // ============================================================
-
-    // mesh-point velocity = gas velocity + Lloyd regularization, both scaled by sound speed
     HD void compute_mesh_velocity_for_cell(uint64_t                        i,
                                            VMesh*                          mesh,
                                            const hydro::primvars*          primvar,
@@ -120,7 +95,7 @@ namespace voronoi {
         blend_into_mesh_velocity(i, mesh, v_gas, L, primvar);
     }
 
-    // advance one seed by v_mesh * dt with periodic wrap into [0, 1)
+    // wrapped back into the box
     HD void move_mesh_for_cell(uint64_t i, const VMesh* mesh, double dt, POINT_TYPE* pts) {
         pts[i].x = fmod((mesh->seeds[i].x + dt * mesh->v_mesh[i].x) + 1.0, 1.0);
         pts[i].y = fmod((mesh->seeds[i].y + dt * mesh->v_mesh[i].y) + 1.0, 1.0);
@@ -129,8 +104,6 @@ namespace voronoi {
 #endif
     }
 
-    // scale rho and E by old/new cell-volume ratio so total mass / energy stay conserved
-    // when cell volume changes during the mesh move
     HD void
     volume_correct_for_cell(uint64_t i, const double* old_volumes, const double* new_volumes, double* rho, double* E) {
         const double ratio = old_volumes[i] / new_volumes[i];
@@ -138,7 +111,6 @@ namespace voronoi {
         E[i] *= ratio;
     }
 
-    // read primvar->v[i] into a POINT_TYPE; the seed's gas velocity component
     HD static POINT_TYPE gas_velocity_for_cell(uint64_t i, const hydro::primvars* primvar) {
         POINT_TYPE v;
         v.x = primvar->v[i].x;
@@ -149,13 +121,11 @@ namespace voronoi {
         return v;
     }
 
-    // seed-to-centroid offset + density-gradient bias toward the steeper side (capped at
-    // Ri/4 and smoothly clamped so small fluctuations near the cap don't flip the bias)
+    // seed to centre of mass, plus a step up the density gradient
     HD static LloydDisplacement lloyd_correction_for_cell(uint64_t                        i,
                                                           const VMesh*                    mesh,
                                                           const hydro::primvars*          primvar,
                                                           const gradients::PrimGradients* grads) {
-        // effective cell radius from the volume
         LloydDisplacement L{};
 #ifdef dim_2D
         L.Ri = sqrt(fmax(mesh->volumes[i], 0.0) / PI);
@@ -163,14 +133,12 @@ namespace voronoi {
         L.Ri = portable_cbrt(3.0 * fmax(mesh->volumes[i], 0.0) / (4.0 * PI));
 #endif
 
-        // base offset: seed -> centroid, with periodic wrap on the deltas
         L.dx = wrap_periodic_delta(mesh->com[i].x - mesh->seeds[i].x);
         L.dy = wrap_periodic_delta(mesh->com[i].y - mesh->seeds[i].y);
 #ifdef dim_3D
         L.dz = wrap_periodic_delta(mesh->com[i].z - mesh->seeds[i].z);
 #endif
 
-        // density-gradient bias: push toward the steeper side of the gradient
         if (grads != nullptr && L.Ri > 0.0) {
 #ifdef dim_3D
             const double dgrad = sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y +
@@ -179,6 +147,7 @@ namespace voronoi {
             const double dgrad = sqrt(grads->rho[i].x * grads->rho[i].x + grads->rho[i].y * grads->rho[i].y);
 #endif
             if (dgrad > 0.0) {
+                // length over which the density changes by its own value; the step is at most Ri / 4
                 const double scale = primvar->rho[i] / dgrad;
                 const double tmp   = 3.0 * L.Ri + scale;
                 const double disc  = tmp * tmp - 8.0 * L.Ri * L.Ri;
@@ -194,7 +163,6 @@ namespace voronoi {
             }
         }
 
-        // magnitude of the full target offset
 #ifdef dim_3D
         L.di = sqrt(L.dx * L.dx + L.dy * L.dy + L.dz * L.dz);
 #else
@@ -203,21 +171,19 @@ namespace voronoi {
         return L;
     }
 
-    // ramp regularisation speed from 0 (well-shaped) to CellShapingSpeed * c_s (very
-    // distorted), scaled by local sound speed so the correction respects local time scales.
-    // Writes the final mesh velocity for cell i.
+    // gas velocity plus the terms that keep the cell in shape
     HD static void blend_into_mesh_velocity(
         uint64_t i, VMesh* mesh, POINT_TYPE v_gas, LloydDisplacement L, const hydro::primvars* primvar) {
         if (L.di > 0.0 && L.Ri > 0.0) {
-            // ramp factor: 0 below 0.75 * threshold, up to CellShapingSpeed at threshold
+            // how far off centre a seed may sit
             const double threshold = CellShapingFactor * L.Ri;
             double       fraction  = 0.0;
+            // nothing below three quarters of it, full speed above
             if (L.di > 0.75 * threshold) {
                 fraction = (L.di > threshold) ? CellShapingSpeed
                                               : CellShapingSpeed * (L.di - 0.75 * threshold) / (0.25 * threshold);
             }
 
-            // add fraction * c_s along the displacement direction
             if (fraction > 0.0) {
                 const double rho     = primvar->rho[i];
                 hydro::prim  state_i = get_state(i, primvar);
@@ -234,9 +200,7 @@ namespace voronoi {
         }
 
 #ifdef VOL_REGULARIZE
-        // size-equalizing drift: nudge small cells toward larger neighbours (soft de-refinement).
-        // engages only once smallness Ri_ref/Ri exceeds the VOL_REGULARIZE threshold, ramping to
-        // the full speed cap at twice the threshold.
+        // cells far below the reference size push towards their larger neighbours
         if (L.Ri > 0.0 && mesh->Ri_ref > 0.0) {
             const double thresh     = (double)VOL_REGULARIZE;
             const double size_ratio = mesh->Ri_ref / L.Ri;
@@ -248,7 +212,6 @@ namespace voronoi {
                 hydro::prim  state_i = get_state(i, primvar);
                 const double p       = fmax(0.0, hydro::get_P_ideal_gas(&state_i));
                 if (rho > 0.0 && p > 0.0) {
-                    // discrete size-gradient: sum_j area_j * (V_j - V_i) * unit(seed_i -> seed_j)
                     const int      n_hydro_int = (int)mesh->n_hydro;
                     const double   Vi          = mesh->volumes[i];
                     const uint64_t fp          = mesh->face_ptr[i];
@@ -257,9 +220,10 @@ namespace voronoi {
 #ifdef dim_3D
                     double gz = 0.0;
 #endif
+                    // which direction the larger neighbours are in
                     for (uint64_t fj = 0; fj < fc; fj++) {
                         const int nb = mesh->neighbor_cell[fp + fj];
-                        if (nb < 0) continue; // box boundary
+                        if (nb < 0) continue;
                         const double3 sj = get_seed_at(nb, n_hydro_int, mesh);
                         const double  rx = wrap_periodic_delta(sj.x - mesh->seeds[i].x);
                         const double  ry = wrap_periodic_delta(sj.y - mesh->seeds[i].y);
@@ -283,8 +247,6 @@ namespace voronoi {
                     const double glen = sqrt(gx * gx + gy * gy);
 #endif
                     if (glen > 0.0) {
-                        // scale by max(c_s, |v_gas|): in cold condensing gas c_s collapses, so
-                        // the inflow speed is the signal that must be matched to hold the mesh.
                         const double ci = sqrt(gamma_eos * p / rho);
 #ifdef dim_3D
                         const double vmag = sqrt(primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y +
@@ -304,7 +266,6 @@ namespace voronoi {
         }
 #endif
 
-        // commit the final velocity
         mesh->v_mesh[i].x = v_gas.x;
         mesh->v_mesh[i].y = v_gas.y;
 #ifdef dim_3D
@@ -312,6 +273,6 @@ namespace voronoi {
 #endif
     }
 
-#endif // MOVING_MESH
+#endif
 
 } // namespace voronoi

@@ -1,4 +1,5 @@
-/* hydro handling: init/free; hydro stepping; flux calc; CFL timestep */
+// implements the finite volume step (finite_volume_solver.h)
+
 #include "../astro/agn.h"
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
@@ -13,7 +14,6 @@
 
 namespace hydro {
 
-    // forward declarations
     HD void flux_update_for_cell(
         uint64_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
 #ifdef AGN_ENABLED
@@ -25,18 +25,13 @@ namespace hydro {
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new);
     static void swap_primvars(primvars* primvar, primvars* prim_new);
 
-    // ============================================================
-    // Allocation and initialization
-    // ============================================================
-
+    // allocates the state arrays and fills them from the IC
     void init_hydro() {
         const int n_hydro = (int)sim.n_hydro;
 
-        // allocate primvar
         sim.primvar = gpu_alloc<primvars>(1);
-        allocate_prim_buffer(sim.n_hydro, sim.primvar, /*with_ghosts=*/true);
+        allocate_prim_buffer(sim.n_hydro, sim.primvar, true);
 
-        // fill primvar with ic_data
         for (int i = 0; i < n_hydro; i++) {
             sim.primvar->rho[i] = ic_data.rho[i];
             sim.primvar->E[i]   = ic_data.energy[i];
@@ -47,92 +42,82 @@ namespace hydro {
 #endif
         }
 
-        // allocate prim_new
         sim.prim_new = gpu_alloc<primvars>(1);
-        allocate_prim_buffer(sim.n_hydro, sim.prim_new, /*with_ghosts=*/false);
+        allocate_prim_buffer(sim.n_hydro, sim.prim_new, false);
 
-        // allocate gradients
         sim.grads = gpu_alloc<gradients::PrimGradients>(1);
         gradients::allocate_grad(sim.n_hydro, sim.grads);
 
-        // allocate dt
         sim.dt = gpu_alloc<double>(1);
 
         const int n_hydro_global = logging::sum_global(n_hydro);
         logging::root() << "HYDRO: Initialized hydro for " << n_hydro_global << " particles" << std::endl;
     }
 
+    // gives them back at the end of the run
     void free_hydro() {
-        // free arrays
         free_prim_buffer(sim.primvar);
         free_prim_buffer(sim.prim_new);
         gradients::free_grad(sim.grads);
 
-        // free structures
         gpu_free(sim.primvar);
         gpu_free(sim.prim_new);
         gpu_free(sim.grads);
         gpu_free(sim.dt);
 
-        // set to nullptr
         sim.primvar  = nullptr;
         sim.prim_new = nullptr;
         sim.grads    = nullptr;
         sim.dt       = nullptr;
     }
 
-    // ============================================================
-    // Main routines
-    // ============================================================
-
+    // one step: half the fluxes, move the mesh, the other half
     void hydro_step(double dt, VMesh* mesh, primvars* primvar) {
 
         primvars*                 prim_new = sim.prim_new;
         gradients::PrimGradients* grads    = sim.grads;
 
-        // MPI exchange primvars
+        // the ghosts get the state of their own rank
         proteus_mpi::halo_exchange_primvars(mesh, primvar);
 
-        // set prim_new equal to primvar
+        // prim_new collects the update, primvar stays as it is
         reset_prim_new(mesh, primvar, prim_new);
 
-        // compute gradients from old state on old mesh
+        // gradients on the mesh as it is now
         gradients::compute_prim_gradients(mesh, primvar, grads);
         proteus_mpi::halo_exchange_gradients(mesh, grads);
 
 #ifdef MOVING_MESH
-        // compute v_mesh
         voronoi::compute_mesh_velocities(mesh, primvar, grads);
         proteus_mpi::halo_exchange_v_mesh(mesh);
 #endif
 
-        // first half update (no time extrapolation)
+        // first half step, states taken at the current time
         apply_flux_update(0.5 * dt, 0.0, mesh, primvar, grads, prim_new);
         logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (1/2)"
                         << std::endl;
 
 #ifdef MOVING_MESH
 
-        // move mesh
+        // move the mesh, then gradients again on the new one
         voronoi::move_mesh(mesh, dt, primvar, prim_new);
 
-        // recompute gradients on moved mesh for second half
         gradients::compute_prim_gradients(mesh, primvar, grads);
         proteus_mpi::halo_exchange_gradients(mesh, grads);
 #endif
 
-        // second half update (with time extrapolation)
+        // second half step, states extrapolated to the end of the step
         apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, prim_new);
         logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (2/2)"
                         << std::endl;
 
-        // set prim_new as the new primvar
+        // prim_new is the state of the run from here
         swap_primvars(primvar, prim_new);
 
         check_unphysical_state(mesh, primvar);
     }
 
-    // per cell flux update (used in both RK2 steps)
+    // one flux update over all cells; dt_extrap > 0 also extrapolates the states in time
     void apply_flux_update(double                          dt_update,
                            double                          dt_extrap,
                            const VMesh*                    mesh,
@@ -149,19 +134,16 @@ namespace hydro {
         });
     }
 
+    // smallest CFL step of all cells, over all ranks
     double calc_timestep(double CFL, const VMesh* mesh, const primvars* primvar) {
 
         {
-            // per rank CFL timestep (min over all cells)
             PROFILE("CFL");
 
 #ifdef AGN_ENABLED
-            // hoisted out of the per-cell body: these read agn.cu statics on the host, so
-            // calling them per cell would be a silent per-cell cost
             const bool             agn_firing = astro::agn_is_firing();
             const astro::AgnParams p_agn      = astro::agn_params();
 #endif
-            // identity 1e100 also covers a rank that owns no cells
             *sim.dt = parallel_reduce<_HYDRO_BLOCK_SIZE_, double>(
                 "DT_CFL",
                 mesh->n_hydro,
@@ -176,21 +158,16 @@ namespace hydro {
                 });
         }
 
-        // global all rank minimum dt
         proteus_mpi::halo_dt_allreduce(sim.dt);
 
-        // limit to snapshot/end of simulation
+        // do not step over the next output or the end of the run
         if (sim.t_sim + *sim.dt > sim.t_nextoutput) { *sim.dt = sim.t_nextoutput - sim.t_sim; }
         if (sim.t_sim + *sim.dt > sim.t_end) { *sim.dt = sim.t_end - sim.t_sim; }
 
         return *sim.dt;
     }
 
-    // ============================================================
-    // Host functions
-    // ============================================================
-
-    // set prim_new equal to prim
+    // prim_new = primvar
     static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new) {
 
         PROFILE("COPY_PRIMVAR");
@@ -199,22 +176,19 @@ namespace hydro {
         gpu_memcpy(prim_new->E, primvar->E, mesh->n_hydro * sizeof(double));
     }
 
-    // swap the rho / v / E SoA pointers between primvar and prim_new so primvar holds
-    // the newly-computed state for the next step
     static void swap_primvars(primvars* primvar, primvars* prim_new) {
-        GPU_SYNC(); // ensure all kernel writes to prim_new have landed before the swap
+        GPU_SYNC();
         std::swap(primvar->rho, prim_new->rho);
         std::swap(primvar->v, prim_new->v);
         std::swap(primvar->E, prim_new->E);
     }
 
-    // the three counters travel together so one sweep serves all of them: the loop is
-    // bandwidth-bound on rho/E/v, and three separate reductions would read them three times
+    // bad cells of each kind
     struct UnphysCounts {
         int rho_bad, E_bad, nan_bad;
     };
 
-    // scan primvar for unphysical values
+    // stops the run if any cell has rho <= 0, E <= 0 or a NaN
     static void check_unphysical_state(VMesh* mesh, const primvars* primvar) {
         PROFILE("UNPHYS_CHECK");
 
@@ -226,21 +200,17 @@ namespace hydro {
                 return UnphysCounts{a.rho_bad + b.rho_bad, a.E_bad + b.E_bad, a.nan_bad + b.nan_bad};
             },
             [=] HD(size_t i) {
-                const double rho = primvar->rho[i];
-                const double E   = primvar->E[i];
-                // x != x is the NaN test that behaves the same on both backends (math_utils.h
-                // uses the same idiom); std::isnan is host-only and isnan() is device-only
-                const bool has_nan = !(rho == rho) || !(E == E) || !(primvar->v[i].x == primvar->v[i].x) ||
+                const double rho     = primvar->rho[i];
+                const double E       = primvar->E[i];
+                const bool   has_nan = !(rho == rho) || !(E == E) || !(primvar->v[i].x == primvar->v[i].x) ||
                                      !(primvar->v[i].y == primvar->v[i].y)
 #ifdef dim_3D
                                      || !(primvar->v[i].z == primvar->v[i].z)
 #endif
                     ;
-                // NaN <= 0 is false, so a NaN never double-counts as rho<=0
                 return UnphysCounts{rho <= 0.0 ? 1 : 0, E <= 0.0 ? 1 : 0, has_nan ? 1 : 0};
             });
 
-        // global reduce; abort the run if anything fired
         const int rho_bad = logging::sum_global(counts.rho_bad);
         const int E_bad   = logging::sum_global(counts.E_bad);
         const int nan_bad = logging::sum_global(counts.nan_bad);
@@ -252,11 +222,7 @@ namespace hydro {
         proteus_mpi::exit_failure("HYDRO: ABORT: unphysical state detected — terminating run.\n");
     }
 
-    // ============================================================
-    // Per-cell work functions (parallel_for bodies)
-    // ============================================================
-
-    // sum face fluxes around cell i and apply the conservative update to prim_new[i]
+    // sums the fluxes over the faces of cell i and updates its state
     HD void flux_update_for_cell(uint64_t                        i,
                                  double                          dt_update,
                                  bool                            do_time_extrap,
@@ -268,16 +234,13 @@ namespace hydro {
 
         const uint64_t face_base = mesh->face_ptr[i];
 
-        // own state and gradient
         prim                    state_i = get_state(i, prim_old);
         gradients::PrimGradient grad_i  = grads->load(i);
 
         prim      total_flux;
         const int n_hydro_int = (int)mesh->n_hydro;
 
-        // accumulate flux contribution from each face. face_idx must be uint64_t — at
-        // 2e8 cells/rank with _FACE_CAPACITY_MULT_=17, max_faces ~ 5e9 and an int
-        // would silently wrap, reading garbage from neighbor_cell / face_area.
+        // one face after the other
         for (uint64_t j = 0; j < mesh->face_counts[i]; j++) {
             uint64_t                face_idx = face_base + j;
             int                     index_j  = mesh->neighbor_cell[face_idx];
@@ -285,14 +248,14 @@ namespace hydro {
             gradients::PrimGradient grad_j   = grads->load_at(index_j, n_hydro_int);
             double3                 seed_j   = get_seed_at(index_j, n_hydro_int, mesh);
 
-            // local face frame (n, m, p) along the seed-to-seed direction
+            // face frame: n along the line between the two seeds, m and p across it
             double3 delta = {wrap_periodic_delta(seed_j.x - mesh->seeds[i].x),
                              wrap_periodic_delta(seed_j.y - mesh->seeds[i].y),
                              wrap_periodic_delta(seed_j.z - mesh->seeds[i].z)};
             geom    g     = compute_geom(delta);
 
 #ifdef MOVING_MESH
-            // face velocity (lab + face-frame) for the moving-mesh transformation
+            // the face itself moves
             POINT_TYPE vel_face, vel_face_turned;
             POINT_TYPE vm_i = mesh->v_mesh[i];
             POINT_TYPE vm_j = get_vmesh_at(index_j, n_hydro_int, mesh);
@@ -307,42 +270,41 @@ namespace hydro {
                          &vel_face_turned);
 #endif
 
-            // reconstruct left/right face states by spatial (and optionally temporal) extrapolation
             prim       state_l, state_r;
             POINT_TYPE dx = point_diff_periodic(seed_j, mesh->seeds[i]);
 
+            // both states, extrapolated from the seed to the middle of the face
             apply_spatial_extrapolation(state_i, grad_i, point_mul(0.5, dx), &state_l);
             apply_spatial_extrapolation(state_j, grad_j, point_mul(-0.5, dx), &state_r);
 
+            // and to the end of the step
             if (do_time_extrap) {
                 apply_time_extrapolation(state_i, grad_i, dt_extrap, &state_l);
                 apply_time_extrapolation(state_j, grad_j, dt_extrap, &state_r);
             }
 
 #ifdef MOVING_MESH
-            // boost into the face-comoving frame
+            // into the frame that moves with the face
             convert_state_to_local_frame(&state_l, vel_face);
             convert_state_to_local_frame(&state_r, vel_face);
 #endif
 
-            // floor density and pressure
+            // the extrapolation can leave the physical range
             keep_state_physical(&state_l, mesh->min_egy_spec);
             keep_state_physical(&state_r, mesh->min_egy_spec);
 
-            // rotate into face frame
+            // x along the normal, so the solver works in 1D
             rotate_to_face(&state_l, &g);
             rotate_to_face(&state_r, &g);
 
-            // solve flux
             flux_t flux_ij = riemann_hllc(state_l, state_r);
 
 #ifdef MOVING_MESH
-            // boost flux back to the lab frame
             convert_flux_to_lab_frame(&flux_ij, vel_face_turned);
 #endif
             rotate_from_face(&flux_ij, &g);
 
-            // accumulate area-weighted flux
+            // the solver gives a flux per area
             double face_area = mesh->face_area[face_idx];
 
             total_flux.rho += flux_ij.rho * face_area;
@@ -354,30 +316,23 @@ namespace hydro {
             total_flux.E += flux_ij.E * face_area;
         }
 
-        // conservative update: state_new = state_old - (dt/V) * sum(F * A)
+        // what flows out in dt_update, spread over the cell volume
         double           frac           = dt_update / mesh->volumes[i];
         double           rho_old        = prim_new->rho[i];
         double           rho_new        = rho_old - frac * total_flux.rho;
         constexpr double RHO_FLOOR_CELL = 1e-13;
 
+        // with a temperature floor the cell is held at the floor instead of going empty
         if (mesh->min_egy_spec > 0.0 && rho_new < RHO_FLOOR_CELL) {
-            // Density-floor "soft landing". The cell would go negative-mass under a normal
-            // momentum-conserving update, and conserving momentum against the floored rho
-            // amplifies v by ~1/floor_ratio, producing cells that NaN the flux calc
-            // downstream. Instead floor rho, freeze v at its pre-flux value (drop the
-            // momentum flux this step), and reset E onto the temperature wall for the new
-            // rho. Locally non-conservative, but the mass was already essentially gone.
-            // The floor is absolute, not relative: rho_new = 1e-10 * rho_old would ratchet
-            // 10x smaller on every firing and make 1/rho in time_gradient explode.
             rho_new          = RHO_FLOOR_CELL;
             prim_new->rho[i] = rho_new;
-            // prim_new->v[i] already holds the pre-flux value; leave it untouched
-            double v2 = prim_new->v[i].x * prim_new->v[i].x + prim_new->v[i].y * prim_new->v[i].y;
+            double v2        = prim_new->v[i].x * prim_new->v[i].x + prim_new->v[i].y * prim_new->v[i].y;
 #ifdef dim_3D
             v2 += prim_new->v[i].z * prim_new->v[i].z;
 #endif
             prim_new->E[i] = 0.5 * rho_new * v2 + rho_new * mesh->min_egy_spec;
         } else {
+            // v is a velocity, so the update runs over the momentum and divides by the new density
             double rho_inv = 1.0 / rho_new;
 
             prim_new->rho[i] = rho_new;
@@ -388,7 +343,7 @@ namespace hydro {
 #endif
             prim_new->E[i] -= frac * total_flux.E;
 
-            // temperature floor: keep E above kinetic + e_int(T_floor) = rho * min_egy_spec
+            // keep the internal energy at the floor
             if (mesh->min_egy_spec > 0.0) {
                 double v2 = prim_new->v[i].x * prim_new->v[i].x + prim_new->v[i].y * prim_new->v[i].y;
 #ifdef dim_3D
@@ -400,7 +355,7 @@ namespace hydro {
         }
     }
 
-    // CFL timestep for cell i
+// CFL step of one cell: its radius over sound speed plus velocity
 #ifdef AGN_ENABLED
     HD double dt_CFL_for_cell(uint64_t                i,
                               double                  CFL,
@@ -412,7 +367,6 @@ namespace hydro {
     HD double dt_CFL_for_cell(uint64_t i, double CFL, const VMesh* mesh, const primvars* primvar) {
 #endif
 
-        // get state
         prim state_i;
         state_i.rho = primvar->rho[i];
         state_i.E   = primvar->E[i];
@@ -422,14 +376,9 @@ namespace hydro {
         state_i.v.z = primvar->v[i].z;
 #endif
 
-        // sound speed
-        double P = get_P_ideal_gas(&state_i);
-        // guard the sqrt: a negative P (unphysical cell) would make c_i NaN, and NaN survives the
-        // atomicMin/fmin reduction to poison the GLOBAL dt
+        double P   = get_P_ideal_gas(&state_i);
         double c_i = (state_i.rho > 0.0 && P > 0.0) ? sqrt(gamma_eos * P / state_i.rho) : 0.0;
 #ifdef AGN_ENABLED
-        // cells inside the thermal deposit sphere can be pushed to T_max by the next injection,
-        // so bound dt by that sound speed rather than the current one
         if (agn_firing) {
             const double3 sd = mesh->seeds[i];
             const double  dx = sd.x - p_agn.cx, dy = sd.y - p_agn.cy;
@@ -439,6 +388,7 @@ namespace hydro {
 #else
             const double r2 = dx * dx + dy * dy;
 #endif
+            // the AGN is about to heat this gas, so use the sound speed it will have
             if (r2 < p_agn.r_T2) {
                 const double c_ceiling = sqrt(p_agn.cs2_max);
                 if (c_ceiling > c_i) c_i = c_ceiling;
@@ -446,14 +396,14 @@ namespace hydro {
         }
 #endif
 
-        // radius
 #ifdef dim_2D
+        // radius of a disc or ball of the cell volume
         double R_i = sqrt(mesh->volumes[i] / M_PI);
 #else
         double R_i = portable_cbrt(3.0 * mesh->volumes[i] / (4.0 * M_PI));
 #endif
-        // fluid speed
 #ifdef MOVING_MESH
+        // the mesh moves along, only the rest matters
         double dvx = state_i.v.x - mesh->v_mesh[i].x;
         double dvy = state_i.v.y - mesh->v_mesh[i].y;
 #ifdef dim_3D
@@ -470,7 +420,6 @@ namespace hydro {
 #endif
 #endif
 #if defined(AGN_ENABLED) && defined(AGN_KINETIC)
-        // jet launch zones can push |v| up to v_cap in one step
         if (agn_firing) {
             const double3 sd  = mesh->seeds[i];
             const double  dx  = sd.x - p_agn.cx;
@@ -481,21 +430,17 @@ namespace hydro {
 #else
             const double perp2 = dx * dx;
 #endif
+            // same for the velocity the jet is about to add
             if (perp2 < p_agn.r_jet2 && ady > p_agn.L_jet && ady < p_agn.L_jet + p_agn.h_jet) {
                 if (p_agn.v_cap > v_sig) v_sig = p_agn.v_cap;
             }
         }
 #endif
 
-        // calc CFL dt
         return CFL * (R_i / (c_i + v_sig));
     }
 
-    // ============================================================
-    // helper functions
-    // ============================================================
-
-    // floor density and pressure to small positive values
+    // floors for density and internal energy
     HD void keep_state_physical(prim* state, double min_egy_spec) {
         const double rho_floor = 1e-12;
         const double p_floor   = 1e-12;
@@ -506,15 +451,13 @@ namespace hydro {
 #ifdef dim_3D
         v2 += state->v.z * state->v.z;
 #endif
-        // keep ekin a separate temporary: folding it into the sum below lets the compiler
-        // contract it to an FMA, which changes the rounding of every floor-free run
         double ekin      = 0.5 * state->rho * v2;
         double e_int_min = (min_egy_spec > 0.0) ? state->rho * min_egy_spec : p_floor / (gamma_eos - 1.0);
         double emin      = ekin + e_int_min;
         if (state->E < emin) { state->E = emin; }
     }
 
-    // rotate velocity from lab into the face frame
+    // velocity into the face frame
     HD void rotate_to_face(prim* state, geom* g) {
         double velx = state->v.x;
         double vely = state->v.y;
@@ -529,7 +472,7 @@ namespace hydro {
 #endif
     }
 
-    // rotate velocity from the face frame back to lab frame
+    // and back
     HD void rotate_from_face(prim* state, geom* g) {
         double velx = state->v.x;
         double vely = state->v.y;
@@ -544,7 +487,7 @@ namespace hydro {
 #endif
     }
 
-    // st_extrap = state + dx * gradient
+    // state at seed + dx, from the gradient
     HD void apply_spatial_extrapolation(const prim                    state,
                                         const gradients::PrimGradient gradient,
                                         POINT_TYPE                    dx,
@@ -558,14 +501,7 @@ namespace hydro {
         st_extrap->E = state.E + point_dot(gradient.E, dx);
     }
 
-    // st_extrap += dt * dW/dt
-    // st_extrap += beta * dt * dW/dt, where beta in [0, 1] is the largest scale that keeps
-    // the reconstructed face state above the rho and pressure floors. Analogous to
-    // gradients::pressure_safe_scale for the spatial term (per-cell), but applied here
-    // per-face on top of the already spatially-limited state. Without it, dt * dWdt is
-    // unbounded and can drive face states to arbitrary rho/E, producing pathological
-    // Riemann inputs at sharp interfaces (e.g. cells adjacent to a floored neighbour, or
-    // cells whose neighbour topology just changed after a symmetry-cascade rebuild).
+    // state dt_extrap later, from the Euler equations
     HD void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap) {
         prim dWdt;
         gradients::time_gradient(state_i, grad_i, &dWdt);
@@ -574,7 +510,7 @@ namespace hydro {
         constexpr double P_FLOOR_FACE   = 1e-12;
         double           beta           = 1.0;
 
-        // rho constraint: linear in beta. Only binds when dWdt.rho < 0.
+        // beta shortens the step so that the density stays above its floor
         if (dWdt.rho < 0.0) {
             const double denom = -dt_extrap * dWdt.rho;
             if (denom > 0.0) {
@@ -583,9 +519,6 @@ namespace hydro {
             }
         }
 
-        // pressure constraint: P = (gamma-1)*(E - 0.5*rho*v^2) is cubic in beta. Bisect on
-        // [0, beta] if the current beta already violates P >= P_FLOOR_FACE. Reuses the
-        // same 16-iteration bisection depth as gradients::pressure_safe_scale.
         {
             const double rho_b = st_extrap->rho + beta * dt_extrap * dWdt.rho;
             const double vx_b  = st_extrap->v.x + beta * dt_extrap * dWdt.v.x;
@@ -599,6 +532,7 @@ namespace hydro {
             const double E_b = st_extrap->E + beta * dt_extrap * dWdt.E;
             const double P_b = (gamma_eos - 1.0) * (E_b - 0.5 * rho_b * v2_b);
 
+            // and the pressure above its own, found by bisection
             if (P_b < P_FLOOR_FACE) {
                 double lo = 0.0, hi = beta;
                 for (int it = 0; it < 16; ++it) {
@@ -634,7 +568,7 @@ namespace hydro {
     }
 
 #ifdef MOVING_MESH
-    // face velocity
+    // velocity of the face: mean of the two mesh velocities, plus the turn of the face
     HD void get_vel_face(uint64_t      i,
                          uint64_t      index_j,
                          POINT_TYPE    v_mesh_i,
@@ -647,8 +581,6 @@ namespace hydro {
 
         double facv;
 
-        // compute distance between generators (nn = |r_ij|) — index_j may be an MPI ghost,
-        // so route the seed read through the ghost-aware accessor.
         const double3 seed_j = get_seed_at((int)index_j, (int)mesh->n_hydro, mesh);
         double        nnx    = wrap_periodic_delta(seed_j.x - mesh->seeds[i].x);
         double        nny    = wrap_periodic_delta(seed_j.y - mesh->seeds[i].y);
@@ -659,10 +591,11 @@ namespace hydro {
         double nn = sqrt(nnx * nnx + nny * nny);
 #endif
 
+        // mean of the two seeds
         vel_face->x = 0.5 * (v_mesh_i.x + v_mesh_j.x);
         vel_face->y = 0.5 * (v_mesh_i.y + v_mesh_j.y);
 
-        // reconstruct offset from seed midpoint using local tangent-space coords
+// the face centre is off the middle of the seeds, so the face also turns around it
 #ifdef dim_2D
         double alpha = f_mid_local[0];
         double cx    = alpha * g.m.x;
@@ -685,7 +618,7 @@ namespace hydro {
         double cc = sqrt(cx * cx + cy * cy);
 #endif
 
-        // limiter for highly distorted cells
+        // cap it before the face outruns the seeds
         if (cc > 0.9 * nn) facv *= (0.9 * nn) / cc;
 
         vel_face->x += facv * g.n.x;
@@ -704,7 +637,7 @@ namespace hydro {
 #endif
     }
 
-    // boost the primitive state into the face-comoving frame (subtract vel_face from velocity)
+    // into the frame of the face; the pressure stays, the energy follows the new velocity
     HD void convert_state_to_local_frame(prim* st, POINT_TYPE vel_face) {
         double v2_old = st->v.x * st->v.x + st->v.y * st->v.y;
 #ifdef dim_3D
@@ -726,7 +659,7 @@ namespace hydro {
         st->E = P / (gamma_eos - 1.0) + 0.5 * st->rho * v2_new;
     }
 
-    // boost the flux back from the face frame to the lab frame (add advected mass/momentum/energy)
+    // and the flux back into the lab frame
     HD void convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned) {
         double momx = flux->v.x;
         double momy = flux->v.y;
@@ -747,6 +680,6 @@ namespace hydro {
                    0.5 * flux->rho * (vel_face_turned.x * vel_face_turned.x + vel_face_turned.y * vel_face_turned.y);
 #endif
     }
-#endif // MOVING_MESH
+#endif
 
 } // namespace hydro

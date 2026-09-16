@@ -1,25 +1,24 @@
 #ifndef GEOMETRY_H
 #define GEOMETRY_H
 
+// Area, volume and centre of a finished cell.
+
 #include "../global/allvars.h"
 #include <cmath>
 
 namespace voronoi {
 
-    // forward declaration (defined in cell.h)
     template <int MAX_P, int MAX_T, typename IDX, typename VERT> struct BasicConvexCell;
 
-    // 2D: walk the cell's polygon boundary and accumulate area + centroid via shoelace
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD double compute_cell_area_centroid_2d(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
                                             const double4_t*                                vertices,
                                             double&                                         cx,
                                             double&                                         cy);
 
-    // reverse face_verts[] in place if its winding faces inward (toward the seed)
+    // vertex order so that the normal points away from the seed
     HD void orient_face_outward(double4_t* face_verts, int n_fv, double4_t seed);
 
-    // 3D: fan-triangulate the face from v0 and accumulate face area + cell volume + weighted centroid
     HD void compute_face_area_and_volume_centroid(const double4_t* face_verts,
                                                   int              n_fv,
                                                   double4_t        seed,
@@ -29,11 +28,9 @@ namespace voronoi {
                                                   double&          wy_accum,
                                                   double&          wz_accum);
 
-    // face measure = edge length in 2D, face area in 3D; optionally contributes to cell volume
+    // face area, length in 2D
     HD double compute_face_measure(double4_t* face_verts, int n_face_verts, double4_t seed, double* cell_volume);
 
-    // face centroid: midpoint of the 2 edge endpoints in 2D; area-weighted centroid via
-    // fan triangulation in 3D. Inline so kernels can call it without separate TU linkage.
     HD inline void
     compute_face_centroid(const double4_t* face_verts, int n_face_verts, double& fmx, double& fmy, double& fmz) {
 #ifdef dim_2D
@@ -42,7 +39,6 @@ namespace voronoi {
         fmx = 0.5 * (face_verts[0].x + face_verts[1].x);
         fmy = 0.5 * (face_verts[0].y + face_verts[1].y);
 #else
-        // fan-triangulate from v0; accumulate area-weighted triangle centroids
         double           total_area = 0.0;
         double           cx = 0.0, cy = 0.0, cz = 0.0;
         constexpr double one_third = 1.0 / 3.0;
@@ -57,7 +53,6 @@ namespace voronoi {
             total_area += t_area;
         }
 
-        // normalise; fall back to v0 if the face has zero area
         if (total_area > 0.0) {
             const double inv_area = 1.0 / total_area;
             fmx                   = cx * inv_area;
@@ -73,4 +68,4 @@ namespace voronoi {
 
 } // namespace voronoi
 
-#endif // GEOMETRY_H
+#endif

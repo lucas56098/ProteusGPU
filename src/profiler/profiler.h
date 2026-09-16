@@ -1,6 +1,8 @@
 #ifndef PROFILER_H
 #define PROFILER_H
 
+// Scoped timers, printed at the end of the run and written to profile.hdf5.
+
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -13,26 +15,11 @@
 #include "nvtx3/nvToolsExt.h"
 #endif
 
-// Profiler — hierarchical CPU + GPU + MPI timing.
-//
-// Three RAII scope kinds; each one pushes a node onto a path stack so the
-// runtime parent of every timer is its enclosing scope. The full path
-// (DOMAIN.SUB.LEAF) is what gets stored / printed / written to HDF5.
-//
-//   PROFILE("MESH.CELLS")          // CPU work, kind=c
-//   PROFILE_MPI("WAIT")            // MPI call site, kind=m
-//   PROFILE_KERNEL("FLUX_KERNEL")  // CUDA kernel, kind=g — GPU events
-//                                  //   queried lazily at log_timestep
-//
-// The macros are RAII over a Scope/MpiScope/KernelScope; the destructor pops
-// the stack and accumulates elapsed time. Don't mix with manual Start/End.
-//
-// Without ENABLE_PROFILING every method is an inline no-op and the macros expand
-// to `(void)0`, so the call sites compile away to nothing.
+// all state is static, one per process
 class Profiler {
   public:
 #ifdef ENABLE_PROFILING
-    // CPU host wall-clock scope.
+    // times its scope, path = parent path + name
     class Scope {
       public:
         explicit Scope(const char* short_name);
@@ -44,7 +31,7 @@ class Profiler {
         std::string m_path;
     };
 
-    // CPU wall-clock scope, marked as MPI work in the tree.
+    // same, counted as mpi time
     class MpiScope {
       public:
         explicit MpiScope(const char* short_name);
@@ -56,9 +43,7 @@ class Profiler {
         std::string m_path;
     };
 
-    // CUDA-kernel scope: records start/stop events on the default stream.
-    // CPU launch time is folded into the parent (host scope still ticks, but
-    // the leaf's stored value is GPU device time). Events drain lazily.
+    // GPU time from CUDA events, CUDA builds only
     class KernelScope {
       public:
         explicit KernelScope(const char* short_name);
@@ -69,46 +54,38 @@ class Profiler {
       private:
         std::string m_path;
 #ifdef CUDA_PROFILING
-        void* m_start_event; // cudaEvent_t — owned during this scope's lifetime
+        void* m_start_event;
 #endif
     };
 
+    // TOTAL timer around the whole run
     static void   start_total_timer();
     static void   stop_total_timer();
     static double total_seconds();
 
-    // End-of-run summary on rank 0 (with cross-rank min/avg/max).
+    // timer tree at the end of the run
     static void print_results();
 
+    // profile.hdf5: open, one row per step, close
     static void open_profile_log(const std::string& path, int restart_step);
     static void close_profile_log();
     static void log_timestep(int step);
 
+    // close path of exit_failure
     static void abort_profile_log();
 
-    // Seed in-memory cumulative timings from a snapshot's /header/profiler group.
-    // Must run before any new Start so subsequent diffs are computed from the
-    // restored baseline. TOTAL is rewound by adjusting its live start time so
-    // collect_current's live offset includes the resumed runtime.
+    // restart: start from the totals in the snapshot
     static void seed_from_cumulative(const std::unordered_map<std::string, double>& cum_sec);
 
-    // Current cumulative seconds per full-path timer (live values for any
-    // currently-open scopes are folded in). Used by output.cu to snapshot
-    // profiler state for restart-on-snapshot.
+    // totals per path, stored in every snapshot
     static std::unordered_map<std::string, double> current_cumulative();
 
   private:
-    // Non-blocking drain of completed GPU events into the cumulative GPU map.
-    // Called from log_timestep (every step) and print_results (force-sync).
     static void drain_gpu_events(bool force_sync);
 
-    // Build the (name, cum_us) view this rank currently has, with live timers
-    // (TOTAL, HYDRO) extended to "now". One row per full-path timer, regardless
-    // of kind — for cpu/mpi rows the unit is CPU µs, for gpu rows it's GPU µs.
     static std::vector<std::pair<std::string, long long>> collect_current();
 #else
-    // Empty RAII types keep the scope classes usable if a call site names one
-    // directly; the macros below degrade to `(void)0` anyway.
+    // without ENABLE_PROFILING everything here compiles to nothing
     struct Scope {
         explicit Scope(const char*) {}
     };
@@ -129,15 +106,13 @@ class Profiler {
     static inline void   abort_profile_log() {}
     static inline void   seed_from_cumulative(const std::unordered_map<std::string, double>&) {}
     static inline std::unordered_map<std::string, double> current_cumulative() { return {}; }
-#endif // ENABLE_PROFILING
+#endif
 };
 
-// Macros — each one declares a uniquely-named RAII object so multiple PROFILE
-// lines can live in the same scope. __COUNTER__ would also work; __LINE__ is
-// enough and the diagnostics are kinder.
 #ifdef ENABLE_PROFILING
 #define PROFILE_CAT_(a, b) a##b
 #define PROFILE_CAT(a, b) PROFILE_CAT_(a, b)
+// one scope object per use, __LINE__ makes the name unique
 #define PROFILE(name) Profiler::Scope PROFILE_CAT(_prof_scope_, __LINE__)(name)
 #define PROFILE_MPI(name) Profiler::MpiScope PROFILE_CAT(_prof_mscope_, __LINE__)(name)
 #define PROFILE_KERNEL(name) Profiler::KernelScope PROFILE_CAT(_prof_kscope_, __LINE__)(name)
@@ -147,6 +122,7 @@ class Profiler {
 #define PROFILE_KERNEL(name) ((void)0)
 #endif
 
+// seconds as hh:mm:ss
 inline std::string format_hms(double seconds) {
     if (seconds < 0.0) { seconds = 0.0; }
     long long total = static_cast<long long>(seconds + 0.5);
@@ -159,6 +135,7 @@ inline std::string format_hms(double seconds) {
     return os.str();
 }
 
+// peak memory line at the end of the run
 void print_max_memory_usage();
 
-#endif // PROFILER_H
+#endif
