@@ -88,7 +88,22 @@ namespace voronoi {
 
     static int s_wide_tier_rebuilds = 0;
 
-    static int s_uncertified_rebuilds = 0;
+    static int     s_uncertified_rebuilds = 0;
+    static double3 s_first_uncertified    = {0.0, 0.0, 0.0}; // its seed, for the message
+
+    // a cell reaching past the points this rank has may miss a neighbour, so the run stops
+    static void stop_if_uncertified(const char* who) {
+        if (s_uncertified_rebuilds == 0) return;
+        proteus_mpi::exit_failure("[rank %d] VORONOI: %d cell(s) built by the %s reach past the points this rank "
+                                  "has (ghost band on one rank, halo under MPI), the first at (%g, %g, %g). They may "
+                                  "miss a neighbour. Aborting.\n",
+                                  proteus_mpi::rank(),
+                                  s_uncertified_rebuilds,
+                                  who,
+                                  s_first_uncertified.x,
+                                  s_first_uncertified.y,
+                                  s_first_uncertified.z);
+    }
 
     // rebuilds every failed cell, returns how many needed a moved seed
     int cpu_fallback_failed_cells(VMesh* mesh, int* num_failed_out, double dt, std::vector<int>* perturbed_ks_out) {
@@ -145,10 +160,7 @@ namespace voronoi {
             std::cerr << "VORONOI: " << s_wide_tier_rebuilds << " cell(s) rebuilt on the wide tier (" << _BIG_MAX_P_
                       << "/" << _BIG_MAX_T_ << " slots)." << std::endl;
         }
-        if (s_uncertified_rebuilds > 0) {
-            std::cerr << "VORONOI: WARNING " << s_uncertified_rebuilds
-                      << " fallback cell(s) could not be certified against this rank's data extent." << std::endl;
-        }
+        stop_if_uncertified("CPU fallback");
         return (int)perturbed_ks.size();
     }
 
@@ -435,8 +447,9 @@ namespace voronoi {
 #ifdef USE_MPI
         store_security_d2(mesh, (uint64_t)k, r2_num, r2_denom);
 #endif
-        if (security_reached &&
-            !cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi)) {
+        if (!cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi, mesh->buff)) {
+            if (s_uncertified_rebuilds == 0)
+                s_first_uncertified = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
             s_uncertified_rebuilds++;
         }
 
@@ -819,12 +832,7 @@ namespace voronoi {
                   << " affected cell(s), " << result.rebuilt << " rebuild(s) over " << result.rounds << " round(s)."
                   << std::endl;
 
-        if (s_uncertified_rebuilds > 0) {
-            std::cerr << "VORONOI: WARNING " << s_uncertified_rebuilds
-                      << " cell(s) rebuilt by the MPI repair could not be certified against this rank's "
-                         "data extent -- raise the starting halo width."
-                      << std::endl;
-        }
+        stop_if_uncertified("MPI repair");
         if (s_wide_tier_rebuilds > 0) {
             std::cerr << "VORONOI: " << s_wide_tier_rebuilds
                       << " cell(s) rebuilt on the wide tier during the MPI repair." << std::endl;

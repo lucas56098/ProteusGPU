@@ -74,16 +74,19 @@ namespace voronoi {
             stat[k] = security_radius_not_reached;
         }
 
-#ifdef USE_MPI
         if (stat[k] == success) {
             double r2_num, r2_denom;
             cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
+#ifdef USE_MPI
             store_security_d2(mesh, (uint64_t)k, r2_num, r2_denom);
+#endif
             // cell may reach into data this rank does not have
-            if (!cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi)) {
+            if (!cell_certified_within_data(
+                    cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi, mesh->buff)) {
                 stat[k] = security_radius_beyond_data;
             }
         }
+#ifdef USE_MPI
         (void)early_break;
         (void)v_terminate;
 #endif
@@ -234,13 +237,21 @@ namespace voronoi {
 
     // ball of 2 x the farthest vertex inside the extent
     HD bool cell_certified_within_data(
-        double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi) {
-        if (!(data_hi[0] > data_lo[0])) return true; // no extent, nothing to check
+        double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi, double buff) {
+        // no extent: one rank, it has the box and the ghost band around it
+        double lo[3] = {-buff, -buff, -buff};
+        double hi[3] = {1.0 + buff, 1.0 + buff, 1.0 + buff};
+        if (data_hi[0] > data_lo[0]) {
+            for (int a = 0; a < 3; a++) {
+                lo[a] = data_lo[a];
+                hi[a] = data_hi[a];
+            }
+        }
 
-        double safe = fmin(seed.x - data_lo[0], data_hi[0] - seed.x);
-        safe        = fmin(safe, fmin(seed.y - data_lo[1], data_hi[1] - seed.y));
+        double safe = fmin(seed.x - lo[0], hi[0] - seed.x);
+        safe        = fmin(safe, fmin(seed.y - lo[1], hi[1] - seed.y));
 #ifdef dim_3D
-        safe = fmin(safe, fmin(seed.z - data_lo[2], data_hi[2] - seed.z));
+        safe = fmin(safe, fmin(seed.z - lo[2], hi[2] - seed.z));
 #endif
         if (safe <= 0.0) return false;
 

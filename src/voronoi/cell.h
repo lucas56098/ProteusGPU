@@ -99,7 +99,7 @@ namespace voronoi {
 
     // true if no point outside the rank data can still cut the cell
     HD bool cell_certified_within_data(
-        double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi);
+        double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi, double buff);
 
     // build cell k and write it into the mesh
     template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT>
