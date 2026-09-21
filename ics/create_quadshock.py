@@ -46,9 +46,9 @@ def fill_quadshock(row_lo, n_local, args):
     mid = 0.5 * args.extent
     quadrants = [
         (x >= mid) & (y >= mid),
-        (x < mid) & (y > mid),
+        (x < mid) & (y >= mid),
         (x < mid) & (y < mid),
-        (x > mid) & (y < mid),
+        (x >= mid) & (y < mid),
     ]
 
     rho = np.zeros(n_local, dtype=np.float64)

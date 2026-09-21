@@ -50,9 +50,9 @@ def fill_riemann3d(row_lo, n_local, args):
     for z_slab in (z >= mid, z < mid):
         masks += [
             (x >= mid) & (y >= mid) & z_slab,
-            (x < mid) & (y > mid) & z_slab,
+            (x < mid) & (y >= mid) & z_slab,
             (x < mid) & (y < mid) & z_slab,
-            (x > mid) & (y < mid) & z_slab,
+            (x >= mid) & (y < mid) & z_slab,
         ]
 
     rho = np.zeros(n_local, dtype=np.float64)
