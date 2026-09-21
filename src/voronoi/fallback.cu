@@ -166,14 +166,10 @@ namespace voronoi {
 
     // count, and bring the status array to the host
     static int count_failed_and_prefetch_status(VMesh* mesh) {
-        const int     n_hydro = (int)mesh->n_hydro;
-        const Status* stat    = mesh->cell_status;
-
-        const int n_failed = parallel_reduce_sum<_MESH_BLOCK_SIZE_, int>(
-            "COUNT_FAILED", n_hydro, [=] HD(size_t k) { return (stat[k] != success) ? 1 : 0; });
+        const int n_failed = count_failed_cells(mesh);
 
 #ifndef CPU_DEBUG
-        if (n_failed > 0) gpu_prefetch_to_cpu(mesh->cell_status, n_hydro * sizeof(Status));
+        if (n_failed > 0) gpu_prefetch_to_cpu(mesh->cell_status, mesh->n_hydro * sizeof(Status));
 #endif
         return n_failed;
     }

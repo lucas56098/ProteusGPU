@@ -62,7 +62,6 @@ namespace voronoi {
     static void     record_mpi_ghost_indices(uint64_t* original_ids, uint64_t n_hydro, uint64_t n_ghosts);
     static void     remap_exports_and_pts(VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro);
     static bool widen_converged_across_ranks(VMesh* mesh, bool have_mpi, int* local_failed_out, int* global_beyond_out);
-    static int  count_local_failed_cells(const VMesh* mesh);
     static int  count_local_beyond_data_cells(const VMesh* mesh);
     static void sum_ints_across_ranks(const int* local, int* global, int n);
     static void check_ghost_count(uint64_t n_ghosts, uint64_t max_ghosts);
@@ -368,7 +367,7 @@ namespace voronoi {
     // done when no rank has a cell left that reaches past its data
     static bool
     widen_converged_across_ranks(VMesh* mesh, bool have_mpi, int* local_failed_out, int* global_beyond_out) {
-        *local_failed_out = count_local_failed_cells(mesh);
+        *local_failed_out = count_failed_cells(mesh);
 
         if (!have_mpi) {
             *global_beyond_out = 0;
@@ -380,12 +379,6 @@ namespace voronoi {
         sum_ints_across_ranks(&local_beyond, &global_beyond, 1);
         *global_beyond_out = global_beyond;
         return (global_beyond == 0);
-    }
-
-    static int count_local_failed_cells(const VMesh* mesh) {
-        const Status* stat = mesh->cell_status;
-        return parallel_reduce_sum<_MESH_BLOCK_SIZE_, int>(
-            "COUNT_FAILED", mesh->n_hydro, [=] HD(size_t k) { return (stat[k] != success) ? 1 : 0; });
     }
 
     static int count_local_beyond_data_cells(const VMesh* mesh) {

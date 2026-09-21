@@ -15,6 +15,7 @@ namespace voronoi {
     static void allocate_cell_scratch(uint64_t n_hydro);
     static void run_fast_cell_kernel(VMesh* mesh);
     static int  collect_failed_cells(VMesh* mesh);
+    static int  count_failed_cells(const VMesh* mesh);
     static void print_cell_build_summary(uint64_t n_hydro, int n_failed);
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed);
     static void read_face_count_from_gpu(VMesh* mesh);
@@ -292,6 +293,13 @@ namespace voronoi {
         });
 
         return (int)flags[n_hydro - 1] + ((stat[n_hydro - 1] != success) ? 1 : 0);
+    }
+
+    // cells no tier has built yet
+    static int count_failed_cells(const VMesh* mesh) {
+        const Status* stat = mesh->cell_status;
+        return parallel_reduce_sum<_MESH_BLOCK_SIZE_, int>(
+            "COUNT_FAILED", mesh->n_hydro, [=] HD(size_t k) { return (stat[k] != success) ? 1 : 0; });
     }
 
     static void print_cell_build_summary(uint64_t n_hydro, int n_failed) {
