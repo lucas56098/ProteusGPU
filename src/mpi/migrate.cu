@@ -599,6 +599,9 @@ namespace proteus_mpi {
             }
             n_after--;
         }
+#ifndef MOVING_MESH
+        (void)mesh;
+#endif
         return n_after;
     }
 
