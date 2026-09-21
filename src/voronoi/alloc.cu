@@ -222,6 +222,11 @@ namespace voronoi {
         gpu_free(mesh->sid_to_neighbor);
         mesh->sid_to_neighbor = new_s2n;
 
+        gpu_free(mesh->scan_flags);
+        gpu_free(mesh->scan_scratch);
+        mesh->scan_flags   = gpu_alloc<unsigned int>(new_total);
+        mesh->scan_scratch = gpu_alloc<unsigned int>(scan_scratch_size((size_t)new_total, _MESH_BLOCK_SIZE_));
+
         mesh->ghost_capacity = new_max_ghosts;
         mesh->total_capacity = new_total;
     }
