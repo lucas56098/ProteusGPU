@@ -199,7 +199,8 @@ namespace voronoi {
                                               const double4_t*                           orig_positions,
                                               double                                     dt,
                                               bool                                       require_security,
-                                              Status&                                    last_status_out) {
+                                              Status&                                    last_status_out,
+                                              bool&                                      overflowed) {
         constexpr int max_perturb = 12;
         double        scale       = 1e-13;
         for (int attempt = 0; attempt <= max_perturb; attempt++) {
@@ -223,6 +224,7 @@ namespace voronoi {
             }
 
             last_status_out = attempt_status;
+            if (attempt_status == vertex_overflow || attempt_status == triangle_overflow) overflowed = true;
             if (attempt > 0) rewind_perturbation(d_stored_points, sids, n_sids, orig_positions);
             scale *= 10.0;
         }
@@ -253,18 +255,38 @@ namespace voronoi {
         for (size_t i = 0; i < n_sids; i++)
             orig_positions[i] = point_from_ptr(d_stored_points + DIMENSION * sids[i]);
 
-        FallbackOutcome outcome = run_perturb_ladder(
-            mesh, k, seed_id, d_stored_points, bounded, sids, n_sids, orig_positions.data(), dt, true, last_status_out);
+        bool            overflowed = false;
+        FallbackOutcome outcome    = run_perturb_ladder(mesh,
+                                                     k,
+                                                     seed_id,
+                                                     d_stored_points,
+                                                     bounded,
+                                                     sids,
+                                                     n_sids,
+                                                     orig_positions.data(),
+                                                     dt,
+                                                     true,
+                                                     last_status_out,
+                                                     overflowed);
         if (outcome != FallbackOutcome::failed) return outcome;
 
         const auto full = sort_neighbours_by_distance(d_stored_points, seed_id, (int)mesh->n_seeds);
-        outcome         = run_perturb_ladder(
-            mesh, k, seed_id, d_stored_points, full, sids, n_sids, orig_positions.data(), dt, false, last_status_out);
+        outcome         = run_perturb_ladder(mesh,
+                                     k,
+                                     seed_id,
+                                     d_stored_points,
+                                     full,
+                                     sids,
+                                     n_sids,
+                                     orig_positions.data(),
+                                     dt,
+                                     false,
+                                     last_status_out,
+                                     overflowed);
         if (outcome != FallbackOutcome::failed) return outcome;
 
-        if (last_status_out != vertex_overflow && last_status_out != triangle_overflow) {
-            return FallbackOutcome::failed;
-        }
+        // more slots only help if some attempt ran out of them
+        if (!overflowed) return FallbackOutcome::failed;
         return rebuild_on_wide_tier(mesh, k, seed_id, d_stored_points, bounded, last_status_out)
                    ? FallbackOutcome::ok_unchanged
                    : FallbackOutcome::failed;
