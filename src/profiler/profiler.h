@@ -22,22 +22,12 @@ class Profiler {
     // times its scope, path = parent path + name
     class Scope {
       public:
-        explicit Scope(const char* short_name);
+        enum class Kind { cpu, mpi };
+
+        explicit Scope(const char* short_name, Kind kind = Kind::cpu);
         ~Scope();
         Scope(const Scope&)            = delete;
         Scope& operator=(const Scope&) = delete;
-
-      private:
-        std::string m_path;
-    };
-
-    // same, counted as mpi time
-    class MpiScope {
-      public:
-        explicit MpiScope(const char* short_name);
-        ~MpiScope();
-        MpiScope(const MpiScope&)            = delete;
-        MpiScope& operator=(const MpiScope&) = delete;
 
       private:
         std::string m_path;
@@ -87,10 +77,8 @@ class Profiler {
 #else
     // without ENABLE_PROFILING everything here compiles to nothing
     struct Scope {
-        explicit Scope(const char*) {}
-    };
-    struct MpiScope {
-        explicit MpiScope(const char*) {}
+        enum class Kind { cpu, mpi };
+        explicit Scope(const char*, Kind = Kind::cpu) {}
     };
     struct KernelScope {
         explicit KernelScope(const char*) {}
@@ -114,7 +102,7 @@ class Profiler {
 #define PROFILE_CAT(a, b) PROFILE_CAT_(a, b)
 // one scope object per use, __LINE__ makes the name unique
 #define PROFILE(name) Profiler::Scope PROFILE_CAT(_prof_scope_, __LINE__)(name)
-#define PROFILE_MPI(name) Profiler::MpiScope PROFILE_CAT(_prof_mscope_, __LINE__)(name)
+#define PROFILE_MPI(name) Profiler::Scope PROFILE_CAT(_prof_mscope_, __LINE__)(name, Profiler::Scope::Kind::mpi)
 #define PROFILE_KERNEL(name) Profiler::KernelScope PROFILE_CAT(_prof_kscope_, __LINE__)(name)
 #else
 #define PROFILE(name) ((void)0)

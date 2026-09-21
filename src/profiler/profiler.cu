@@ -102,11 +102,14 @@ namespace {
 
 } // namespace
 
-// start a cpu timer, push the path
-Profiler::Scope::Scope(const char* short_name) {
+// start a timer, push the path; mpi wins over cpu
+Profiler::Scope::Scope(const char* short_name, Kind kind) {
     m_path = build_full_path(short_name);
     s_path_stack.push_back(m_path);
-    if (s_kind.find(m_path) == s_kind.end()) s_kind[m_path] = 'c'; // do not overwrite an mpi or gpu kind
+    if (kind == Kind::mpi)
+        s_kind[m_path] = 'm';
+    else if (s_kind.find(m_path) == s_kind.end())
+        s_kind[m_path] = 'c';
     s_live_start[m_path] = std::chrono::high_resolution_clock::now();
 #ifdef CUDA_PROFILING
     nvtxRangePushA(m_path.c_str());
@@ -115,30 +118,6 @@ Profiler::Scope::Scope(const char* short_name) {
 
 // add the elapsed time, pop the path
 Profiler::Scope::~Scope() {
-    const auto end = std::chrono::high_resolution_clock::now();
-    auto       it  = s_live_start.find(m_path);
-    if (it != s_live_start.end()) {
-        s_cum_us[m_path] += std::chrono::duration_cast<std::chrono::microseconds>(end - it->second).count();
-        s_live_start.erase(it);
-    }
-#ifdef CUDA_PROFILING
-    nvtxRangePop();
-#endif
-    if (!s_path_stack.empty()) s_path_stack.pop_back();
-}
-
-// like Scope, marks the path mpi (wins over cpu)
-Profiler::MpiScope::MpiScope(const char* short_name) {
-    m_path = build_full_path(short_name);
-    s_path_stack.push_back(m_path);
-    s_kind[m_path]       = 'm';
-    s_live_start[m_path] = std::chrono::high_resolution_clock::now();
-#ifdef CUDA_PROFILING
-    nvtxRangePushA(m_path.c_str());
-#endif
-}
-
-Profiler::MpiScope::~MpiScope() {
     const auto end = std::chrono::high_resolution_clock::now();
     auto       it  = s_live_start.find(m_path);
     if (it != s_live_start.end()) {
