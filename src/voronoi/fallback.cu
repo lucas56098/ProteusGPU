@@ -188,7 +188,11 @@ namespace voronoi {
 
     static constexpr int FALLBACK_BOUNDED_K = 2048; // candidates of the bounded search
 
-    // build, and on failure again with the seed moved, the step ten times larger each try
+    static bool is_overflow(Status s) {
+        return s == vertex_overflow || s == triangle_overflow;
+    }
+
+    // build with the seed moved, the step ten times larger each try; attempt 0 is the seed as it is
     static FallbackOutcome run_perturb_ladder(VMesh*                                     mesh,
                                               int                                        k,
                                               int                                        seed_id,
@@ -199,11 +203,14 @@ namespace voronoi {
                                               const double4_t*                           orig_positions,
                                               double                                     dt,
                                               bool                                       require_security,
+                                              int                                        first_attempt,
                                               Status&                                    last_status_out,
                                               bool&                                      overflowed) {
         constexpr int max_perturb = 12;
         double        scale       = 1e-13;
-        for (int attempt = 0; attempt <= max_perturb; attempt++) {
+        for (int attempt = 0; attempt < first_attempt; attempt++)
+            scale *= 10.0;
+        for (int attempt = first_attempt; attempt <= max_perturb; attempt++) {
             double3 delta = {0.0, 0.0, 0.0};
             if (attempt > 0) {
                 delta = compute_perturbation_delta(seed_id, attempt, scale);
@@ -224,30 +231,56 @@ namespace voronoi {
             }
 
             last_status_out = attempt_status;
-            if (attempt_status == vertex_overflow || attempt_status == triangle_overflow) overflowed = true;
+            if (is_overflow(attempt_status)) overflowed = true;
             if (attempt > 0) rewind_perturbation(d_stored_points, sids, n_sids, orig_positions);
             scale *= 10.0;
         }
         return FallbackOutcome::failed;
     }
 
-    // one cell through the ladder: near points, all points, wide tier
+    // one cell through the ladder: every unperturbed build first, a moved seed only after all of them
     static FallbackOutcome rebuild_cell_with_perturb_retry(
         VMesh* mesh, int k, double* d_stored_points, CellSids& cell_sids, double dt, Status& last_status_out) {
-        cell_sids.ensure_built_for(k);
-
         const int seed_id = (int)mesh->real_sorted_ids[k];
 
         const auto bounded = gather_nearby_seeds_sorted(d_stored_points, seed_id, mesh->knn, FALLBACK_BOUNDED_K);
 
         // out of slots: only the wide tier can help
-        const Status incoming = mesh->cell_status[k];
-        if (incoming == vertex_overflow || incoming == triangle_overflow) {
+        if (is_overflow(mesh->cell_status[k])) {
             return rebuild_on_wide_tier(mesh, k, seed_id, d_stored_points, bounded, last_status_out)
                        ? FallbackOutcome::ok_unchanged
                        : FallbackOutcome::failed;
         }
 
+        // the near points
+        Status st = success;
+        if (try_build_cell_from_neighbours_as<ConvexCell>(mesh, k, seed_id, d_stored_points, bounded, true, st)) {
+            return FallbackOutcome::ok_unchanged;
+        }
+        bool overflowed = is_overflow(st);
+
+        // too few of them: all points, a kick does not bring in the ones that are missing
+        std::vector<std::pair<double, int>> full;
+        if (st == security_radius_not_reached) {
+            full = sort_neighbours_by_distance(d_stored_points, seed_id, (int)mesh->n_seeds);
+            if (try_build_cell_from_neighbours_as<ConvexCell>(mesh, k, seed_id, d_stored_points, full, false, st)) {
+                return FallbackOutcome::ok_unchanged;
+            }
+            overflowed = overflowed || is_overflow(st);
+        }
+        const bool full_tried = !full.empty();
+
+        // out of slots: more slots before a kick
+        bool wide_tried = false;
+        if (overflowed) {
+            if (rebuild_on_wide_tier(mesh, k, seed_id, d_stored_points, bounded, last_status_out)) {
+                return FallbackOutcome::ok_unchanged;
+            }
+            wide_tried = true;
+        }
+
+        // what is left is degenerate, a small move of the seed can fix that
+        cell_sids.ensure_built_for(k);
         const int*   sids   = cell_sids.begin_for(k);
         const size_t n_sids = (size_t)cell_sids.size_for(k);
 
@@ -255,8 +288,7 @@ namespace voronoi {
         for (size_t i = 0; i < n_sids; i++)
             orig_positions[i] = point_from_ptr(d_stored_points + DIMENSION * sids[i]);
 
-        bool            overflowed = false;
-        FallbackOutcome outcome    = run_perturb_ladder(mesh,
+        FallbackOutcome outcome = run_perturb_ladder(mesh,
                                                      k,
                                                      seed_id,
                                                      d_stored_points,
@@ -266,12 +298,13 @@ namespace voronoi {
                                                      orig_positions.data(),
                                                      dt,
                                                      true,
+                                                     1,
                                                      last_status_out,
                                                      overflowed);
         if (outcome != FallbackOutcome::failed) return outcome;
 
-        const auto full = sort_neighbours_by_distance(d_stored_points, seed_id, (int)mesh->n_seeds);
-        outcome         = run_perturb_ladder(mesh,
+        if (!full_tried) full = sort_neighbours_by_distance(d_stored_points, seed_id, (int)mesh->n_seeds);
+        outcome = run_perturb_ladder(mesh,
                                      k,
                                      seed_id,
                                      d_stored_points,
@@ -281,12 +314,13 @@ namespace voronoi {
                                      orig_positions.data(),
                                      dt,
                                      false,
+                                     full_tried ? 1 : 0,
                                      last_status_out,
                                      overflowed);
         if (outcome != FallbackOutcome::failed) return outcome;
 
         // more slots only help if some attempt ran out of them
-        if (!overflowed) return FallbackOutcome::failed;
+        if (!overflowed || wide_tried) return FallbackOutcome::failed;
         return rebuild_on_wide_tier(mesh, k, seed_id, d_stored_points, bounded, last_status_out)
                    ? FallbackOutcome::ok_unchanged
                    : FallbackOutcome::failed;

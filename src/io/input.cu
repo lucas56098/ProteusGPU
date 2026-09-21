@@ -189,13 +189,6 @@ bool InputHandler::read_ic_file(const std::string& filename, ICData& ic_data) {
 
     logging::root() << "INPUT: IC file " << filename << " loaded successfully!" << std::endl;
 
-    const int n_total = (int)ic_data.header.n_seeds;
-
-    // give each particle a global id
-    ic_data.global_id.resize(n_total);
-    for (int i = 0; i < n_total; i++)
-        ic_data.global_id[i] = (uint64_t)i;
-
     return true;
 }
 
@@ -292,11 +285,6 @@ bool InputHandler::read_ic_chunk_parallel(const std::string& filename,
             return false;
         }
     }
-
-    // set global particle ID
-    ic_data.global_id.resize(n_local);
-    for (uint64_t i = 0; i < n_local; i++)
-        ic_data.global_id[i] = (uint64_t)(row_lo + i);
 
     logging::root() << "INPUT: IC file " << filename << " loaded in parallel (per-rank chunked read)." << std::endl;
     return true;

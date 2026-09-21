@@ -102,11 +102,10 @@ namespace proteus_mpi {
 
     // one IC cell on its way to the rank that owns it
     struct ICMigrant {
-        double   pos[DIMENSION];
-        double   vel[DIMENSION];
-        double   rho;
-        double   energy;
-        uint64_t global_id;
+        double pos[DIMENSION];
+        double vel[DIMENSION];
+        double rho;
+        double energy;
     };
 
     // every rank read its own rows of the IC file, this sends each cell to its owner
@@ -178,9 +177,8 @@ namespace proteus_mpi {
                 m.pos[d] = ic.pos[DIMENSION * k + d];
                 m.vel[d] = ic.vel[DIMENSION * k + d];
             }
-            m.rho       = ic.rho[k];
-            m.energy    = ic.energy[k];
-            m.global_id = ic.global_id[k];
+            m.rho    = ic.rho[k];
+            m.energy = ic.energy[k];
         }
 
         MPI_Datatype ic_migrant_t;
@@ -208,16 +206,14 @@ namespace proteus_mpi {
         ic.vel.resize((size_t)DIMENSION * n_local_out);
         ic.rho.resize(n_local_out);
         ic.energy.resize(n_local_out);
-        ic.global_id.resize(n_local_out);
         for (int j = 0; j < n_local_out; j++) {
             const ICMigrant& m = recvbuf[j];
             for (int d = 0; d < DIMENSION; d++) {
                 ic.pos[DIMENSION * j + d] = m.pos[d];
                 ic.vel[DIMENSION * j + d] = m.vel[d];
             }
-            ic.rho[j]       = m.rho;
-            ic.energy[j]    = m.energy;
-            ic.global_id[j] = m.global_id;
+            ic.rho[j]    = m.rho;
+            ic.energy[j] = m.energy;
         }
         ic.header.n_seeds = (uint64_t)n_local_out;
 

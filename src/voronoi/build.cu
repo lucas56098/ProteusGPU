@@ -186,8 +186,6 @@ namespace voronoi {
         const uint64_t      n    = mesh->n_hydro;
         const unsigned int* perm = mesh->gather_perm;
 
-        permute_inplace(mesh->cell_to_original, mesh->scratch_uint, n, perm);
-
         if (primvar) {
             permute_inplace(primvar->rho, mesh->scratch_double, n, perm);
             permute_inplace(primvar->v, mesh->scratch_point, n, perm);

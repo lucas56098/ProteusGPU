@@ -364,7 +364,6 @@ namespace begrun {
         std::vector<double>().swap(ic_data.rho);
         std::vector<double>().swap(ic_data.vel);
         std::vector<double>().swap(ic_data.energy);
-        std::vector<uint64_t>().swap(ic_data.global_id);
 #ifdef MOVING_MESH
         std::vector<double>().swap(ic_data.v_mesh);
 #endif

@@ -103,19 +103,18 @@ namespace proteus_mpi {
         HD inline void unpack_migrant_body(int                j,
                                            int                n_after_remove,
                                            const MigrantCell* recvbuf,
-                                           POINT_TYPE*        pts,
-                                           double3*           seeds,
-                                           double*            primvar_rho,
-                                           POINT_TYPE*        primvar_v,
-                                           double*            primvar_E,
-                                           double*            prim_new_rho,
-                                           POINT_TYPE*        prim_new_v,
-                                           double*            prim_new_E,
 #ifdef MOVING_MESH
                                            POINT_TYPE* v_mesh,
                                            double*     old_volumes,
 #endif
-                                           unsigned int* cell_to_original) {
+                                           POINT_TYPE* pts,
+                                           double3*    seeds,
+                                           double*     primvar_rho,
+                                           POINT_TYPE* primvar_v,
+                                           double*     primvar_E,
+                                           double*     prim_new_rho,
+                                           POINT_TYPE* prim_new_v,
+                                           double*     prim_new_E) {
             const int         k  = n_after_remove + j;
             const MigrantCell mc = recvbuf[j];
             pts[k]               = mc.pos;
@@ -134,7 +133,6 @@ namespace proteus_mpi {
             v_mesh[k]      = mc.v_mesh;
             old_volumes[k] = mc.old_volume;
 #endif
-            cell_to_original[k] = (unsigned int)k;
         }
 
     } // namespace pack

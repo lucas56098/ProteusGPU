@@ -100,16 +100,12 @@ namespace voronoi {
         mesh->ghost_ids = gpu_alloc<uint64_t>(max_ghosts);
 
         // index maps and scratch
-        mesh->real_sorted_ids  = gpu_alloc<unsigned int>(ext);
-        mesh->sid_to_neighbor  = gpu_alloc<unsigned int>(total);
-        mesh->cell_to_original = gpu_alloc<unsigned int>(ext);
-        mesh->gather_perm      = gpu_alloc<unsigned int>(ext);
-        mesh->orig_to_k_save   = gpu_alloc<unsigned int>(ext);
-        mesh->scan_flags       = gpu_alloc<unsigned int>(total);
-        mesh->scan_scratch     = gpu_alloc<unsigned int>(scan_scratch_size((size_t)total, _MESH_BLOCK_SIZE_));
-        // cell k is input point k until the first build sorts them
-        for (uint64_t i = 0; i < n_hydro; i++)
-            mesh->cell_to_original[i] = (unsigned int)i;
+        mesh->real_sorted_ids = gpu_alloc<unsigned int>(ext);
+        mesh->sid_to_neighbor = gpu_alloc<unsigned int>(total);
+        mesh->gather_perm     = gpu_alloc<unsigned int>(ext);
+        mesh->orig_to_k_save  = gpu_alloc<unsigned int>(ext);
+        mesh->scan_flags      = gpu_alloc<unsigned int>(total);
+        mesh->scan_scratch    = gpu_alloc<unsigned int>(scan_scratch_size((size_t)total, _MESH_BLOCK_SIZE_));
 
         mesh->scratch_uint   = gpu_alloc<unsigned int>(ext);
         mesh->scratch_double = gpu_alloc<double>(ext);
@@ -134,7 +130,6 @@ namespace voronoi {
         gpu_advise_gpu_preferred(mesh->face_area, max_faces * sizeof(double));
         gpu_advise_gpu_preferred(mesh->real_sorted_ids, n_hydro * sizeof(unsigned int));
         gpu_advise_gpu_preferred(mesh->sid_to_neighbor, total * sizeof(unsigned int));
-        gpu_advise_gpu_preferred(mesh->cell_to_original, n_hydro * sizeof(unsigned int));
         gpu_advise_gpu_preferred(mesh->gather_perm, n_hydro * sizeof(unsigned int));
 
         return mesh;
@@ -162,7 +157,6 @@ namespace voronoi {
         gpu_free(mesh->ghost_ids);
         gpu_free(mesh->real_sorted_ids);
         gpu_free(mesh->sid_to_neighbor);
-        gpu_free(mesh->cell_to_original);
         gpu_free(mesh->gather_perm);
         gpu_free(mesh->orig_to_k_save);
         gpu_free(mesh->scan_flags);

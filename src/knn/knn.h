@@ -9,17 +9,16 @@
 
 // the grid and the point list sorted into it, one per run
 typedef struct knn_problem {
-    int           len_pts;             // points in the grid right now
-    int           pts_capacity;        // points the arrays can hold
-    int           N_grid;              // buckets per axis, same for the whole run
-    int           Npow;                // buckets in total
-    int           N_cell_offsets;      // entries of the two ring arrays
-    int*          d_cell_offsets;      // index step of every ring, nearest ring first
-    double*       d_cell_offset_dists; // smallest distance to that ring, squared
-    unsigned int* d_permutation;       // sorted point -> its index in the input list
-    int*          d_counters;          // points per bucket
-    int*          d_ptrs;              // first point of each bucket
-    int*          d_globcounter;
+    int           len_pts;                  // points in the grid right now
+    int           pts_capacity;             // points the arrays can hold
+    int           N_grid;                   // buckets per axis, same for the whole run
+    int           Npow;                     // buckets in total
+    int           N_cell_offsets;           // entries of the two ring arrays
+    int*          d_cell_offsets;           // index step of every ring, nearest ring first
+    double*       d_cell_offset_dists;      // smallest distance to that ring, squared
+    unsigned int* d_permutation;            // sorted point -> its index in the input list
+    int*          d_counters;               // points per bucket
+    int*          d_ptrs;                   // first point of each bucket
     int*          d_scan_scratch;           // scratch of the scan over d_counters
     int*          d_bucket_ids;             // scratch of the sort
     POINT_TYPE*   d_stored_points;          // the points, bucket by bucket

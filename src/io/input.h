@@ -35,8 +35,6 @@ struct ICData { // created once in global.cu
     std::vector<double> v_mesh; // only used if restarting from snapshot
 #endif
 
-    std::vector<uint64_t> global_id; // row in the IC file; not used if restart from snapshot
-
     ICHeader header;
 };
 

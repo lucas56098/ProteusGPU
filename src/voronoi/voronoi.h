@@ -58,8 +58,7 @@ struct VMesh {
     // index maps of the current build
     unsigned int* real_sorted_ids; // cell k -> sorted point
     unsigned int* sid_to_neighbor; // sorted point -> neighbour index
-    unsigned int* cell_to_original;
-    unsigned int* gather_perm; // cell k -> input point
+    unsigned int* gather_perm;     // cell k -> input point
 
     unsigned int* orig_to_k_save; // input point -> cell k, reused by the later rounds
     unsigned int* scan_flags;

@@ -44,7 +44,6 @@ namespace knn {
         knn->d_permutation            = NULL;
         knn->d_counters               = NULL;
         knn->d_ptrs                   = NULL;
-        knn->d_globcounter            = NULL;
         knn->d_scan_scratch           = NULL;
         knn->d_bucket_ids             = NULL;
         knn->d_stored_points          = NULL;
@@ -113,7 +112,6 @@ namespace knn {
         knn->d_counters = gpu_calloc<int>(Npow);
         knn->d_ptrs     = gpu_calloc<int>(Npow);
 
-        knn->d_globcounter   = gpu_calloc<int>(1);
         knn->d_stored_points = gpu_calloc<POINT_TYPE>(max_n_total);
         knn->d_permutation   = gpu_calloc<unsigned int>(max_n_total);
         knn->d_scan_scratch  = gpu_calloc<int>((int)scan_scratch_size((size_t)Npow, _KNN_BLOCK_SIZE_));
@@ -182,7 +180,6 @@ namespace knn {
 
         gpu_memset(knn->d_counters, 0, knn->Npow * sizeof(int));
         gpu_memset(knn->d_ptrs, 0, knn->Npow * sizeof(int));
-        gpu_memset(knn->d_globcounter, 0, sizeof(int));
 
         sort_points_into_grid(knn, pts, len_pts);
     }
@@ -195,7 +192,6 @@ namespace knn {
         gpu_free((*knn)->d_permutation);
         gpu_free((*knn)->d_counters);
         gpu_free((*knn)->d_ptrs);
-        gpu_free((*knn)->d_globcounter);
         gpu_free((*knn)->d_scan_scratch);
         gpu_free((*knn)->d_bucket_ids);
         gpu_free((*knn)->d_stored_points);

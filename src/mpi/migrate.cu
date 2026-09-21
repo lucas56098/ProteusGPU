@@ -596,7 +596,6 @@ namespace proteus_mpi {
                 mesh->v_mesh[k_remove]      = mesh->v_mesh[k_last];
                 mesh->old_volumes[k_remove] = mesh->old_volumes[k_last];
 #endif
-                mesh->cell_to_original[k_remove] = mesh->cell_to_original[k_last];
             }
             n_after--;
         }
@@ -614,15 +613,14 @@ namespace proteus_mpi {
         (void)my_rank;
         if (total_recv <= 0) return;
 
-        auto*   recvbuf          = s_recvbuf;
-        auto*   seeds            = mesh->seeds;
-        double* rho              = primvar->rho;
-        auto*   v                = primvar->v;
-        double* E                = primvar->E;
-        double* rho_new          = prim_new->rho;
-        auto*   v_new            = prim_new->v;
-        double* E_new            = prim_new->E;
-        auto*   cell_to_original = mesh->cell_to_original;
+        auto*   recvbuf = s_recvbuf;
+        auto*   seeds   = mesh->seeds;
+        double* rho     = primvar->rho;
+        auto*   v       = primvar->v;
+        double* E       = primvar->E;
+        double* rho_new = prim_new->rho;
+        auto*   v_new   = prim_new->v;
+        double* E_new   = prim_new->E;
 #ifdef MOVING_MESH
         auto*   v_mesh      = mesh->v_mesh;
         double* old_volumes = mesh->old_volumes;
@@ -632,6 +630,10 @@ namespace proteus_mpi {
             pack::unpack_migrant_body(j,
                                       n_after_remove,
                                       recvbuf,
+#ifdef MOVING_MESH
+                                      v_mesh,
+                                      old_volumes,
+#endif
                                       pts,
                                       seeds,
                                       rho,
@@ -639,12 +641,7 @@ namespace proteus_mpi {
                                       E,
                                       rho_new,
                                       v_new,
-                                      E_new,
-#ifdef MOVING_MESH
-                                      v_mesh,
-                                      old_volumes,
-#endif
-                                      cell_to_original);
+                                      E_new);
         });
     }
 
