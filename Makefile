@@ -402,7 +402,8 @@ $(BUILD_DIR)/gradients.o: $(GRADIENTS_DIR)/gradients.cu $(GRADIENTS_DIR)/gradien
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # profiler
-$(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cu $(PROFILER_DIR)/profiler.h | $(BUILD_DIR)
+$(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cu $(PROFILER_DIR)/profiler.h \
+    $(PROFILER_DIR)/timers.cu $(PROFILER_DIR)/report.cu $(PROFILER_DIR)/profile_log.cu | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # MPI: init, domain decomposition, halo exchange, particle migration
