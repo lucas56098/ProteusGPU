@@ -308,6 +308,8 @@ output_dt = 0.01
 
 CFL_frac = 0.3
 
+alloc_growth = 2.0
+
 rebalance_interval = 10
 imbalance_log_interval = 1000
 imbalance_threshold = 1.10

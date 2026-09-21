@@ -55,13 +55,12 @@ namespace proteus_mpi {
 
     extern int n_local_initial_max; // largest n_local at startup over all ranks
 
-    // headroom of the per-cell arrays over the startup count, for cells migrating in
-    constexpr double ALLOC_GROWTH = 2.0;
+    extern double alloc_growth; // headroom of the per-cell arrays over that count, from the param file
 
     // size of the per-cell arrays
     inline int max_n_local(int n_initial) {
         const int base = (n_local_initial_max > 0) ? n_local_initial_max : n_initial;
-        return (int)((double)base * ALLOC_GROWTH);
+        return (int)((double)base * alloc_growth);
     }
 
     inline int extended_size(int n_local) {

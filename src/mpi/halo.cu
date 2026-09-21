@@ -25,6 +25,7 @@ namespace proteus_mpi {
     MpiHalo halo                = {};
     int     n_mpi_capacity      = 0;
     int     n_local_initial_max = 0;
+    double  alloc_growth        = 0.0;
 
     // clang-format off
     // one translation unit, so the include order matters

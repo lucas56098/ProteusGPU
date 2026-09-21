@@ -188,7 +188,7 @@ for case_name in "${CASES[@]}"; do
                     failed_run="IC generation at n=$n"; break
                 fi
             fi
-            printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\nrebalance_interval = 10\nimbalance_log_interval = 1000\nimbalance_threshold = 1.10\n' \
+            printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\nalloc_growth = 2.0\nrebalance_interval = 10\nimbalance_log_interval = 1000\nimbalance_threshold = 1.10\n' \
                 "$ic" "$out" "$CASE_TIME_END" "$CASE_TIME_END" > "$out/param.txt"
             # shellcheck disable=SC2086
             if ! timeout 3600 $launch "$exe" "$out/param.txt" >"$out/run.log" 2>&1; then

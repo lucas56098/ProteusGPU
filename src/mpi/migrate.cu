@@ -192,7 +192,7 @@ namespace proteus_mpi {
         if (n_new > s_n_local_max) {
             exit_failure("[rank %d] REBALANCE: n_hydro_new=%d > n_local_max=%d "
                          "(post-rebalance migration overflows per-cell capacity). "
-                         "Bump ALLOC_GROWTH in src/global/structs.h or tighten "
+                         "Raise alloc_growth in the param file or tighten "
                          "imbalance_threshold in param.txt, then restart from the last snapshot.\n",
                          my_rank,
                          n_new,
@@ -249,7 +249,7 @@ namespace proteus_mpi {
         if (n_new > s_n_local_max) {
             exit_failure("[rank %d] MIGRATE: n_hydro_new=%d > n_local_max=%d "
                          "(per-step Cart-neighbor migration overflows per-cell capacity). "
-                         "Bump ALLOC_GROWTH in src/global/structs.h or enable rebalance "
+                         "Raise alloc_growth in the param file or enable rebalance "
                          "with a tighter imbalance_threshold, then restart from the last snapshot.\n",
                          my_rank,
                          n_new,

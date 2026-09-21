@@ -281,7 +281,7 @@ for case_name in "${CASES[@]}"; do
             mkdir -p "$out"
             
             half_dt=$(awk -v t="$CASE_TIME_END" 'BEGIN{printf "%.17g", t/2}')
-            printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\n' \
+            printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\nalloc_growth = 2.0\n' \
                 "$ic" "$out" "$CASE_TIME_END" "$half_dt" > "$out/param.txt"
             printf 'rebalance_interval = 10\nimbalance_log_interval = 1000\nimbalance_threshold = 1.10\n' \
                 >> "$out/param.txt"

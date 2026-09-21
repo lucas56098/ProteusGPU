@@ -228,7 +228,7 @@ for case_name in "${CASES[@]}"; do
             fi
 
             # two snapshots: the first mesh, and the one after the last step
-            printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\n' \
+            printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\nalloc_growth = 2.0\n' \
                 "$ic" "$out" "$CASE_TIME_END" "$CASE_TIME_END" > "$out/param.txt"
             printf 'rebalance_interval = 10\nimbalance_log_interval = 1000\nimbalance_threshold = 1.10\n' \
                 >> "$out/param.txt"

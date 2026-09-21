@@ -9,6 +9,9 @@ output_dt = 0.01
 # hydrodynamics
 CFL_frac = 0.3
 
+# memory: per-cell arrays hold alloc_growth x the largest startup cell count of any rank
+alloc_growth = 2.0
+
 # load balancing
 rebalance_interval = 10
 imbalance_log_interval = 1

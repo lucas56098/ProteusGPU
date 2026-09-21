@@ -314,8 +314,13 @@ namespace begrun {
     // halo and migration buffers
     static void init_exch_buffers() {
 
-        // all ranks size their per-cell arrays from the largest rank
+        // all ranks size their per-cell arrays from the largest rank, with the headroom the user asks for
         proteus_mpi::n_local_initial_max = logging::max_global((int)sim.n_hydro);
+        proteus_mpi::alloc_growth        = input.get_parameter_double("alloc_growth");
+        if (!(proteus_mpi::alloc_growth >= 1.0)) {
+            proteus_mpi::exit_failure("BEGRUN: alloc_growth = %g in the param file, it must be at least 1.\n",
+                                      proteus_mpi::alloc_growth);
+        }
 
         proteus_mpi::halo_init((int)sim.n_hydro, buff);
         proteus_mpi::migrate_init((int)sim.n_hydro);

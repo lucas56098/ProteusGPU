@@ -212,7 +212,7 @@ main() {
         rm -rf "$out"; mkdir -p "$out"
         {
             printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = 1e30\n' "$IC" "$out" "$TEND"
-            printf 'CFL_frac = 0.3\nrebalance_interval = 10\nimbalance_log_interval = 1000000\n'
+            printf 'CFL_frac = 0.3\nalloc_growth = 2.0\nrebalance_interval = 10\nimbalance_log_interval = 1000000\n'
             printf 'imbalance_threshold = 1.10\n'
         } > "$out/param.txt"
         local -a launch
