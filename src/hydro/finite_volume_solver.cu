@@ -398,9 +398,9 @@ namespace hydro {
 
 #ifdef dim_2D
         // radius of a disc or ball of the cell volume
-        double R_i = sqrt(mesh->volumes[i] / M_PI);
+        double R_i = sqrt(mesh->volumes[i] / PI);
 #else
-        double R_i = portable_cbrt(3.0 * mesh->volumes[i] / (4.0 * M_PI));
+        double R_i = portable_cbrt(3.0 * mesh->volumes[i] / (4.0 * PI));
 #endif
 #ifdef MOVING_MESH
         // the mesh moves along, only the rest matters
