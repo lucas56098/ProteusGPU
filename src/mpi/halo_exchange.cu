@@ -14,10 +14,6 @@ GLOBAL static void kernel_pack_seed(int                  total_send,
 
 #endif
 
-#ifdef USE_MPI
-static int* s_is_outer_meta_dev = nullptr;
-#endif
-
 // sends the export seeds and writes the ones that come back into the point list
 void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
 #ifndef USE_MPI
@@ -31,7 +27,6 @@ void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
     PROFILE("HALO_SEED");
     const int total_send = halo.send_offset[halo.n_neighbors];
     const int n_mpi      = halo.n_mpi_ghosts;
-    const int nn         = halo.n_neighbors;
 
     {
 #ifndef CPU_DEBUG
@@ -72,25 +67,6 @@ void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
 
         parallel_for<_MPI_PACK_BLOCK_SIZE_>(
             "UNPACK", n_mpi, [=] HD(int slot) { pack::unpack_seed_body(slot, pts_mpi_base, recvbuf, pts, seeds_g); });
-
-        // the kernel cannot read the per neighbour arrays of the struct
-        if (s_is_outer_meta_dev == nullptr) {
-            s_is_outer_meta_dev = (int*)gpu_malloc(sizeof(int) * (3 * HALO_MAX_NEIGHBORS + 1));
-        }
-        int* recv_n_outer = s_is_outer_meta_dev;
-        int* ghost_offset = s_is_outer_meta_dev + HALO_MAX_NEIGHBORS;
-        int* recv_count   = s_is_outer_meta_dev + 2 * HALO_MAX_NEIGHBORS + 1;
-        for (int n = 0; n < nn; n++) {
-            recv_n_outer[n] = halo.recv_n_outer[n];
-            ghost_offset[n] = halo.ghost_offset[n];
-            recv_count[n]   = halo.recv_count[n];
-        }
-        ghost_offset[nn] = halo.ghost_offset[nn];
-
-        auto* is_outer_layer = halo.is_outer_layer;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("IS_OUTER", nn, [=] HD(int n) {
-            pack::fill_is_outer_layer_body(n, recv_n_outer, ghost_offset, recv_count, is_outer_layer);
-        });
     }
 #endif
 }

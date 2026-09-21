@@ -92,12 +92,7 @@ void halo_free() {
     if (halo.sendbuf_vol) gpu_free(halo.sendbuf_vol);
     if (halo.recvbuf_vol) gpu_free(halo.recvbuf_vol);
 #endif
-    if (halo.is_outer_layer) gpu_free(halo.is_outer_layer);
     if (halo.neighbor_shift_flat) gpu_free(halo.neighbor_shift_flat);
-    if (s_is_outer_meta_dev) {
-        gpu_free(s_is_outer_meta_dev);
-        s_is_outer_meta_dev = nullptr;
-    }
 
     if (halo.n_neighbors > 0) {
         MPI_Type_free(&halo.mpi_prim_t);
@@ -205,7 +200,6 @@ static void free_halo_buffers() {
     if (halo.sendbuf_vol) gpu_free(halo.sendbuf_vol);
     if (halo.recvbuf_vol) gpu_free(halo.recvbuf_vol);
 #endif
-    if (halo.is_outer_layer) gpu_free(halo.is_outer_layer);
 }
 
 // every buffer holds one entry per slot
@@ -231,8 +225,6 @@ static void allocate_halo_buffers(int n_capacity) {
     halo.sendbuf_vol = (double*)gpu_malloc(sizeof(double) * n_capacity);
     halo.recvbuf_vol = (double*)gpu_malloc(sizeof(double) * n_capacity);
 #endif
-
-    halo.is_outer_layer = (unsigned char*)gpu_malloc(sizeof(unsigned char) * n_capacity);
 }
 
 // the kernels cannot read the 2D array of the struct

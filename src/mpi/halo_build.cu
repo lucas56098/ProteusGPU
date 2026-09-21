@@ -16,8 +16,6 @@ void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff,
     for (int n = 0; n < HALO_MAX_NEIGHBORS; n++) {
         halo.send_count[n]   = 0;
         halo.recv_count[n]   = 0;
-        halo.send_n_outer[n] = 0;
-        halo.recv_n_outer[n] = 0;
         halo.ghost_offset[n] = 0;
     }
     halo.ghost_offset[HALO_MAX_NEIGHBORS] = 0;
@@ -215,7 +213,6 @@ static void count_send_per_neighbor(const POINT_TYPE* local_seeds, int n_local, 
             s_chunk_outer[c][n] = run;
             run += t;
         }
-        halo.send_n_outer[n] = run;
         for (int c = 0; c < EXPORT_CHUNKS; c++) {
             const int t         = s_chunk_inner[c][n];
             s_chunk_inner[c][n] = run;
@@ -282,14 +279,8 @@ static void fill_export_slots(const POINT_TYPE* local_seeds, int n_local, double
 // trade the counts, so every rank knows how many ghosts it gets
 static void exchange_send_recv_counts() {
     const int nn = halo.n_neighbors;
-    int       sendpair[2 * HALO_MAX_NEIGHBORS];
-    int       recvpair[2 * HALO_MAX_NEIGHBORS] = {0};
-    for (int n = 0; n < nn; n++) {
-        sendpair[2 * n + 0] = halo.send_count[n];
-        sendpair[2 * n + 1] = halo.send_n_outer[n];
-    }
     if (halo.use_neighbor_coll) {
-        MPI_Neighbor_alltoall(sendpair, 2, MPI_INT, recvpair, 2, MPI_INT, halo.graph_comm);
+        MPI_Neighbor_alltoall(halo.send_count, 1, MPI_INT, halo.recv_count, 1, MPI_INT, halo.graph_comm);
     } else {
         MPI_Request reqs[2 * HALO_MAX_NEIGHBORS];
         int         n_reqs = 0;
@@ -298,10 +289,15 @@ static void exchange_send_recv_counts() {
             const int dy   = halo.neighbor_dirs[n][1];
             const int dz   = halo.neighbor_dirs[n][2];
             const int peer = halo.neighbor_ranks[n];
-            MPI_Isend(
-                &sendpair[2 * n], 2, MPI_INT, peer, msg_tag(dx, dy, dz, MSG_COUNTS), decomp.cart_comm, &reqs[n_reqs++]);
-            MPI_Irecv(&recvpair[2 * n],
-                      2,
+            MPI_Isend(&halo.send_count[n],
+                      1,
+                      MPI_INT,
+                      peer,
+                      msg_tag(dx, dy, dz, MSG_COUNTS),
+                      decomp.cart_comm,
+                      &reqs[n_reqs++]);
+            MPI_Irecv(&halo.recv_count[n],
+                      1,
                       MPI_INT,
                       peer,
                       msg_tag(-dx, -dy, -dz, MSG_COUNTS),
@@ -309,10 +305,6 @@ static void exchange_send_recv_counts() {
                       &reqs[n_reqs++]);
         }
         MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
-    }
-    for (int n = 0; n < nn; n++) {
-        halo.recv_count[n]   = recvpair[2 * n + 0];
-        halo.recv_n_outer[n] = recvpair[2 * n + 1];
     }
 }
 

@@ -42,21 +42,6 @@ namespace proteus_mpi {
 #endif
         }
 
-        // the ghosts from the outermost bucket layer come first
-        HD inline void fill_is_outer_layer_body(int            n,
-                                                const int*     recv_n_outer,
-                                                const int*     ghost_offset,
-                                                const int*     recv_count,
-                                                unsigned char* is_outer_layer) {
-            const int base  = ghost_offset[n];
-            const int n_out = recv_n_outer[n];
-            const int n_tot = recv_count[n];
-            for (int j = 0; j < n_out; j++)
-                is_outer_layer[base + j] = 1;
-            for (int j = n_out; j < n_tot; j++)
-                is_outer_layer[base + j] = 0;
-        }
-
         HD inline void
         pack_prim_body(int s, const int* used_export_indices, const hydro::primvars* primvar, HaloPrimCell* sendbuf) {
             const int    k = used_export_indices[s];

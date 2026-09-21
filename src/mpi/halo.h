@@ -52,9 +52,6 @@ namespace proteus_mpi {
         int send_offset[HALO_MAX_NEIGHBORS + 1];
         int ghost_offset[HALO_MAX_NEIGHBORS + 1];
 
-        int send_n_outer[HALO_MAX_NEIGHBORS]; // of those, from the outermost bucket layer; they come first
-        int recv_n_outer[HALO_MAX_NEIGHBORS];
-
         int*           export_indices; // cell behind every send slot
         unsigned char* dir_of_slot;    // and the neighbour it goes to
 
@@ -86,8 +83,6 @@ namespace proteus_mpi {
         double* sendbuf_vol;
         double* recvbuf_vol;
 #endif
-
-        unsigned char* is_outer_layer;
 
 #ifdef USE_MPI
         MPI_Comm     graph_comm;
