@@ -288,6 +288,8 @@ void Profiler::close_profile_log() {
 
 // error path: no HDF5 under MPI, H5Fclose is collective and would block
 void Profiler::abort_profile_log() {
+    // exit() destroys the path stack before TOTAL, whose destructor would pop the dead stack
+    (void)s_total_scope.release();
 
     if (parallel_log()) {
         s_log_active = false;
