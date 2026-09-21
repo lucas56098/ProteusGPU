@@ -63,14 +63,6 @@ namespace proteus_mpi {
         return (int)((double)base * alloc_growth);
     }
 
-    inline int extended_size(int n_local) {
-        return n_local;
-    }
-
-    inline int alloc_per_cell_size(int n_initial) {
-        return max_n_local(n_initial);
-    }
-
 } // namespace proteus_mpi
 
 namespace gradients {

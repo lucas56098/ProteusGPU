@@ -11,6 +11,7 @@ struct HaloCapacityInfo {
 };
 static void             pick_neighbor_collective_mode();
 static HaloCapacityInfo estimate_halo_capacity(int n_local, double buff);
+static void             free_halo_buffers();
 static void             allocate_halo_buffers(int n_capacity);
 static void             sync_neighbor_shift_to_flat();
 static void             register_mpi_datatypes();
@@ -74,24 +75,7 @@ void halo_init(int n_local, double buff) {
 // buffers, MPI types and the graph communicator
 void halo_free() {
 #ifdef USE_MPI
-    if (halo.export_indices) gpu_free(halo.export_indices);
-    if (halo.dir_of_slot) gpu_free(halo.dir_of_slot);
-    if (halo.used_export_indices) gpu_free(halo.used_export_indices);
-    if (halo.used_to_full_slot) gpu_free(halo.used_to_full_slot);
-    if (halo.send_used_bitmap) gpu_free(halo.send_used_bitmap);
-    if (halo.recv_used_bitmap) gpu_free(halo.recv_used_bitmap);
-    if (halo.sendbuf_seed) gpu_free(halo.sendbuf_seed);
-    if (halo.recvbuf_seed) gpu_free(halo.recvbuf_seed);
-    if (halo.sendbuf_prim) gpu_free(halo.sendbuf_prim);
-    if (halo.recvbuf_prim) gpu_free(halo.recvbuf_prim);
-    if (halo.sendbuf_v_mesh) gpu_free(halo.sendbuf_v_mesh);
-    if (halo.recvbuf_v_mesh) gpu_free(halo.recvbuf_v_mesh);
-    if (halo.sendbuf_grad) gpu_free(halo.sendbuf_grad);
-    if (halo.recvbuf_grad) gpu_free(halo.recvbuf_grad);
-#ifdef VOL_REGULARIZE
-    if (halo.sendbuf_vol) gpu_free(halo.sendbuf_vol);
-    if (halo.recvbuf_vol) gpu_free(halo.recvbuf_vol);
-#endif
+    free_halo_buffers();
     if (halo.neighbor_shift_flat) gpu_free(halo.neighbor_shift_flat);
 
     if (halo.n_neighbors > 0) {

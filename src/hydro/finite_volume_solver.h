@@ -50,7 +50,7 @@ namespace hydro {
 
     // one set of primvars: cells with growth headroom, ghosts only for the current state
     inline void allocate_prim_buffer(uint64_t n_hydro, primvars* primvar, bool with_ghosts) {
-        const uint64_t ext = (uint64_t)proteus_mpi::alloc_per_cell_size((int)n_hydro);
+        const uint64_t ext = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
         primvar->rho       = gpu_alloc<double>(ext);
         primvar->v         = gpu_alloc<POINT_TYPE>(ext);
         primvar->E         = gpu_alloc<double>(ext);

@@ -13,7 +13,7 @@ namespace voronoi {
         const uint64_t max_ghosts     = max_pgh + max_mpi_ghosts;
         const uint64_t total          = n_grow + max_ghosts;
         const uint64_t max_faces      = n_grow * _FACE_CAPACITY_MULT_;
-        const uint64_t ext            = (uint64_t)proteus_mpi::alloc_per_cell_size((int)n_hydro);
+        const uint64_t ext            = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
 
         VMesh* mesh          = gpu_alloc<VMesh>(1);
         mesh->n_seeds        = 0;

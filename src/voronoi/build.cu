@@ -20,9 +20,6 @@ namespace voronoi {
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed);
     static void read_face_count_from_gpu(VMesh* mesh);
 
-#ifndef CPU_DEBUG
-#endif
-
     static int* d_failed_indices          = nullptr; // cells the fast tier could not finish
     static int  d_failed_indices_capacity = 0;
 #ifndef CPU_DEBUG
@@ -172,13 +169,9 @@ namespace voronoi {
 
     // writes live[perm[k]] into the scratch and swaps the pointers
     template <typename T> static void permute_inplace(T*& live, T*& scratch, uint64_t n, const unsigned int* perm) {
-        const uint64_t ext = (uint64_t)proteus_mpi::extended_size((int)n);
-        T*             src = live;
-        T*             dst = scratch;
+        T* src = live;
+        T* dst = scratch;
         parallel_for<_MESH_BLOCK_SIZE_>("PERMUTE", n, [=] HD(size_t k) { dst[k] = src[perm[k]]; });
-
-        // the room above the cells is copied as it is
-        if (ext > n) { gpu_memcpy(scratch + n, live + n, (ext - n) * sizeof(T)); }
         std::swap(live, scratch);
     }
 

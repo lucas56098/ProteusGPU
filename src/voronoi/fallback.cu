@@ -83,9 +83,6 @@ namespace voronoi {
                                            std::vector<int>*       cascade_perturbed_out);
     static double        compute_max_security_d2(const VMesh* mesh);
 
-#ifndef CPU_DEBUG
-#endif
-
     static int s_wide_tier_rebuilds = 0;
 
     static int     s_uncertified_rebuilds = 0;
