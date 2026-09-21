@@ -2,8 +2,9 @@
 # Proteus: run every test suite.
 #
 # Defaults to the widest coverage each suite offers -- the full compile matrix including
-# CUDA, the full IC rank ladder, convergence under MPI and GPU, and bitwise
-# reproducibility across backend, rank count and thread count.
+# CUDA, the full IC rank ladder, the mesh checked against scipy on CPU and GPU and under MPI,
+# convergence under MPI and GPU, and bitwise reproducibility across backend, rank count and
+# thread count.
 # Anything the machine cannot do is skipped by the suite that owns that decision, and
 # skips are reported separately: a skip is never a pass.
 #
@@ -23,9 +24,9 @@ Runs every suite at its widest setting. Expect roughly 10-12 minutes on a workst
 with a GPU; the compile matrix and the convergence runs dominate.
 
 Options:
-  --no-cuda      skip everything needing a GPU: the matrix's cuda tier, the convergence
-                 gpu variant, and the reproducibility suite's GPU variants. That suite
-                 still runs -- its rank and thread axes need no GPU
+  --no-cuda      skip everything needing a GPU: the matrix's cuda tier, the mesh check's
+                 GPU builds, the convergence gpu variant, and the reproducibility suite's
+                 GPU variants. That suite still runs -- its rank and thread axes need no GPU
   --list         print the suites and the exact commands that would run, then exit
   -h, --help     show this message
 
@@ -49,17 +50,20 @@ done
 MATRIX_ARGS="--full"
 CONV_ARGS="--mpi"
 EQ_ARGS=""
+MESH_ARGS=""
 if [ "$NO_CUDA" -eq 0 ]; then
     MATRIX_ARGS="$MATRIX_ARGS --cuda"
     CONV_ARGS="$CONV_ARGS --cuda"
 else
     EQ_ARGS="--no-cuda"
+    MESH_ARGS="--no-cuda"
 fi
 
 # name | script | args | needs a GPU to be worth running at all
 SUITES=(
     "compile matrix|build_matrix.sh|$MATRIX_ARGS|no"
     "IC invariance|ic_invariance.sh||no"
+    "mesh check|mesh_check.sh|$MESH_ARGS|no"
     "bitwise reproducibility|bitwise_equality.sh|$EQ_ARGS|no"
     "hydro convergence|run_convergence.sh|$CONV_ARGS|no"
 )
