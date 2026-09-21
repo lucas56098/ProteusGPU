@@ -236,9 +236,12 @@ namespace voronoi {
             proteus_mpi::MovedExportLists tail;
             const int                     tail_exported = proteus_mpi::halo_collect_moved_exports(mesh, pending, &tail);
             if (tail_exported > 0) {
-                std::cerr << "VORONOI: WARNING perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << " with "
-                          << tail_exported << " exported seed(s) moved in the final repair round; neighbour "
-                          << "ranks keep a stale ghost position for one step." << std::endl;
+                proteus_mpi::exit_failure("[rank %d] VORONOI: perturbation cascade did not converge in %d rounds: %d "
+                                          "exported seed(s) moved in the last round, neighbour ranks still hold the "
+                                          "old position. Aborting.\n",
+                                          proteus_mpi::rank(),
+                                          MAX_CASCADE_ITERS,
+                                          tail_exported);
             }
         }
         logging::root() << "VORONOI: perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << "." << std::endl;
