@@ -39,6 +39,7 @@ namespace knn {
         knn->grid_lo[2] = -buff;
 #endif
         knn->d_cell_offsets           = NULL;
+        knn->d_cell_offset_axes       = NULL;
         knn->d_cell_offset_dists      = NULL;
         knn->d_cell_offset_dists_unit = NULL;
         knn->d_permutation            = NULL;
@@ -58,10 +59,12 @@ namespace knn {
         // more than enough for the offsets of N_max rings
         int     alloc                  = N_max * N_max * N_max * N_max;
         int*    cell_offsets           = gpu_alloc<int>(alloc);
+        int*    cell_offset_axes       = gpu_alloc<int>(alloc);
         double* cell_offset_dists      = gpu_alloc<double>(alloc);
         double* cell_offset_dists_unit = gpu_alloc<double>(alloc);
 
         cell_offsets[0]           = 0;
+        cell_offset_axes[0]       = pack_ring_step(0, 0, 0);
         cell_offset_dists[0]      = 0.0;
         cell_offset_dists_unit[0] = 0.0;
         knn->N_cell_offsets       = 1;
@@ -74,8 +77,9 @@ namespace knn {
                 for (int i = -N_max; i <= N_max; i++) {
                     if (std::max(abs(i), abs(j)) != ring) continue;
 
-                    int id_offset                     = i + j * knn->N_grid;
-                    cell_offsets[knn->N_cell_offsets] = id_offset;
+                    int id_offset                         = i + j * knn->N_grid;
+                    cell_offsets[knn->N_cell_offsets]     = id_offset;
+                    cell_offset_axes[knn->N_cell_offsets] = pack_ring_step(i, j, 0);
 
                     double du                                   = (double)(ring - 1);
                     cell_offset_dists_unit[knn->N_cell_offsets] = du * du;
@@ -90,8 +94,9 @@ namespace knn {
                     for (int i = -N_max; i <= N_max; i++) {
                         if (std::max(abs(i), std::max(abs(j), abs(k))) != ring) continue;
 
-                        int id_offset                     = i + j * knn->N_grid + k * knn->N_grid * knn->N_grid;
-                        cell_offsets[knn->N_cell_offsets] = id_offset;
+                        int id_offset                         = i + j * knn->N_grid + k * knn->N_grid * knn->N_grid;
+                        cell_offsets[knn->N_cell_offsets]     = id_offset;
+                        cell_offset_axes[knn->N_cell_offsets] = pack_ring_step(i, j, k);
 
                         double du                                   = (double)(ring - 1);
                         cell_offset_dists_unit[knn->N_cell_offsets] = du * du;
@@ -105,8 +110,11 @@ namespace knn {
         }
 
         knn->d_cell_offsets           = cell_offsets;
+        knn->d_cell_offset_axes       = cell_offset_axes;
         knn->d_cell_offset_dists      = cell_offset_dists;
         knn->d_cell_offset_dists_unit = cell_offset_dists_unit;
+        knn->N_rings                  = N_max - 1;
+        knn->reach2                   = (double)knn->N_rings * knn->N_rings * cell_size * cell_size;
 
         int Npow        = knn->Npow;
         knn->d_counters = gpu_calloc<int>(Npow);
@@ -122,6 +130,7 @@ namespace knn {
         gpu_advise_gpu_preferred(knn->d_counters, Npow * sizeof(int));
         gpu_advise_gpu_preferred(knn->d_ptrs, Npow * sizeof(int));
         gpu_advise_gpu_preferred(knn->d_cell_offsets, knn->N_cell_offsets * sizeof(int));
+        gpu_advise_gpu_preferred(knn->d_cell_offset_axes, knn->N_cell_offsets * sizeof(int));
         gpu_advise_gpu_preferred(knn->d_cell_offset_dists, knn->N_cell_offsets * sizeof(double));
 
         return knn;
@@ -164,6 +173,7 @@ namespace knn {
         for (int m = 0; m < knn->N_cell_offsets; m++) {
             knn->d_cell_offset_dists[m] = knn->d_cell_offset_dists_unit[m] * cs2;
         }
+        knn->reach2 = (double)knn->N_rings * knn->N_rings * cs2;
     }
 
     // sorts len_pts points into the grid, called once per mesh build
@@ -187,6 +197,7 @@ namespace knn {
     // frees the grid and the point arrays
     void knn_free(knn_problem** knn) {
         gpu_free((*knn)->d_cell_offsets);
+        gpu_free((*knn)->d_cell_offset_axes);
         gpu_free((*knn)->d_cell_offset_dists);
         gpu_free((*knn)->d_cell_offset_dists_unit);
         gpu_free((*knn)->d_permutation);

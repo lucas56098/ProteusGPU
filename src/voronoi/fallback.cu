@@ -332,16 +332,22 @@ namespace voronoi {
         const double4_t seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
         const int       seed_cell =
             knn::cell_from_point(knn->N_grid, knn->grid_lo, knn->inv_cell_size, knn->d_stored_points[seed_id]);
+        int ix, iy, iz;
+        knn::bucket_coords(seed_cell, knn->N_grid, &ix, &iy, &iz);
 
         std::vector<std::pair<double, int>> candidates;
         candidates.reserve(max_candidates * 2);
 
-        double kth_dist = DBL_MAX;
+        double kth_dist      = DBL_MAX;
+        bool   stopped_early = false;
         for (int ring = 0; ring < knn->N_cell_offsets; ring++) {
-            if ((int)candidates.size() >= max_candidates && knn->d_cell_offset_dists[ring] >= kth_dist) break;
+            if ((int)candidates.size() >= max_candidates && knn->d_cell_offset_dists[ring] >= kth_dist) {
+                stopped_early = true;
+                break;
+            }
 
+            if (!knn::ring_step_in_grid(knn->d_cell_offset_axes[ring], ix, iy, iz, knn->N_grid)) continue;
             const int cell = seed_cell + knn->d_cell_offsets[ring];
-            if (cell < 0 || cell >= knn->Npow) continue;
 
             const int cell_base  = knn->d_ptrs[cell];
             const int cell_count = knn->d_counters[cell];
@@ -364,6 +370,13 @@ namespace voronoi {
 
         if ((int)candidates.size() > max_candidates) candidates.resize(max_candidates);
         std::sort(candidates.begin(), candidates.end());
+
+        // all rings walked: the list is complete only as far as they reach
+        if (!stopped_early) {
+            const auto past =
+                std::lower_bound(candidates.begin(), candidates.end(), std::make_pair(knn->reach2, INT_MIN));
+            candidates.erase(past, candidates.end());
+        }
         return candidates;
     }
 
@@ -699,26 +712,37 @@ namespace voronoi {
 #endif
         const int center = knn::cell_from_point(knn->N_grid, knn->grid_lo, knn->inv_cell_size, gp);
 
+        auto consider = [&](int sid) {
+            const int k = (int)mesh->sid_to_neighbor[sid];
+            if (k >= (int)mesh->n_hydro) return;
+            if (affected->count(k)) return;
+
+            const double3 s   = mesh->seeds[k];
+            const double  dox = s.x - g_old.x, doy = s.y - g_old.y, doz = s.z - g_old.z;
+            const double  dnx = s.x - g_new.x, dny = s.y - g_new.y, dnz = s.z - g_new.z;
+            const double  d2o = dox * dox + doy * doy + doz * doz;
+            const double  d2n = dnx * dnx + dny * dny + dnz * dnz;
+            if (d2o <= mesh->security_d2[k] || d2n <= mesh->security_d2[k]) affected->insert(k);
+        };
+
+        // farther than the rings reach: every point
+        if (search_l2 >= knn->reach2) {
+            for (int sid = 0; sid < (int)mesh->n_seeds; sid++)
+                consider(sid);
+            return;
+        }
+
+        int cx, cy, cz;
+        knn::bucket_coords(center, knn->N_grid, &cx, &cy, &cz);
         for (int ring = 0; ring < knn->N_cell_offsets; ring++) {
             if (knn->d_cell_offset_dists[ring] > search_l2) break;
+            if (!knn::ring_step_in_grid(knn->d_cell_offset_axes[ring], cx, cy, cz, knn->N_grid)) continue;
             const int cell = center + knn->d_cell_offsets[ring];
-            if (cell < 0 || cell >= knn->Npow) continue;
 
             const int base  = knn->d_ptrs[cell];
             const int count = knn->d_counters[cell];
-            for (int i = 0; i < count; i++) {
-                const int sid = base + i;
-                const int k   = (int)mesh->sid_to_neighbor[sid];
-                if (k >= (int)mesh->n_hydro) continue;
-                if (affected->count(k)) continue;
-
-                const double3 s   = mesh->seeds[k];
-                const double  dox = s.x - g_old.x, doy = s.y - g_old.y, doz = s.z - g_old.z;
-                const double  dnx = s.x - g_new.x, dny = s.y - g_new.y, dnz = s.z - g_new.z;
-                const double  d2o = dox * dox + doy * doy + doz * doz;
-                const double  d2n = dnx * dnx + dny * dny + dnz * dnz;
-                if (d2o <= mesh->security_d2[k] || d2n <= mesh->security_d2[k]) affected->insert(k);
-            }
+            for (int i = 0; i < count; i++)
+                consider(base + i);
         }
     }
 

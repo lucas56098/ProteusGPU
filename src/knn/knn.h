@@ -15,6 +15,9 @@ typedef struct knn_problem {
     int           Npow;                     // buckets in total
     int           N_cell_offsets;           // entries of the two ring arrays
     int*          d_cell_offsets;           // index step of every ring, nearest ring first
+    int*          d_cell_offset_axes;       // the same steps per axis, packed, to stop at the grid edge
+    int           N_rings;                  // rings around the own bucket
+    double        reach2;                   // the rings hold every point closer than this, squared
     double*       d_cell_offset_dists;      // smallest distance to that ring, squared
     unsigned int* d_permutation;            // sorted point -> its index in the input list
     int*          d_counters;               // points per bucket
@@ -95,6 +98,26 @@ namespace knn {
         }
     }
 
+    // one ring step per axis in one int, each axis in [-64, 63]
+    HD inline int pack_ring_step(int di, int dj, int dk) {
+        return (di + 64) | ((dj + 64) << 8) | ((dk + 64) << 16);
+    }
+
+    // bucket (ix, iy, iz) moved by a packed ring step is still in the grid
+    HD inline bool ring_step_in_grid(int packed, int ix, int iy, int iz, int N_grid) {
+        const int i = ix + (packed & 0xff) - 64;
+        const int j = iy + ((packed >> 8) & 0xff) - 64;
+        const int k = iz + ((packed >> 16) & 0xff) - 64;
+        return i >= 0 && i < N_grid && j >= 0 && j < N_grid && k >= 0 && k < N_grid;
+    }
+
+    // bucket index -> position per axis, iz is 0 in 2D
+    HD inline void bucket_coords(int cell, int N_grid, int* ix, int* iy, int* iz) {
+        *ix = cell % N_grid;
+        *iy = (cell / N_grid) % N_grid;
+        *iz = cell / (N_grid * N_grid);
+    }
+
     // the K nearest points of point_in, as sorted-list indices, nearest first
     template <int K> HD void knn_for_point(int point_in, const knn_problem* knn, unsigned int* out_knearest) {
         // the K best so far in a max heap, local_dists[0] is the worst of them
@@ -104,16 +127,18 @@ namespace knn {
 
         const POINT_TYPE* d_stored_points     = knn->d_stored_points;
         int               N_grid              = knn->N_grid;
-        int               Npow_local          = knn->Npow;
         const int*        d_ptrs              = knn->d_ptrs;
         const int*        d_counters          = knn->d_counters;
         int               N_cell_offsets      = knn->N_cell_offsets;
         const int*        d_cell_offsets      = knn->d_cell_offsets;
+        const int*        d_cell_offset_axes  = knn->d_cell_offset_axes;
         const double*     d_cell_offset_dists = knn->d_cell_offset_dists;
         int               len_pts             = knn->len_pts;
 
         POINT_TYPE p       = d_stored_points[point_in];
         int        cell_in = cell_from_point(N_grid, knn->grid_lo, knn->inv_cell_size, p);
+        int        ix, iy, iz;
+        bucket_coords(cell_in, N_grid, &ix, &iy, &iz);
 
         // if there are fewer than K neighbours, the rest stay the point itself
         for (int i = 0; i < K; i++) {
@@ -122,12 +147,17 @@ namespace knn {
         }
 
         // rings from near to far, stop when the heap is full and closer than the ring
+        bool stopped_early = false;
         for (int search_cell_index = 0; search_cell_index < N_cell_offsets; search_cell_index++) {
             double min_dist = d_cell_offset_dists[search_cell_index];
-            if (heap_size == K && local_dists[0] < min_dist) { break; }
+            if (heap_size == K && local_dists[0] < min_dist) {
+                stopped_early = true;
+                break;
+            }
 
+            // no wrap into the next row, the far side of the grid is not a neighbour
+            if (!ring_step_in_grid(d_cell_offset_axes[search_cell_index], ix, iy, iz, N_grid)) { continue; }
             int cell = cell_in + d_cell_offsets[search_cell_index];
-            if (cell < 0 || cell >= Npow_local) { continue; } // ring step left the grid
 
             int cell_base = d_ptrs[cell];
             int num       = d_counters[cell];
@@ -165,6 +195,16 @@ namespace knn {
 
         // the cell build clips in this order, so it needs the nearest first
         if (heap_size > 1) { heapsort(local_knearest, local_dists, heap_size); }
+
+        // all rings walked: past their reach a nearer point may be missing, so those count as not found
+        if (!stopped_early) {
+            for (int i = 0; i < heap_size; i++) {
+                if (local_dists[i] >= knn->reach2) {
+                    local_knearest[i] = (unsigned int)point_in;
+                    local_dists[i]    = DBL_MAX;
+                }
+            }
+        }
 
         for (int i = 0; i < K; i++) {
             out_knearest[i] = local_knearest[i];
