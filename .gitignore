@@ -26,6 +26,7 @@ ProteusGPU
 # explicitly allowed
 !Config.sh
 !README.md
+!AI-USAGE.md
 !ics/*.py
 !ics/param.txt
 !ics/cooling_table_*.txt
