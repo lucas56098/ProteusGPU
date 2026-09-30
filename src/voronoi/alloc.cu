@@ -68,7 +68,8 @@ namespace voronoi {
         // ghost arrays, none without MPI
         const int gc = proteus_mpi::n_mpi_capacity;
         if (gc > 0) {
-            mesh->seeds_g = gpu_alloc<double3>(gc);
+            mesh->seeds_g   = gpu_alloc<double3>(gc);
+            mesh->com_off_g = gpu_alloc<POINT_TYPE>(gc);
 #ifdef VOL_REGULARIZE
             mesh->volumes_g = gpu_alloc<double>(gc);
 #endif
@@ -76,11 +77,13 @@ namespace voronoi {
             mesh->v_mesh_g = gpu_alloc<POINT_TYPE>(gc);
 #endif
             gpu_advise_gpu_preferred(mesh->seeds_g, gc * sizeof(double3));
+            gpu_advise_gpu_preferred(mesh->com_off_g, gc * sizeof(POINT_TYPE));
 #ifdef MOVING_MESH
             gpu_advise_gpu_preferred(mesh->v_mesh_g, gc * sizeof(POINT_TYPE));
 #endif
         } else {
-            mesh->seeds_g = nullptr;
+            mesh->seeds_g   = nullptr;
+            mesh->com_off_g = nullptr;
 #ifdef VOL_REGULARIZE
             mesh->volumes_g = nullptr;
 #endif
@@ -163,6 +166,7 @@ namespace voronoi {
         gpu_free(mesh->scratch_pts);
         gpu_free(mesh->scratch_move);
         if (mesh->seeds_g) gpu_free(mesh->seeds_g);
+        if (mesh->com_off_g) gpu_free(mesh->com_off_g);
 #ifdef VOL_REGULARIZE
         if (mesh->volumes_g) gpu_free(mesh->volumes_g);
 #endif
@@ -177,6 +181,8 @@ namespace voronoi {
     void mesh_grow_ghosts(VMesh* mesh, int new_cap) {
         if (mesh->seeds_g) gpu_free(mesh->seeds_g);
         mesh->seeds_g = (new_cap > 0) ? gpu_alloc<double3>(new_cap) : nullptr;
+        if (mesh->com_off_g) gpu_free(mesh->com_off_g);
+        mesh->com_off_g = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
 #ifdef VOL_REGULARIZE
         if (mesh->volumes_g) gpu_free(mesh->volumes_g);
         mesh->volumes_g = (new_cap > 0) ? gpu_alloc<double>(new_cap) : nullptr;

@@ -150,6 +150,7 @@ enum HaloMsgKind {
     MSG_MOVED_COUNT = 7,
     MSG_MOVED_SLOT  = 8,
     MSG_MOVED_POS   = 9,
+    MSG_COM_OFF     = 10,
 };
 
 static inline int dir_tag(int dx, int dy, int dz) {

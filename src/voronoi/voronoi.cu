@@ -45,12 +45,16 @@ namespace voronoi {
         };
     } // namespace
 
-    static BuildStats build_mesh_growing_halo(
-        VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro, hydro::primvars* primvar, hydro::ConsVars* cons);
-    static void cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt);
-    static void exchange_used_ghost_primvars(VMesh* mesh, hydro::primvars* primvar);
-    static void adapt_halo_width(const BuildStats& stats);
-    static void print_step_summary(const BuildStats& stats);
+    static BuildStats build_mesh_growing_halo(VMesh*                    mesh,
+                                              POINT_TYPE*               pts_data,
+                                              uint64_t                  n_hydro,
+                                              hydro::primvars*          primvar,
+                                              hydro::ConsVars*          cons,
+                                              gradients::PrimGradients* grads);
+    static void       cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt);
+    static void       exchange_used_ghost_primvars(VMesh* mesh, hydro::primvars* primvar);
+    static void       adapt_halo_width(const BuildStats& stats);
+    static void       print_step_summary(const BuildStats& stats);
 
     static uint64_t exchange_seeds_across_ranks(VMesh*       mesh,
                                                 POINT_TYPE*  pts_data,
@@ -72,15 +76,16 @@ namespace voronoi {
     static int s_steady_count = 0; // steps in a row without widening
 
     // builds the mesh, repairs what failed, sends the ghost state
-    void compute_periodic_mesh(VMesh*           mesh,
-                               POINT_TYPE*      pts_data,
-                               uint64_t         num_points,
-                               hydro::primvars* primvar,
-                               hydro::ConsVars* cons,
-                               double           dt) {
+    void compute_periodic_mesh(VMesh*                    mesh,
+                               POINT_TYPE*               pts_data,
+                               uint64_t                  num_points,
+                               hydro::primvars*          primvar,
+                               hydro::ConsVars*          cons,
+                               gradients::PrimGradients* grads,
+                               double                    dt) {
         PROFILE("MESH");
 
-        BuildStats stats = build_mesh_growing_halo(mesh, pts_data, num_points, primvar, cons);
+        BuildStats stats = build_mesh_growing_halo(mesh, pts_data, num_points, primvar, cons, grads);
 
         stats.global_failed_cells = logging::sum_global(stats.local_failed_cells);
 
@@ -97,8 +102,12 @@ namespace voronoi {
     }
 
     // builds all cells, with a wider halo each round while cells reach past the rank data
-    static BuildStats build_mesh_growing_halo(
-        VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro, hydro::primvars* primvar, hydro::ConsVars* cons) {
+    static BuildStats build_mesh_growing_halo(VMesh*                    mesh,
+                                              POINT_TYPE*               pts_data,
+                                              uint64_t                  n_hydro,
+                                              hydro::primvars*          primvar,
+                                              hydro::ConsVars*          cons,
+                                              gradients::PrimGradients* grads) {
         constexpr int MAX_WIDEN_ITERS = 4;
 
         // upper bound for the periodic copies
@@ -132,7 +141,7 @@ namespace voronoi {
 
             mesh->n_mpi_ghosts = proteus_mpi::halo.n_mpi_ghosts;
             set_data_extent_for_build(mesh, stats.final_halo_width, have_mpi);
-            compute_mesh(mesh, pts, (int)(n_hydro + n_ghosts + n_mpi), primvar, cons, iter);
+            compute_mesh(mesh, pts, (int)(n_hydro + n_ghosts + n_mpi), primvar, cons, grads, iter);
             // the first round sorted the cells, the exports follow
             if (iter == 0 && have_mpi) remap_exports_and_pts(mesh, pts_data, n_hydro);
 
@@ -251,6 +260,7 @@ namespace voronoi {
         if (proteus_mpi::halo.n_neighbors == 0) return;
         proteus_mpi::halo_build_used_subset(mesh);
         proteus_mpi::halo_exchange_primvars(mesh, primvar);
+        proteus_mpi::halo_exchange_centroids(mesh);
 #ifdef MOVING_MESH
         proteus_mpi::halo_exchange_v_mesh(mesh);
 #endif

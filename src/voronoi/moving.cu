@@ -43,19 +43,20 @@ namespace voronoi {
     }
 
     // moves the seeds, migrates cells, builds the mesh again
-    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::ConsVars* cons) {
+    void move_mesh(
+        VMesh* mesh, double dt, hydro::primvars* primvar, hydro::ConsVars* cons, gradients::PrimGradients* grads) {
 
         advance_seeds_by_dt(mesh, dt, mesh->scratch_move);
 
         // a rebalance moves the brick borders, so more cells change rank
         if (proteus_mpi::rebalance_decide(sim.step, mesh, mesh->scratch_move)) {
-            proteus_mpi::migrate_for_rebalance(mesh, primvar, cons);
+            proteus_mpi::migrate_for_rebalance(mesh, primvar, cons, grads);
             proteus_mpi::rebalance_log_after_migration(mesh);
         } else {
-            proteus_mpi::migrate_seeds(mesh, primvar, cons);
+            proteus_mpi::migrate_seeds(mesh, primvar, cons, grads);
         }
 
-        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, cons, dt);
+        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, cons, grads, dt);
     }
 
     // writes the moved positions into pts, mesh->seeds stays

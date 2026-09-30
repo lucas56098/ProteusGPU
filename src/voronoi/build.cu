@@ -3,12 +3,15 @@
 
 namespace voronoi {
 
-    static void check_seed_capacity(const VMesh* mesh, int n_total);
-    static void save_orig_to_k_for_lookup(VMesh* mesh);
-    static void clear_cell_arrays(VMesh* mesh);
-    static void build_index_maps(VMesh* mesh, int iter);
-    static void compute_gather_perm(VMesh* mesh);
-    static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons);
+    static void                       check_seed_capacity(const VMesh* mesh, int n_total);
+    static void                       save_orig_to_k_for_lookup(VMesh* mesh);
+    static void                       clear_cell_arrays(VMesh* mesh);
+    static void                       build_index_maps(VMesh* mesh, int iter);
+    static void                       compute_gather_perm(VMesh* mesh);
+    static void                       permute_persistent_state(VMesh*                    mesh,
+                                                               hydro::primvars*          primvar,
+                                                               hydro::ConsVars*          cons,
+                                                               gradients::PrimGradients* grads);
     template <typename T> static void permute_inplace(T*& live, T*& scratch, uint64_t n, const unsigned int* perm);
     static void                       compute_cells(VMesh* mesh);
 
@@ -31,8 +34,13 @@ namespace voronoi {
 #endif
 
     // sorts the points, maps the indices, builds all cells
-    void compute_mesh(
-        VMesh* mesh, POINT_TYPE* pts_data, int n_total, hydro::primvars* primvar, hydro::ConsVars* cons, int iter) {
+    void compute_mesh(VMesh*                    mesh,
+                      POINT_TYPE*               pts_data,
+                      int                       n_total,
+                      hydro::primvars*          primvar,
+                      hydro::ConsVars*          cons,
+                      gradients::PrimGradients* grads,
+                      int                       iter) {
         {
             PROFILE("KNN_PREP");
             // sort the points into the neighbour grid
@@ -51,7 +59,7 @@ namespace voronoi {
             if (iter == 0) {
                 save_orig_to_k_for_lookup(mesh);
                 compute_gather_perm(mesh);
-                permute_persistent_state(mesh, primvar, cons);
+                permute_persistent_state(mesh, primvar, cons, grads);
             }
         }
 
@@ -172,7 +180,10 @@ namespace voronoi {
     }
 
     // sorts everything that outlives the step into the new cell order
-    static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons) {
+    static void permute_persistent_state(VMesh*                    mesh,
+                                         hydro::primvars*          primvar,
+                                         hydro::ConsVars*          cons,
+                                         gradients::PrimGradients* grads) {
         const uint64_t      n    = mesh->n_hydro;
         const unsigned int* perm = mesh->gather_perm;
 
@@ -185,6 +196,16 @@ namespace voronoi {
             permute_inplace(cons->mass, mesh->scratch_double, n, perm);
             permute_inplace(cons->momentum, mesh->scratch_point, n, perm);
             permute_inplace(cons->energy, mesh->scratch_double, n, perm);
+        }
+        if (grads) {
+            permute_inplace(grads->rho, mesh->scratch_point, n, perm);
+            permute_inplace(grads->vx, mesh->scratch_point, n, perm);
+            permute_inplace(grads->vy, mesh->scratch_point, n, perm);
+#ifdef dim_3D
+            permute_inplace(grads->vz, mesh->scratch_point, n, perm);
+#endif
+            permute_inplace(grads->E, mesh->scratch_point, n, perm);
+            permute_inplace(grads->anchor, mesh->scratch_point, n, perm);
         }
 #ifdef MOVING_MESH
         permute_inplace(mesh->v_mesh, mesh->scratch_point, n, perm);

@@ -5,6 +5,7 @@
 // Bodies of the halo pack and unpack loops, the same code on CPU and GPU.
 
 #include "global/gpu_compat.h"
+#include "global/math_utils.h"
 #include "global/structs.h"
 #include "halo.h"
 
@@ -65,9 +66,8 @@ namespace proteus_mpi {
                                       const int*                      used_export_indices,
                                       const gradients::PrimGradients* grads,
                                       POINT_TYPE*                     sendbuf) {
-            const int N_COMP = 3 + DIMENSION;
             const int k      = used_export_indices[slot];
-            const int s      = slot * N_COMP;
+            const int s      = slot * HALO_GRAD_COMPONENTS;
             int       c      = 0;
             sendbuf[s + c++] = grads->rho[k];
             sendbuf[s + c++] = grads->vx[k];
@@ -76,23 +76,37 @@ namespace proteus_mpi {
             sendbuf[s + c++] = grads->vz[k];
 #endif
             sendbuf[s + c++] = grads->E[k];
+            sendbuf[s + c++] = grads->anchor[k];
         }
 
         HD inline void unpack_grad_body(int                       slot,
                                         const int*                used_to_full_slot,
                                         const POINT_TYPE*         recvbuf,
                                         gradients::PrimGradients* grads) {
-            const int N_COMP = 3 + DIMENSION;
-            const int g      = used_to_full_slot[slot];
-            const int s      = slot * N_COMP;
-            int       c      = 0;
-            grads->rho_g[g]  = recvbuf[s + c++];
-            grads->vx_g[g]   = recvbuf[s + c++];
-            grads->vy_g[g]   = recvbuf[s + c++];
+            const int g     = used_to_full_slot[slot];
+            const int s     = slot * HALO_GRAD_COMPONENTS;
+            int       c     = 0;
+            grads->rho_g[g] = recvbuf[s + c++];
+            grads->vx_g[g]  = recvbuf[s + c++];
+            grads->vy_g[g]  = recvbuf[s + c++];
 #ifdef dim_3D
             grads->vz_g[g] = recvbuf[s + c++];
 #endif
-            grads->E_g[g] = recvbuf[s + c++];
+            grads->E_g[g]      = recvbuf[s + c++];
+            grads->anchor_g[g] = recvbuf[s + c++];
+        }
+
+        // centroid - seed of an exported cell
+        HD inline void pack_com_off_body(
+            int s, const int* used_export_indices, const double3* com, const double3* seeds, POINT_TYPE* sendbuf) {
+            const int k = used_export_indices[s];
+            sendbuf[s]  = point_diff_periodic(com[k], seeds[k]);
+        }
+
+        HD inline void
+        unpack_com_off_body(int slot, const int* used_to_full_slot, const POINT_TYPE* recvbuf, POINT_TYPE* com_off_g) {
+            const int g  = used_to_full_slot[slot];
+            com_off_g[g] = recvbuf[slot];
         }
 
 #ifdef MOVING_MESH

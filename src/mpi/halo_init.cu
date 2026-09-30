@@ -180,6 +180,8 @@ static void free_halo_buffers() {
     if (halo.recvbuf_v_mesh) gpu_free(halo.recvbuf_v_mesh);
     if (halo.sendbuf_grad) gpu_free(halo.sendbuf_grad);
     if (halo.recvbuf_grad) gpu_free(halo.recvbuf_grad);
+    if (halo.sendbuf_com_off) gpu_free(halo.sendbuf_com_off);
+    if (halo.recvbuf_com_off) gpu_free(halo.recvbuf_com_off);
 #ifdef VOL_REGULARIZE
     if (halo.sendbuf_vol) gpu_free(halo.sendbuf_vol);
     if (halo.recvbuf_vol) gpu_free(halo.recvbuf_vol);
@@ -202,9 +204,10 @@ static void allocate_halo_buffers(int n_capacity) {
     halo.sendbuf_v_mesh = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity);
     halo.recvbuf_v_mesh = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity);
 
-    const int grad_components = 3 + DIMENSION;
-    halo.sendbuf_grad         = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity * grad_components);
-    halo.recvbuf_grad         = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity * grad_components);
+    halo.sendbuf_grad    = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity * HALO_GRAD_COMPONENTS);
+    halo.recvbuf_grad    = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity * HALO_GRAD_COMPONENTS);
+    halo.sendbuf_com_off = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity);
+    halo.recvbuf_com_off = (POINT_TYPE*)gpu_malloc(sizeof(POINT_TYPE) * n_capacity);
 #ifdef VOL_REGULARIZE
     halo.sendbuf_vol = (double*)gpu_malloc(sizeof(double) * n_capacity);
     halo.recvbuf_vol = (double*)gpu_malloc(sizeof(double) * n_capacity);
@@ -223,12 +226,11 @@ static void sync_neighbor_shift_to_flat() {
 
 // the payloads travel as plain bytes
 static void register_mpi_datatypes() {
-    const int grad_components = 3 + DIMENSION;
     MPI_Type_contiguous(sizeof(HaloPrimCell), MPI_BYTE, &halo.mpi_prim_t);
     MPI_Type_commit(&halo.mpi_prim_t);
     MPI_Type_contiguous(sizeof(POINT_TYPE), MPI_BYTE, &halo.mpi_point_t);
     MPI_Type_commit(&halo.mpi_point_t);
-    MPI_Type_contiguous(grad_components * (int)sizeof(POINT_TYPE), MPI_BYTE, &halo.mpi_grad_cell_t);
+    MPI_Type_contiguous(HALO_GRAD_COMPONENTS * (int)sizeof(POINT_TYPE), MPI_BYTE, &halo.mpi_grad_cell_t);
     MPI_Type_commit(&halo.mpi_grad_cell_t);
 }
 

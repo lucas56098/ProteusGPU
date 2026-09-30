@@ -23,7 +23,8 @@ namespace proteus_mpi {
         POINT_TYPE momentum;
         double     energy;
 #ifdef MOVING_MESH
-        POINT_TYPE v_mesh;
+        POINT_TYPE              v_mesh;
+        gradients::PrimGradient grad;
 #endif
     };
 
@@ -96,18 +97,28 @@ namespace proteus_mpi {
     static void assign_destinations_rebal(VMesh* mesh, int n_hydro, int my_rank);
     static void exchange_counts();
     static void build_displacements(int nn, int* total_send, int* total_recv);
-    static void pack_outgoing_migrants(
-        VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons, POINT_TYPE* pts, int n_hydro, int nslots);
+    static void pack_outgoing_migrants(VMesh*                    mesh,
+                                       hydro::primvars*          primvar,
+                                       hydro::ConsVars*          cons,
+                                       gradients::PrimGradients* grads,
+                                       POINT_TYPE*               pts,
+                                       int                       n_hydro,
+                                       int                       nslots);
     static void exchange_payload(int total_send, int total_recv);
-    static int
-    remove_migrated_local(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons, POINT_TYPE* pts, int n_hydro);
-    static void append_incoming_migrants(VMesh*           mesh,
-                                         hydro::primvars* primvar,
-                                         hydro::ConsVars* cons,
-                                         POINT_TYPE*      pts,
-                                         int              n_after_remove,
-                                         int              total_recv,
-                                         int              my_rank);
+    static int  remove_migrated_local(VMesh*                    mesh,
+                                      hydro::primvars*          primvar,
+                                      hydro::ConsVars*          cons,
+                                      gradients::PrimGradients* grads,
+                                      POINT_TYPE*               pts,
+                                      int                       n_hydro);
+    static void append_incoming_migrants(VMesh*                    mesh,
+                                         hydro::primvars*          primvar,
+                                         hydro::ConsVars*          cons,
+                                         gradients::PrimGradients* grads,
+                                         POINT_TYPE*               pts,
+                                         int                       n_after_remove,
+                                         int                       total_recv,
+                                         int                       my_rank);
     static void check_conservation(int n_new);
 
 #endif
@@ -128,11 +139,15 @@ namespace proteus_mpi {
     }
 
     // after a rebalance every rank can send to every other one
-    void migrate_for_rebalance(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons) {
+    void migrate_for_rebalance(VMesh*                    mesh,
+                               hydro::primvars*          primvar,
+                               hydro::ConsVars*          cons,
+                               gradients::PrimGradients* grads) {
 #ifndef USE_MPI
         (void)mesh;
         (void)primvar;
         (void)cons;
+        (void)grads;
         return;
 #else
         if (decomp.nranks <= 1) return;
@@ -167,7 +182,7 @@ namespace proteus_mpi {
         build_displacements(nr, &total_send, &total_recv);
         s_last_n_migrated = total_send;
 
-        pack_outgoing_migrants(mesh, primvar, cons, pts, n_hydro, nr);
+        pack_outgoing_migrants(mesh, primvar, cons, grads, pts, n_hydro, nr);
 
         mpi_sync_before_send(s_sendbuf, sizeof(MigrantCell) * (size_t)total_send);
         {
@@ -185,7 +200,7 @@ namespace proteus_mpi {
         mpi_sync_after_recv(s_recvbuf, sizeof(MigrantCell) * (size_t)total_recv);
 
         // out, then in; the cell arrays have no room beyond n_local_max
-        const int n_after_remove = remove_migrated_local(mesh, primvar, cons, pts, n_hydro);
+        const int n_after_remove = remove_migrated_local(mesh, primvar, cons, grads, pts, n_hydro);
 
         const int n_new = n_after_remove + total_recv;
         if (n_new > s_n_local_max) {
@@ -198,7 +213,7 @@ namespace proteus_mpi {
                          s_n_local_max);
         }
 
-        append_incoming_migrants(mesh, primvar, cons, pts, n_after_remove, total_recv, my_rank);
+        append_incoming_migrants(mesh, primvar, cons, grads, pts, n_after_remove, total_recv, my_rank);
         mesh->n_hydro = (uint64_t)n_new;
 
         check_conservation(n_new);
@@ -206,11 +221,12 @@ namespace proteus_mpi {
     }
 
     // per step, along the Cartesian neighbours only
-    void migrate_seeds(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons) {
+    void migrate_seeds(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons, gradients::PrimGradients* grads) {
 #ifndef USE_MPI
         (void)mesh;
         (void)primvar;
         (void)cons;
+        (void)grads;
         return;
 #else
         if (decomp.nranks <= 1) return;
@@ -234,7 +250,7 @@ namespace proteus_mpi {
         build_displacements(nn, &total_send, &total_recv);
         s_last_n_migrated = total_send;
 
-        pack_outgoing_migrants(mesh, primvar, cons, pts, n_hydro, nn);
+        pack_outgoing_migrants(mesh, primvar, cons, grads, pts, n_hydro, nn);
 
         {
             PROFILE_MPI("PAYLOAD_WAIT");
@@ -242,7 +258,7 @@ namespace proteus_mpi {
         }
 
         // the leavers go out of the arrays, the arrivals come behind the rest
-        const int n_after_remove = remove_migrated_local(mesh, primvar, cons, pts, n_hydro);
+        const int n_after_remove = remove_migrated_local(mesh, primvar, cons, grads, pts, n_hydro);
 
         const int n_new = n_after_remove + total_recv;
         if (n_new > s_n_local_max) {
@@ -255,7 +271,7 @@ namespace proteus_mpi {
                          s_n_local_max);
         }
 
-        append_incoming_migrants(mesh, primvar, cons, pts, n_after_remove, total_recv, my_rank);
+        append_incoming_migrants(mesh, primvar, cons, grads, pts, n_after_remove, total_recv, my_rank);
         mesh->n_hydro = (uint64_t)n_new;
 
         check_conservation(n_new);
@@ -486,8 +502,13 @@ namespace proteus_mpi {
     }
 
     // copy the cells into the send buffer
-    static void pack_outgoing_migrants(
-        VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons, POINT_TYPE* pts, int n_hydro, int nslots) {
+    static void pack_outgoing_migrants(VMesh*                    mesh,
+                                       hydro::primvars*          primvar,
+                                       hydro::ConsVars*          cons,
+                                       gradients::PrimGradients* grads,
+                                       POINT_TYPE*               pts,
+                                       int                       n_hydro,
+                                       int                       nslots) {
         build_pack_layout(n_hydro, nslots);
 
         auto*   per_cell_slot = s_per_cell_slot;
@@ -516,11 +537,13 @@ namespace proteus_mpi {
                                     energy,
 #ifdef MOVING_MESH
                                     v_mesh,
+                                    grads,
 #endif
                                     sendbuf);
         });
 #ifndef MOVING_MESH
         (void)mesh;
+        (void)grads;
 #endif
     }
 
@@ -574,8 +597,12 @@ namespace proteus_mpi {
     }
 
     // close the holes the leaving cells left: the last cell moves into the hole
-    static int
-    remove_migrated_local(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons, POINT_TYPE* pts, int n_hydro) {
+    static int remove_migrated_local(VMesh*                    mesh,
+                                     hydro::primvars*          primvar,
+                                     hydro::ConsVars*          cons,
+                                     gradients::PrimGradients* grads,
+                                     POINT_TYPE*               pts,
+                                     int                       n_hydro) {
         std::sort(s_migrant_local_k, s_migrant_local_k + s_n_migrant_local, std::greater<int>());
         int n_after = n_hydro;
         for (int i = 0; i < s_n_migrant_local; i++) {
@@ -591,25 +618,38 @@ namespace proteus_mpi {
                 cons->energy[k_remove]   = cons->energy[k_last];
 #ifdef MOVING_MESH
                 mesh->v_mesh[k_remove] = mesh->v_mesh[k_last];
+                grads->rho[k_remove]   = grads->rho[k_last];
+                grads->vx[k_remove]    = grads->vx[k_last];
+                grads->vy[k_remove]    = grads->vy[k_last];
+#ifdef dim_3D
+                grads->vz[k_remove] = grads->vz[k_last];
+#endif
+                grads->E[k_remove]      = grads->E[k_last];
+                grads->anchor[k_remove] = grads->anchor[k_last];
 #endif
             }
             n_after--;
         }
 #ifndef MOVING_MESH
         (void)mesh;
+        (void)grads;
 #endif
         return n_after;
     }
 
     // the arrivals go behind the cells that stayed
-    static void append_incoming_migrants(VMesh*           mesh,
-                                         hydro::primvars* primvar,
-                                         hydro::ConsVars* cons,
-                                         POINT_TYPE*      pts,
-                                         int              n_after_remove,
-                                         int              total_recv,
-                                         int              my_rank) {
+    static void append_incoming_migrants(VMesh*                    mesh,
+                                         hydro::primvars*          primvar,
+                                         hydro::ConsVars*          cons,
+                                         gradients::PrimGradients* grads,
+                                         POINT_TYPE*               pts,
+                                         int                       n_after_remove,
+                                         int                       total_recv,
+                                         int                       my_rank) {
         (void)my_rank;
+#ifndef MOVING_MESH
+        (void)grads;
+#endif
         if (total_recv <= 0) return;
 
         auto*   recvbuf  = s_recvbuf;
@@ -630,6 +670,7 @@ namespace proteus_mpi {
                                       recvbuf,
 #ifdef MOVING_MESH
                                       v_mesh,
+                                      grads,
 #endif
                                       pts,
                                       seeds,

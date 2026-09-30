@@ -186,6 +186,24 @@ HD inline POINT_TYPE point_mul(double s, const POINT_TYPE& p) {
     return out;
 }
 
+HD inline POINT_TYPE point_add(const POINT_TYPE& a, const POINT_TYPE& b) {
+#ifdef dim_2D
+    POINT_TYPE out = {a.x + b.x, a.y + b.y};
+#else
+    POINT_TYPE out = {a.x + b.x, a.y + b.y, a.z + b.z};
+#endif
+    return out;
+}
+
+HD inline POINT_TYPE point_sub(const POINT_TYPE& a, const POINT_TYPE& b) {
+#ifdef dim_2D
+    POINT_TYPE out = {a.x - b.x, a.y - b.y};
+#else
+    POINT_TYPE out = {a.x - b.x, a.y - b.y, a.z - b.z};
+#endif
+    return out;
+}
+
 // a - b with the periodic wrap on every axis
 HD inline POINT_TYPE point_diff_periodic(const double3& a, const double3& b) {
 #ifdef dim_2D

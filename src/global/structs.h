@@ -74,7 +74,7 @@ namespace proteus_mpi {
 
 namespace gradients {
 
-    // gradients of one cell, one POINT_TYPE per primitive
+    // gradients of one cell, one POINT_TYPE per primitive, and where they were taken
     struct PrimGradient {
         POINT_TYPE rho;
         POINT_TYPE vx;
@@ -83,6 +83,7 @@ namespace gradients {
         POINT_TYPE vz;
 #endif
         POINT_TYPE E;
+        POINT_TYPE anchor; // cell centroid - seed at that time
     };
 
     // SoA gradients with the same ghost split as primvars
@@ -94,6 +95,7 @@ namespace gradients {
         POINT_TYPE* vz;
 #endif
         POINT_TYPE* E;
+        POINT_TYPE* anchor;
         size_t      n;
 
         POINT_TYPE* rho_g;
@@ -103,6 +105,7 @@ namespace gradients {
         POINT_TYPE* vz_g;
 #endif
         POINT_TYPE* E_g;
+        POINT_TYPE* anchor_g;
 
         HD inline PrimGradient load(size_t i) const {
             PrimGradient g;
@@ -112,7 +115,8 @@ namespace gradients {
 #ifdef dim_3D
             g.vz = vz[i];
 #endif
-            g.E = E[i];
+            g.E      = E[i];
+            g.anchor = anchor[i];
             return g;
         }
 
@@ -126,7 +130,8 @@ namespace gradients {
 #ifdef dim_3D
                 g.vz = vz[k];
 #endif
-                g.E = E[k];
+                g.E      = E[k];
+                g.anchor = anchor[k];
             } else {
                 const int s = k - n_hydro;
                 g.rho       = rho_g[s];
@@ -135,7 +140,8 @@ namespace gradients {
 #ifdef dim_3D
                 g.vz = vz_g[s];
 #endif
-                g.E = E_g[s];
+                g.E      = E_g[s];
+                g.anchor = anchor_g[s];
             }
             return g;
         }

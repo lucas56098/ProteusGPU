@@ -122,7 +122,6 @@ void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
     (void)mesh;
 
     PROFILE("HALO_GRAD");
-    const int N_COMP     = 3 + DIMENSION;
     const int total_send = halo.n_used_send;
     const int n_recv     = halo.n_used_recv;
 
@@ -136,9 +135,9 @@ void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
 
     {
         PROFILE_MPI("WAIT");
-        mpi_sync_before_send(halo.sendbuf_grad, sizeof(POINT_TYPE) * (size_t)total_send * N_COMP);
+        mpi_sync_before_send(halo.sendbuf_grad, sizeof(POINT_TYPE) * (size_t)total_send * HALO_GRAD_COMPONENTS);
         exchange_used_subset(halo.sendbuf_grad, halo.recvbuf_grad, halo.mpi_grad_cell_t, MSG_GRAD);
-        mpi_sync_after_recv(halo.recvbuf_grad, sizeof(POINT_TYPE) * (size_t)n_recv * N_COMP);
+        mpi_sync_after_recv(halo.recvbuf_grad, sizeof(POINT_TYPE) * (size_t)n_recv * HALO_GRAD_COMPONENTS);
     }
 
     {
@@ -190,6 +189,44 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 #else
     (void)mesh;
 #endif
+#endif
+}
+
+// where the centroid of each used ghost sits, relative to its seed
+void halo_exchange_centroids(VMesh* mesh) {
+#ifndef USE_MPI
+    (void)mesh;
+    return;
+#else
+    if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
+    if (!halo.used_subset_ready) return;
+
+    PROFILE("HALO_COM");
+    const int total_send = halo.n_used_send;
+    const int n_recv     = halo.n_used_recv;
+
+    {
+        auto* sendbuf_com_off     = halo.sendbuf_com_off;
+        auto* used_export_indices = halo.used_export_indices;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", total_send, [=] HD(int s) {
+            pack::pack_com_off_body(s, used_export_indices, mesh->com, mesh->seeds, sendbuf_com_off);
+        });
+    }
+
+    {
+        PROFILE_MPI("WAIT");
+        mpi_sync_before_send(halo.sendbuf_com_off, sizeof(POINT_TYPE) * (size_t)total_send);
+        exchange_used_subset(halo.sendbuf_com_off, halo.recvbuf_com_off, halo.mpi_point_t, MSG_COM_OFF);
+        mpi_sync_after_recv(halo.recvbuf_com_off, sizeof(POINT_TYPE) * (size_t)n_recv);
+    }
+
+    {
+        auto* recvbuf_com_off   = halo.recvbuf_com_off;
+        auto* used_to_full_slot = halo.used_to_full_slot;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("UNPACK", n_recv, [=] HD(int slot) {
+            pack::unpack_com_off_body(slot, used_to_full_slot, recvbuf_com_off, mesh->com_off_g);
+        });
+    }
 #endif
 }
 

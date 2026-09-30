@@ -31,21 +31,23 @@ namespace hydro {
                                         POINT_TYPE                    dx,
                                         prim*                         st_extrap);
     HD void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap);
+    HD bool rho_and_P_positive(const prim& state);
     HD void keep_state_physical(prim* state, double min_egy_spec);
     HD void rotate_to_face(prim* state, geom* g);
     HD void rotate_from_face(prim* state, geom* g);
 #ifdef MOVING_MESH
-    HD void get_vel_face(uint64_t      i,
-                         uint64_t      index_j,
-                         POINT_TYPE    v_mesh_i,
-                         POINT_TYPE    v_mesh_j,
-                         const double* f_mid_local,
-                         const VMesh*  mesh,
-                         geom          g,
-                         POINT_TYPE*   vel_face,
-                         POINT_TYPE*   vel_face_turned);
-    HD void convert_state_to_local_frame(prim* st, POINT_TYPE vel_face);
-    HD void convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned);
+    HD POINT_TYPE from_start_of_step(POINT_TYPE r, POINT_TYPE v_mesh, POINT_TYPE v_gas, double dt);
+    HD void       get_vel_face(uint64_t      i,
+                               uint64_t      index_j,
+                               POINT_TYPE    v_mesh_i,
+                               POINT_TYPE    v_mesh_j,
+                               const double* f_mid_local,
+                               const VMesh*  mesh,
+                               geom          g,
+                               POINT_TYPE*   vel_face,
+                               POINT_TYPE*   vel_face_turned);
+    HD void       convert_state_to_local_frame(prim* st, POINT_TYPE vel_face);
+    HD void       convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned);
 #endif
 
     // the primvars: cells with growth headroom, plus the MPI ghosts

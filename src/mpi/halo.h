@@ -33,6 +33,9 @@ namespace proteus_mpi {
         double     E;
     };
 
+    // POINT_TYPEs per cell in the gradient message: rho, one per velocity axis, E, anchor
+    constexpr int HALO_GRAD_COMPONENTS = 4 + DIMENSION;
+
     // the halo of this rank, set up once and refilled by every build
     struct MpiHalo {
         int    n_neighbors; // Cartesian neighbours that are not this rank itself
@@ -79,6 +82,8 @@ namespace proteus_mpi {
         POINT_TYPE*   recvbuf_v_mesh;
         POINT_TYPE*   sendbuf_grad;
         POINT_TYPE*   recvbuf_grad;
+        POINT_TYPE*   sendbuf_com_off;
+        POINT_TYPE*   recvbuf_com_off;
 #ifdef VOL_REGULARIZE
         double* sendbuf_vol;
         double* recvbuf_vol;
@@ -133,6 +138,7 @@ namespace proteus_mpi {
     void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar);
     void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads);
     void halo_exchange_v_mesh(VMesh* mesh);
+    void halo_exchange_centroids(VMesh* mesh);
 
     void halo_dt_allreduce(double* dt);
     void halo_sum_allreduce(double* v);

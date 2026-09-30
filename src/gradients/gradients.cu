@@ -16,7 +16,8 @@ namespace gradients {
     recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s);
     HD static inline double
     pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor);
-    HD static inline POINT_TYPE face_point(uint64_t i, uint64_t face_idx, const VMesh* mesh, int n_hydro_int);
+    HD static inline POINT_TYPE
+    face_point(uint64_t i, uint64_t face_idx, const VMesh* mesh, int n_hydro_int, const POINT_TYPE& com_off_i);
 
     // one gradient per cell
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
@@ -26,7 +27,7 @@ namespace gradients {
             "GRAD_KERNEL", mesh->n_hydro, [=] HD(size_t i) { compute_gradient_for_cell(i, mesh, primvar, grads); });
     }
 
-    // time derivative of rho, v and E from the Euler equations
+    // time derivative of rho, v and E from the Euler equations; along the flow with a moving mesh
     HD void time_gradient(hydro::prim state_i, PrimGradient grad_i, hydro::prim* dWdt) {
 
         // divergence of v, and v times its gradient
@@ -49,6 +50,19 @@ namespace gradients {
         const double dP_dz = (gamma_eos - 1.0) * (grad_i.E.z - 0.5 * (v2 * grad_i.rho.z + 2.0 * state_i.rho * kinz));
 #endif
 
+#ifdef MOVING_MESH
+        // along the flow: the extrapolation vector carries the motion of the gas instead
+        const double inv_rho = 1.0 / state_i.rho;
+        dWdt->rho            = -state_i.rho * divv;
+        dWdt->v.x            = -dP_dx * inv_rho;
+        dWdt->v.y            = -dP_dy * inv_rho;
+#ifdef dim_3D
+        dWdt->v.z = -dP_dz * inv_rho;
+        dWdt->E   = -(state_i.v.x * dP_dx + state_i.v.y * dP_dy + state_i.v.z * dP_dz + (state_i.E + P) * divv);
+#else
+        dWdt->E = -(state_i.v.x * dP_dx + state_i.v.y * dP_dy + (state_i.E + P) * divv);
+#endif
+#else
         // continuity
         dWdt->rho = -(state_i.v.x * grad_i.rho.x + state_i.v.y * grad_i.rho.y + state_i.rho * divv);
 #ifdef dim_3D
@@ -70,6 +84,7 @@ namespace gradients {
         dWdt->E = -(state_i.v.x * (grad_i.E.x + dP_dx) + state_i.v.y * (grad_i.E.y + dP_dy) + (state_i.E + P) * divv);
 #ifdef dim_3D
         dWdt->E -= state_i.v.z * (grad_i.E.z + dP_dz);
+#endif
 #endif
     }
 
@@ -108,14 +123,20 @@ namespace gradients {
         uint64_t  face_start  = mesh->face_ptr[i];
         const int n_hydro_int = (int)mesh->n_hydro;
 
+        // the cell values belong to the centroids, so the fit and the limiters work from there
+        const POINT_TYPE com_off_i = get_com_off_at((int)i, n_hydro_int, mesh);
+        grads->anchor[i]           = com_off_i;
+
         // every face adds its neighbour, weighted by face area over distance squared
         for (uint64_t fj = 0; fj < face_count; fj++) {
             uint64_t face_idx = face_start + fj;
             int      neighbor = mesh->neighbor_cell[face_idx];
 
-            POINT_TYPE dx    = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
-            double     dist2 = point_dot(dx, dx);
-            // a neighbour sitting on the seed would blow the weight up
+            // centroid of the neighbour - centroid of the cell
+            const POINT_TYPE seed_dx = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
+            POINT_TYPE       dx = point_add(seed_dx, point_sub(get_com_off_at(neighbor, n_hydro_int, mesh), com_off_i));
+            double           dist2 = point_dot(dx, dx);
+            // a neighbour sitting on the centroid would blow the weight up
             if (dist2 < 1e-24) continue;
 
             double face_area = mesh->face_area[face_idx];
@@ -193,7 +214,7 @@ namespace gradients {
         double alpha_vz = 1.0;
 #endif
         for (uint64_t fj = 0; fj < face_count; fj++) {
-            const POINT_TYPE d = face_point(i, face_start + fj, mesh, n_hydro_int);
+            const POINT_TYPE d = face_point(i, face_start + fj, mesh, n_hydro_int, com_off_i);
 
             alpha_rho = fmin(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));
             alpha_vx  = fmin(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads->vx[i]));
@@ -217,7 +238,7 @@ namespace gradients {
         PrimGradient grad_i_scaled = grads->load(i);
         double       alpha_p       = 1.0;
         for (uint64_t fj = 0; fj < face_count; fj++) {
-            const POINT_TYPE d = face_point(i, face_start + fj, mesh, n_hydro_int);
+            const POINT_TYPE d = face_point(i, face_start + fj, mesh, n_hydro_int, com_off_i);
             alpha_p            = fmin(alpha_p, pressure_safe_scale(state_i, grad_i_scaled, d, p_floor));
         }
         if (alpha_p < 1.0) {
@@ -297,15 +318,17 @@ namespace gradients {
         return s_lo;
     }
 
-    // face centroid seen from seed i, the same point the flux extrapolates to
-    HD static inline POINT_TYPE face_point(uint64_t i, uint64_t face_idx, const VMesh* mesh, int n_hydro_int) {
+    // face centroid seen from the centroid of cell i, the same point the first flux extrapolates to
+    HD static inline POINT_TYPE
+    face_point(uint64_t i, uint64_t face_idx, const VMesh* mesh, int n_hydro_int, const POINT_TYPE& com_off_i) {
         const double3    seed_j = get_seed_at(mesh->neighbor_cell[face_idx], n_hydro_int, mesh);
         const double3    delta  = {wrap_periodic_delta(seed_j.x - mesh->seeds[i].x),
                                    wrap_periodic_delta(seed_j.y - mesh->seeds[i].y),
                                    wrap_periodic_delta(seed_j.z - mesh->seeds[i].z)};
         const POINT_TYPE dx     = point_diff_periodic(seed_j, mesh->seeds[i]);
-        return face_centroid_from_seed(
+        const POINT_TYPE r      = face_centroid_from_seed(
             point_mul(0.5, dx), compute_geom(delta), &mesh->f_mid_local[face_idx * (DIMENSION - 1)]);
+        return point_sub(r, com_off_i);
     }
 
 } // namespace gradients

@@ -83,7 +83,7 @@ namespace hydro {
         // cons collects the update, primvar stays as it is until the end of the step
         prim_to_cons(mesh, primvar, cons);
 
-        // gradients on the mesh as it is now
+        // gradients on the mesh as it is now, for both half steps
         gradients::compute_prim_gradients(mesh, primvar, grads);
         proteus_mpi::halo_exchange_gradients(mesh, grads);
 
@@ -99,10 +99,8 @@ namespace hydro {
 
 #ifdef MOVING_MESH
 
-        // move the mesh, then gradients again on the new one
-        voronoi::move_mesh(mesh, dt, primvar, cons);
-
-        gradients::compute_prim_gradients(mesh, primvar, grads);
+        // move the mesh; the gradients stay those of the old one and go to the new ghosts
+        voronoi::move_mesh(mesh, dt, primvar, cons, grads);
         proteus_mpi::halo_exchange_gradients(mesh, grads);
 #endif
 
@@ -284,11 +282,21 @@ namespace hydro {
             POINT_TYPE    dx    = point_diff_periodic(seed_j, mesh->seeds[i]);
             const double* f_mid = &mesh->f_mid_local[face_idx * (DIMENSION - 1)];
 
-            // both states, extrapolated from the seed to the face centroid
-            apply_spatial_extrapolation(
-                state_i, grad_i, face_centroid_from_seed(point_mul(0.5, dx), g, f_mid), &state_l);
-            apply_spatial_extrapolation(
-                state_j, grad_j, face_centroid_from_seed(point_mul(-0.5, dx), g, f_mid), &state_r);
+            // face centroid seen from the cell centroid where each gradient was taken
+            POINT_TYPE r_i = point_sub(face_centroid_from_seed(point_mul(0.5, dx), g, f_mid), grad_i.anchor);
+            POINT_TYPE r_j = point_sub(face_centroid_from_seed(point_mul(-0.5, dx), g, f_mid), grad_j.anchor);
+
+#ifdef MOVING_MESH
+            // the gradients were taken on the mesh at the start of the step
+            if (do_time_extrap) {
+                r_i = from_start_of_step(r_i, vm_i, state_i.v, dt_extrap);
+                r_j = from_start_of_step(r_j, vm_j, state_j.v, dt_extrap);
+            }
+#endif
+
+            // both states, extrapolated to the face centroid
+            apply_spatial_extrapolation(state_i, grad_i, r_i, &state_l);
+            apply_spatial_extrapolation(state_j, grad_j, r_j, &state_r);
 
             // and to the end of the step
             if (do_time_extrap) {
@@ -296,13 +304,17 @@ namespace hydro {
                 apply_time_extrapolation(state_j, grad_j, dt_extrap, &state_r);
             }
 
+            // a side whose extrapolation does not keep rho and P positive stays first order
+            if (!rho_and_P_positive(state_l)) state_l = state_i;
+            if (!rho_and_P_positive(state_r)) state_r = state_j;
+
 #ifdef MOVING_MESH
             // into the frame that moves with the face
             convert_state_to_local_frame(&state_l, vel_face);
             convert_state_to_local_frame(&state_r, vel_face);
 #endif
 
-            // the extrapolation can leave the physical range
+            // floors, the temperature floor included
             keep_state_physical(&state_l, mesh->min_egy_spec);
             keep_state_physical(&state_r, mesh->min_egy_spec);
 
@@ -529,68 +541,30 @@ namespace hydro {
         prim dWdt;
         gradients::time_gradient(state_i, grad_i, &dWdt);
 
-        constexpr double RHO_FLOOR_FACE = 1e-12;
-        constexpr double P_FLOOR_FACE   = 1e-12;
-        double           beta           = 1.0;
-
-        // beta shortens the step so that the density stays above its floor
-        if (dWdt.rho < 0.0) {
-            const double denom = -dt_extrap * dWdt.rho;
-            if (denom > 0.0) {
-                const double beta_rho = (st_extrap->rho - RHO_FLOOR_FACE) / denom;
-                if (beta_rho < beta) beta = fmax(0.0, beta_rho);
-            }
-        }
-
-        {
-            const double rho_b = st_extrap->rho + beta * dt_extrap * dWdt.rho;
-            const double vx_b  = st_extrap->v.x + beta * dt_extrap * dWdt.v.x;
-            const double vy_b  = st_extrap->v.y + beta * dt_extrap * dWdt.v.y;
+        st_extrap->rho += dt_extrap * dWdt.rho;
+        st_extrap->v.x += dt_extrap * dWdt.v.x;
+        st_extrap->v.y += dt_extrap * dWdt.v.y;
 #ifdef dim_3D
-            const double vz_b = st_extrap->v.z + beta * dt_extrap * dWdt.v.z;
-            const double v2_b = vx_b * vx_b + vy_b * vy_b + vz_b * vz_b;
-#else
-            const double v2_b = vx_b * vx_b + vy_b * vy_b;
+        st_extrap->v.z += dt_extrap * dWdt.v.z;
 #endif
-            const double E_b = st_extrap->E + beta * dt_extrap * dWdt.E;
-            const double P_b = (gamma_eos - 1.0) * (E_b - 0.5 * rho_b * v2_b);
+        st_extrap->E += dt_extrap * dWdt.E;
+    }
 
-            // and the pressure above its own, found by bisection
-            if (P_b < P_FLOOR_FACE) {
-                double lo = 0.0, hi = beta;
-                for (int it = 0; it < 16; ++it) {
-                    const double mid   = 0.5 * (lo + hi);
-                    const double rho_m = st_extrap->rho + mid * dt_extrap * dWdt.rho;
-                    const double vx_m  = st_extrap->v.x + mid * dt_extrap * dWdt.v.x;
-                    const double vy_m  = st_extrap->v.y + mid * dt_extrap * dWdt.v.y;
-#ifdef dim_3D
-                    const double vz_m = st_extrap->v.z + mid * dt_extrap * dWdt.v.z;
-                    const double v2_m = vx_m * vx_m + vy_m * vy_m + vz_m * vz_m;
-#else
-                    const double v2_m = vx_m * vx_m + vy_m * vy_m;
-#endif
-                    const double E_m = st_extrap->E + mid * dt_extrap * dWdt.E;
-                    const double P_m = (gamma_eos - 1.0) * (E_m - 0.5 * rho_m * v2_m);
-                    if (P_m >= P_FLOOR_FACE)
-                        lo = mid;
-                    else
-                        hi = mid;
-                }
-                beta = lo;
-            }
-        }
-
-        const double bdt = beta * dt_extrap;
-        st_extrap->rho += bdt * dWdt.rho;
-        st_extrap->v.x += bdt * dWdt.v.x;
-        st_extrap->v.y += bdt * dWdt.v.y;
-#ifdef dim_3D
-        st_extrap->v.z += bdt * dWdt.v.z;
-#endif
-        st_extrap->E += bdt * dWdt.E;
+    HD bool rho_and_P_positive(const prim& state) {
+        return state.rho > 0.0 && get_P_ideal_gas(&state) > 0.0;
     }
 
 #ifdef MOVING_MESH
+    // r from where the seed was at the start of the step (seed - v_mesh dt), minus the distance the gas moved
+    HD POINT_TYPE from_start_of_step(POINT_TYPE r, POINT_TYPE v_mesh, POINT_TYPE v_gas, double dt) {
+        r.x += dt * (v_mesh.x - v_gas.x);
+        r.y += dt * (v_mesh.y - v_gas.y);
+#ifdef dim_3D
+        r.z += dt * (v_mesh.z - v_gas.z);
+#endif
+        return r;
+    }
+
     // velocity of the face: mean of the two mesh velocities, plus the turn of the face
     HD void get_vel_face(uint64_t      i,
                          uint64_t      index_j,

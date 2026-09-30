@@ -41,7 +41,8 @@ struct VMesh {
 #endif
 
     // per MPI ghost slot
-    double3* seeds_g;
+    double3*    seeds_g;
+    POINT_TYPE* com_off_g; // centroid - seed
 #ifdef MOVING_MESH
     POINT_TYPE* v_mesh_g;
 #endif
@@ -96,17 +97,19 @@ namespace voronoi {
     void mesh_grow_build_buffers(VMesh* mesh, int new_mpi_capacity);
 
     // build the mesh for the current seed positions
-    void compute_periodic_mesh(VMesh*           mesh,
-                               POINT_TYPE*      pts_data,
-                               uint64_t         num_points,
-                               hydro::primvars* primvar,
-                               hydro::ConsVars* cons,
-                               double           dt);
+    void compute_periodic_mesh(VMesh*                    mesh,
+                               POINT_TYPE*               pts_data,
+                               uint64_t                  num_points,
+                               hydro::primvars*          primvar,
+                               hydro::ConsVars*          cons,
+                               gradients::PrimGradients* grads,
+                               double                    dt);
 
     // move it
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);
 
-    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::ConsVars* cons);
+    void
+    move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::ConsVars* cons, gradients::PrimGradients* grads);
 
 } // namespace voronoi
 
@@ -125,6 +128,11 @@ HD inline hydro::prim get_state(uint64_t k, const hydro::primvars* primvar) {
 // k < n_hydro: cell, above: MPI ghost
 HD inline double3 get_seed_at(int k, int n_hydro, const VMesh* mesh) {
     return (k < n_hydro) ? mesh->seeds[k] : mesh->seeds_g[k - n_hydro];
+}
+
+// centroid - seed of a cell or an MPI ghost
+HD inline POINT_TYPE get_com_off_at(int k, int n_hydro, const VMesh* mesh) {
+    return (k < n_hydro) ? point_diff_periodic(mesh->com[k], mesh->seeds[k]) : mesh->com_off_g[k - n_hydro];
 }
 
 // face centroid seen from a seed: half_dx is +-0.5 (seed j - seed i), g the frame of the face

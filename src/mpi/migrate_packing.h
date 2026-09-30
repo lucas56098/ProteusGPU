@@ -79,7 +79,8 @@ namespace proteus_mpi {
                                          const POINT_TYPE* momentum,
                                          const double*     energy,
 #ifdef MOVING_MESH
-                                         const POINT_TYPE* v_mesh,
+                                         const POINT_TYPE*               v_mesh,
+                                         const gradients::PrimGradients* grads,
 #endif
                                          MigrantCell* sendbuf) {
             if (per_cell_slot[k] < 0) return;
@@ -93,6 +94,7 @@ namespace proteus_mpi {
             mc.energy   = energy[k];
 #ifdef MOVING_MESH
             mc.v_mesh = v_mesh[k];
+            mc.grad   = grads->load(k);
 #endif
             sendbuf[dest_pos[k]] = mc;
         }
@@ -102,7 +104,8 @@ namespace proteus_mpi {
                                            int                n_after_remove,
                                            const MigrantCell* recvbuf,
 #ifdef MOVING_MESH
-                                           POINT_TYPE* v_mesh,
+                                           POINT_TYPE*               v_mesh,
+                                           gradients::PrimGradients* grads,
 #endif
                                            POINT_TYPE* pts,
                                            double3*    seeds,
@@ -127,7 +130,15 @@ namespace proteus_mpi {
             momentum[k]    = mc.momentum;
             energy[k]      = mc.energy;
 #ifdef MOVING_MESH
-            v_mesh[k] = mc.v_mesh;
+            v_mesh[k]     = mc.v_mesh;
+            grads->rho[k] = mc.grad.rho;
+            grads->vx[k]  = mc.grad.vx;
+            grads->vy[k]  = mc.grad.vy;
+#ifdef dim_3D
+            grads->vz[k] = mc.grad.vz;
+#endif
+            grads->E[k]      = mc.grad.E;
+            grads->anchor[k] = mc.grad.anchor;
 #endif
         }
 
