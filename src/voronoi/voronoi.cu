@@ -52,7 +52,7 @@ namespace voronoi {
                                               hydro::ConsVars*          cons,
                                               gradients::PrimGradients* grads);
     static void       cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt);
-    static void       exchange_used_ghost_primvars(VMesh* mesh, hydro::primvars* primvar);
+    static void       exchange_ghost_geometry(VMesh* mesh);
     static void       adapt_halo_width(const BuildStats& stats);
     static void       print_step_summary(const BuildStats& stats);
 
@@ -96,7 +96,7 @@ namespace voronoi {
         }
 
         // ghosts have their final position now
-        exchange_used_ghost_primvars(mesh, primvar);
+        exchange_ghost_geometry(mesh);
         adapt_halo_width(stats);
         print_step_summary(stats);
     }
@@ -255,15 +255,11 @@ namespace voronoi {
         logging::root() << "VORONOI: perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << "." << std::endl;
     }
 
-    // sends the state of the ghosts that a cell really uses
-    static void exchange_used_ghost_primvars(VMesh* mesh, hydro::primvars* primvar) {
+    // finds the ghosts a cell really uses and sends their geometry; their state is up to the caller
+    static void exchange_ghost_geometry(VMesh* mesh) {
         if (proteus_mpi::halo.n_neighbors == 0) return;
         proteus_mpi::halo_build_used_subset(mesh);
-        proteus_mpi::halo_exchange_primvars(mesh, primvar);
         proteus_mpi::halo_exchange_centroids(mesh);
-#ifdef MOVING_MESH
-        proteus_mpi::halo_exchange_v_mesh(mesh);
-#endif
 #ifdef VOL_REGULARIZE
         proteus_mpi::halo_exchange_volumes(mesh);
 #endif

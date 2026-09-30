@@ -99,8 +99,12 @@ namespace hydro {
 
 #ifdef MOVING_MESH
 
-        // move the mesh; the gradients stay those of the old one and go to the new ghosts
+        // move the mesh; the state and the gradients stay those of the start of the step
         voronoi::move_mesh(mesh, dt, primvar, cons, grads);
+
+        // the new mesh has new ghosts, so they get all of it again
+        proteus_mpi::halo_exchange_primvars(mesh, primvar);
+        proteus_mpi::halo_exchange_v_mesh(mesh);
         proteus_mpi::halo_exchange_gradients(mesh, grads);
 #endif
 
