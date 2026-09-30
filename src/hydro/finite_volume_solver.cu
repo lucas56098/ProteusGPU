@@ -10,27 +10,27 @@
 #include "../profiler/profiler.h"
 #include "finite_volume_solver.h"
 #include "riemann.cu"
-#include <utility>
 
 namespace hydro {
 
     HD void flux_update_for_cell(
-        uint64_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, primvars*);
+        uint64_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, ConsVars*);
+    HD void cons_to_prim_for_cell(uint64_t, const VMesh*, const ConsVars*, primvars*);
 #ifdef AGN_ENABLED
     HD double dt_CFL_for_cell(uint64_t, double, const VMesh*, const primvars*, bool, const astro::AgnParams&);
 #else
     HD double dt_CFL_for_cell(uint64_t, double, const VMesh*, const primvars*);
 #endif
     static void check_unphysical_state(VMesh*, const primvars*);
-    static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new);
-    static void swap_primvars(primvars* primvar, primvars* prim_new);
+    static void prim_to_cons(const VMesh* mesh, const primvars* primvar, ConsVars* cons);
+    static void cons_to_prim(const VMesh* mesh, const ConsVars* cons, primvars* primvar);
 
     // allocates the state arrays and fills them from the IC
     void init_hydro() {
         const int n_hydro = (int)sim.n_hydro;
 
         sim.primvar = gpu_alloc<primvars>(1);
-        allocate_prim_buffer(sim.n_hydro, sim.primvar, true);
+        allocate_prim_buffer(sim.n_hydro, sim.primvar);
 
         for (int i = 0; i < n_hydro; i++) {
             sim.primvar->rho[i] = ic_data.rho[i];
@@ -42,8 +42,8 @@ namespace hydro {
 #endif
         }
 
-        sim.prim_new = gpu_alloc<primvars>(1);
-        allocate_prim_buffer(sim.n_hydro, sim.prim_new, false);
+        sim.cons = gpu_alloc<ConsVars>(1);
+        allocate_cons_buffer(sim.n_hydro, sim.cons);
 
         sim.grads = gpu_alloc<gradients::PrimGradients>(1);
         gradients::allocate_grad(sim.n_hydro, sim.grads);
@@ -57,31 +57,31 @@ namespace hydro {
     // gives them back at the end of the run
     void free_hydro() {
         free_prim_buffer(sim.primvar);
-        free_prim_buffer(sim.prim_new);
+        free_cons_buffer(sim.cons);
         gradients::free_grad(sim.grads);
 
         gpu_free(sim.primvar);
-        gpu_free(sim.prim_new);
+        gpu_free(sim.cons);
         gpu_free(sim.grads);
         gpu_free(sim.dt);
 
-        sim.primvar  = nullptr;
-        sim.prim_new = nullptr;
-        sim.grads    = nullptr;
-        sim.dt       = nullptr;
+        sim.primvar = nullptr;
+        sim.cons    = nullptr;
+        sim.grads   = nullptr;
+        sim.dt      = nullptr;
     }
 
     // one step: half the fluxes, move the mesh, the other half
     void hydro_step(double dt, VMesh* mesh, primvars* primvar) {
 
-        primvars*                 prim_new = sim.prim_new;
-        gradients::PrimGradients* grads    = sim.grads;
+        ConsVars*                 cons  = sim.cons;
+        gradients::PrimGradients* grads = sim.grads;
 
         // the ghosts get the state of their own rank
         proteus_mpi::halo_exchange_primvars(mesh, primvar);
 
-        // prim_new collects the update, primvar stays as it is
-        reset_prim_new(mesh, primvar, prim_new);
+        // cons collects the update, primvar stays as it is until the end of the step
+        prim_to_cons(mesh, primvar, cons);
 
         // gradients on the mesh as it is now
         gradients::compute_prim_gradients(mesh, primvar, grads);
@@ -93,26 +93,26 @@ namespace hydro {
 #endif
 
         // first half step, states taken at the current time
-        apply_flux_update(0.5 * dt, 0.0, mesh, primvar, grads, prim_new);
+        apply_flux_update(0.5 * dt, 0.0, mesh, primvar, grads, cons);
         logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (1/2)"
                         << std::endl;
 
 #ifdef MOVING_MESH
 
         // move the mesh, then gradients again on the new one
-        voronoi::move_mesh(mesh, dt, primvar, prim_new);
+        voronoi::move_mesh(mesh, dt, primvar, cons);
 
         gradients::compute_prim_gradients(mesh, primvar, grads);
         proteus_mpi::halo_exchange_gradients(mesh, grads);
 #endif
 
         // second half step, states extrapolated to the end of the step
-        apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, prim_new);
+        apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, cons);
         logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (2/2)"
                         << std::endl;
 
-        // prim_new is the state of the run from here
-        swap_primvars(primvar, prim_new);
+        // the new state, from cons and the volumes of the current mesh
+        cons_to_prim(mesh, cons, primvar);
 
         check_unphysical_state(mesh, primvar);
     }
@@ -123,14 +123,14 @@ namespace hydro {
                            const VMesh*                    mesh,
                            const primvars*                 prim_old,
                            const gradients::PrimGradients* grads,
-                           primvars*                       prim_new) {
+                           ConsVars*                       cons) {
 
         PROFILE("FLUX");
 
         const bool do_time_extrap = (dt_extrap != 0.0);
 
         parallel_for<_HYDRO_BLOCK_SIZE_, 2>("FLUX_KERNEL", mesh->n_hydro, [=] HD(size_t i) {
-            flux_update_for_cell(i, dt_update, do_time_extrap, dt_extrap, mesh, prim_old, grads, prim_new);
+            flux_update_for_cell(i, dt_update, do_time_extrap, dt_extrap, mesh, prim_old, grads, cons);
         });
     }
 
@@ -167,20 +167,30 @@ namespace hydro {
         return *sim.dt;
     }
 
-    // prim_new = primvar
-    static void reset_prim_new(VMesh* mesh, primvars* primvar, primvars* prim_new) {
+    // mass, momentum and energy of every cell, from its state and volume
+    static void prim_to_cons(const VMesh* mesh, const primvars* primvar, ConsVars* cons) {
+        PROFILE("PRIM_TO_CONS");
 
-        PROFILE("COPY_PRIMVAR");
-        gpu_memcpy(prim_new->rho, primvar->rho, mesh->n_hydro * sizeof(double));
-        gpu_memcpy(prim_new->v, primvar->v, mesh->n_hydro * sizeof(POINT_TYPE));
-        gpu_memcpy(prim_new->E, primvar->E, mesh->n_hydro * sizeof(double));
+        parallel_for<_HYDRO_BLOCK_SIZE_>("PRIM_TO_CONS_KERNEL", mesh->n_hydro, [=] HD(size_t i) {
+            const double V = mesh->volumes[i];
+            const double m = primvar->rho[i] * V;
+
+            cons->mass[i]       = m;
+            cons->momentum[i].x = m * primvar->v[i].x;
+            cons->momentum[i].y = m * primvar->v[i].y;
+#ifdef dim_3D
+            cons->momentum[i].z = m * primvar->v[i].z;
+#endif
+            cons->energy[i] = primvar->E[i] * V;
+        });
     }
 
-    static void swap_primvars(primvars* primvar, primvars* prim_new) {
-        GPU_SYNC();
-        std::swap(primvar->rho, prim_new->rho);
-        std::swap(primvar->v, prim_new->v);
-        std::swap(primvar->E, prim_new->E);
+    // and back, with the volumes of the current mesh
+    static void cons_to_prim(const VMesh* mesh, const ConsVars* cons, primvars* primvar) {
+        PROFILE("CONS_TO_PRIM");
+
+        parallel_for<_HYDRO_BLOCK_SIZE_>(
+            "CONS_TO_PRIM_KERNEL", mesh->n_hydro, [=] HD(size_t i) { cons_to_prim_for_cell(i, mesh, cons, primvar); });
     }
 
     // bad cells of each kind
@@ -230,7 +240,7 @@ namespace hydro {
                                  const VMesh*                    mesh,
                                  const primvars*                 prim_old,
                                  const gradients::PrimGradients* grads,
-                                 primvars*                       prim_new) {
+                                 ConsVars*                       cons) {
 
         const uint64_t face_base = mesh->face_ptr[i];
 
@@ -319,42 +329,52 @@ namespace hydro {
             total_flux.E += flux_ij.E * face_area;
         }
 
-        // what flows out in dt_update, spread over the cell volume
-        double           frac           = dt_update / mesh->volumes[i];
-        double           rho_old        = prim_new->rho[i];
-        double           rho_new        = rho_old - frac * total_flux.rho;
+        // what flows out in dt_update
+        cons->mass[i] -= dt_update * total_flux.rho;
+        cons->momentum[i].x -= dt_update * total_flux.v.x;
+        cons->momentum[i].y -= dt_update * total_flux.v.y;
+#ifdef dim_3D
+        cons->momentum[i].z -= dt_update * total_flux.v.z;
+#endif
+        cons->energy[i] -= dt_update * total_flux.E;
+    }
+
+    // state of cell i from cons; primvar still holds the state at the start of the step
+    HD void cons_to_prim_for_cell(uint64_t i, const VMesh* mesh, const ConsVars* cons, primvars* primvar) {
         constexpr double RHO_FLOOR_CELL = 1e-13;
 
-        // with a temperature floor the cell is held at the floor instead of going empty
-        if (mesh->min_egy_spec > 0.0 && rho_new < RHO_FLOOR_CELL) {
-            rho_new          = RHO_FLOOR_CELL;
-            prim_new->rho[i] = rho_new;
-            double v2        = prim_new->v[i].x * prim_new->v[i].x + prim_new->v[i].y * prim_new->v[i].y;
-#ifdef dim_3D
-            v2 += prim_new->v[i].z * prim_new->v[i].z;
-#endif
-            prim_new->E[i] = 0.5 * rho_new * v2 + rho_new * mesh->min_egy_spec;
-        } else {
-            // v is a velocity, so the update runs over the momentum and divides by the new density
-            double rho_inv = 1.0 / rho_new;
+        const double inv_V = 1.0 / mesh->volumes[i];
+        const double rho   = cons->mass[i] * inv_V;
 
-            prim_new->rho[i] = rho_new;
-            prim_new->v[i].x = (rho_old * prim_new->v[i].x - frac * total_flux.v.x) * rho_inv;
-            prim_new->v[i].y = (rho_old * prim_new->v[i].y - frac * total_flux.v.y) * rho_inv;
+        // with a temperature floor the cell is held at the floor instead of going empty, at its old velocity
+        if (mesh->min_egy_spec > 0.0 && rho < RHO_FLOOR_CELL) {
+            double v2 = primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y;
 #ifdef dim_3D
-            prim_new->v[i].z = (rho_old * prim_new->v[i].z - frac * total_flux.v.z) * rho_inv;
+            v2 += primvar->v[i].z * primvar->v[i].z;
 #endif
-            prim_new->E[i] -= frac * total_flux.E;
+            primvar->rho[i] = RHO_FLOOR_CELL;
+            primvar->E[i]   = 0.5 * RHO_FLOOR_CELL * v2 + RHO_FLOOR_CELL * mesh->min_egy_spec;
+            return;
+        }
 
-            // keep the internal energy at the floor
-            if (mesh->min_egy_spec > 0.0) {
-                double v2 = prim_new->v[i].x * prim_new->v[i].x + prim_new->v[i].y * prim_new->v[i].y;
+        const double inv_m = 1.0 / cons->mass[i];
+
+        primvar->rho[i] = rho;
+        primvar->v[i].x = cons->momentum[i].x * inv_m;
+        primvar->v[i].y = cons->momentum[i].y * inv_m;
 #ifdef dim_3D
-                v2 += prim_new->v[i].z * prim_new->v[i].z;
+        primvar->v[i].z = cons->momentum[i].z * inv_m;
 #endif
-                double e_wall = 0.5 * rho_new * v2 + rho_new * mesh->min_egy_spec;
-                if (prim_new->E[i] < e_wall) { prim_new->E[i] = e_wall; }
-            }
+        primvar->E[i] = cons->energy[i] * inv_V;
+
+        // keep the internal energy at the floor
+        if (mesh->min_egy_spec > 0.0) {
+            double v2 = primvar->v[i].x * primvar->v[i].x + primvar->v[i].y * primvar->v[i].y;
+#ifdef dim_3D
+            v2 += primvar->v[i].z * primvar->v[i].z;
+#endif
+            const double e_wall = 0.5 * rho * v2 + rho * mesh->min_egy_spec;
+            if (primvar->E[i] < e_wall) { primvar->E[i] = e_wall; }
         }
     }
 

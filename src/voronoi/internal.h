@@ -11,12 +11,8 @@
 namespace voronoi {
 
     // one build round
-    void compute_mesh(VMesh*           mesh,
-                      POINT_TYPE*      pts_data,
-                      int              n_total,
-                      hydro::primvars* primvar,
-                      hydro::primvars* primvar_aux,
-                      int              iter = 0);
+    void compute_mesh(
+        VMesh* mesh, POINT_TYPE* pts_data, int n_total, hydro::primvars* primvar, hydro::ConsVars* cons, int iter = 0);
 
     // rebuild failed cells on the CPU, returns the number of moved seeds
     int cpu_fallback_failed_cells(VMesh*            mesh,

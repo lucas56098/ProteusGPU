@@ -348,7 +348,7 @@ namespace begrun {
 
         // first build, with dt = 0 so a fallback perturbation does not touch v_mesh
         voronoi::compute_periodic_mesh(
-            sim.mesh, (POINT_TYPE*)ic_data.pos.data(), sim.n_hydro, sim.primvar, sim.prim_new, 0.0);
+            sim.mesh, (POINT_TYPE*)ic_data.pos.data(), sim.n_hydro, sim.primvar, sim.cons, 0.0);
 
         // the cells live in the mesh now
         free_initial_conditions();

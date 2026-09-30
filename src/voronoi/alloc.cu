@@ -62,8 +62,7 @@ namespace voronoi {
             mesh->data_hi[a] = 0.0;
         }
 #ifdef MOVING_MESH
-        mesh->v_mesh      = gpu_calloc<POINT_TYPE>(ext);
-        mesh->old_volumes = gpu_calloc<double>(ext);
+        mesh->v_mesh = gpu_calloc<POINT_TYPE>(ext);
 #endif
 
         // ghost arrays, none without MPI
@@ -147,7 +146,6 @@ namespace voronoi {
 #endif
 #ifdef MOVING_MESH
         gpu_free(mesh->v_mesh);
-        gpu_free(mesh->old_volumes);
 #endif
         gpu_free(mesh->neighbor_cell);
         gpu_free(mesh->face_area);

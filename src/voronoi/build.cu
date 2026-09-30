@@ -8,7 +8,7 @@ namespace voronoi {
     static void clear_cell_arrays(VMesh* mesh);
     static void build_index_maps(VMesh* mesh, int iter);
     static void compute_gather_perm(VMesh* mesh);
-    static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* primvar_aux);
+    static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons);
     template <typename T> static void permute_inplace(T*& live, T*& scratch, uint64_t n, const unsigned int* perm);
     static void                       compute_cells(VMesh* mesh);
 
@@ -31,12 +31,8 @@ namespace voronoi {
 #endif
 
     // sorts the points, maps the indices, builds all cells
-    void compute_mesh(VMesh*           mesh,
-                      POINT_TYPE*      pts_data,
-                      int              n_total,
-                      hydro::primvars* primvar,
-                      hydro::primvars* primvar_aux,
-                      int              iter) {
+    void compute_mesh(
+        VMesh* mesh, POINT_TYPE* pts_data, int n_total, hydro::primvars* primvar, hydro::ConsVars* cons, int iter) {
         {
             PROFILE("KNN_PREP");
             // sort the points into the neighbour grid
@@ -55,7 +51,7 @@ namespace voronoi {
             if (iter == 0) {
                 save_orig_to_k_for_lookup(mesh);
                 compute_gather_perm(mesh);
-                permute_persistent_state(mesh, primvar, primvar_aux);
+                permute_persistent_state(mesh, primvar, cons);
             }
         }
 
@@ -176,7 +172,7 @@ namespace voronoi {
     }
 
     // sorts everything that outlives the step into the new cell order
-    static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
+    static void permute_persistent_state(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons) {
         const uint64_t      n    = mesh->n_hydro;
         const unsigned int* perm = mesh->gather_perm;
 
@@ -185,14 +181,13 @@ namespace voronoi {
             permute_inplace(primvar->v, mesh->scratch_point, n, perm);
             permute_inplace(primvar->E, mesh->scratch_double, n, perm);
         }
-        if (primvar_aux) {
-            permute_inplace(primvar_aux->rho, mesh->scratch_double, n, perm);
-            permute_inplace(primvar_aux->v, mesh->scratch_point, n, perm);
-            permute_inplace(primvar_aux->E, mesh->scratch_double, n, perm);
+        if (cons) {
+            permute_inplace(cons->mass, mesh->scratch_double, n, perm);
+            permute_inplace(cons->momentum, mesh->scratch_point, n, perm);
+            permute_inplace(cons->energy, mesh->scratch_double, n, perm);
         }
 #ifdef MOVING_MESH
         permute_inplace(mesh->v_mesh, mesh->scratch_point, n, perm);
-        permute_inplace(mesh->old_volumes, mesh->scratch_double, n, perm);
 #endif
 
 #ifndef CPU_DEBUG

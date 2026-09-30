@@ -2,7 +2,7 @@
 #define STRUCTS_H
 #pragma once
 
-// Small shared types: cell status, primitive variables, gradients and the face frame.
+// Small shared types: cell status, primitive and conserved variables, gradients and the face frame.
 
 #include "gpu_compat.h"
 
@@ -32,6 +32,13 @@ namespace hydro {
         double*     rho_g;
         POINT_TYPE* v_g;
         double*     E_g;
+    };
+
+    // conserved variables of the local cells during a step, as SoA
+    struct ConsVars {
+        double*     mass;
+        POINT_TYPE* momentum;
+        double*     energy;
     };
 
     // one cell's primitive state; E is total energy per volume

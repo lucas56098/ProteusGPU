@@ -10,17 +10,18 @@
 struct VMesh;
 namespace hydro {
     struct primvars;
-}
+    struct ConsVars;
+} // namespace hydro
 
 namespace proteus_mpi {
 
     void migrate_init(int n_local_initial);
 
     // per step: cells can only move to a Cartesian neighbour
-    void migrate_seeds(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new);
+    void migrate_seeds(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons);
 
     // after new splits: a cell can land on any rank
-    void migrate_for_rebalance(VMesh* mesh, hydro::primvars* primvar, hydro::primvars* prim_new);
+    void migrate_for_rebalance(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons);
 
     int last_n_migrated();
 

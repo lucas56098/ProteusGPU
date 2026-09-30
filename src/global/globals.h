@@ -113,16 +113,17 @@ class OutputHandler;
 struct VMesh;
 namespace hydro {
     struct primvars;
-}
+    struct ConsVars;
+} // namespace hydro
 namespace gradients {
     struct PrimGradients;
 }
 
 // everything that lives across the main loop
 struct SimState {
-    size_t                    n_hydro;  // local cells
-    hydro::primvars*          primvar;  // current state
-    hydro::primvars*          prim_new; // the step writes here, the pointers swap at the end
+    size_t                    n_hydro; // local cells
+    hydro::primvars*          primvar; // current state
+    hydro::ConsVars*          cons;    // the step updates these, primvar follows at the end
     gradients::PrimGradients* grads;
     VMesh*                    mesh;
     double*                   dt; // managed, written by calc_timestep

@@ -75,26 +75,24 @@ namespace proteus_mpi {
                                          const double*     primvar_rho,
                                          const POINT_TYPE* primvar_v,
                                          const double*     primvar_E,
-                                         const double*     prim_new_rho,
-                                         const POINT_TYPE* prim_new_v,
-                                         const double*     prim_new_E,
+                                         const double*     mass,
+                                         const POINT_TYPE* momentum,
+                                         const double*     energy,
 #ifdef MOVING_MESH
                                          const POINT_TYPE* v_mesh,
-                                         const double*     old_volumes,
 #endif
                                          MigrantCell* sendbuf) {
             if (per_cell_slot[k] < 0) return;
             MigrantCell mc;
-            mc.pos     = pts[k];
-            mc.rho_old = primvar_rho[k];
-            mc.v_old   = primvar_v[k];
-            mc.E_old   = primvar_E[k];
-            mc.rho_new = prim_new_rho[k];
-            mc.v_new   = prim_new_v[k];
-            mc.E_new   = prim_new_E[k];
+            mc.pos      = pts[k];
+            mc.rho_old  = primvar_rho[k];
+            mc.v_old    = primvar_v[k];
+            mc.E_old    = primvar_E[k];
+            mc.mass     = mass[k];
+            mc.momentum = momentum[k];
+            mc.energy   = energy[k];
 #ifdef MOVING_MESH
-            mc.v_mesh     = v_mesh[k];
-            mc.old_volume = old_volumes[k];
+            mc.v_mesh = v_mesh[k];
 #endif
             sendbuf[dest_pos[k]] = mc;
         }
@@ -105,16 +103,15 @@ namespace proteus_mpi {
                                            const MigrantCell* recvbuf,
 #ifdef MOVING_MESH
                                            POINT_TYPE* v_mesh,
-                                           double*     old_volumes,
 #endif
                                            POINT_TYPE* pts,
                                            double3*    seeds,
                                            double*     primvar_rho,
                                            POINT_TYPE* primvar_v,
                                            double*     primvar_E,
-                                           double*     prim_new_rho,
-                                           POINT_TYPE* prim_new_v,
-                                           double*     prim_new_E) {
+                                           double*     mass,
+                                           POINT_TYPE* momentum,
+                                           double*     energy) {
             const int         k  = n_after_remove + j;
             const MigrantCell mc = recvbuf[j];
             pts[k]               = mc.pos;
@@ -123,15 +120,14 @@ namespace proteus_mpi {
 #else
             seeds[k] = double3{mc.pos.x, mc.pos.y, 0.0};
 #endif
-            primvar_rho[k]  = mc.rho_old;
-            primvar_v[k]    = mc.v_old;
-            primvar_E[k]    = mc.E_old;
-            prim_new_rho[k] = mc.rho_new;
-            prim_new_v[k]   = mc.v_new;
-            prim_new_E[k]   = mc.E_new;
+            primvar_rho[k] = mc.rho_old;
+            primvar_v[k]   = mc.v_old;
+            primvar_E[k]   = mc.E_old;
+            mass[k]        = mc.mass;
+            momentum[k]    = mc.momentum;
+            energy[k]      = mc.energy;
 #ifdef MOVING_MESH
-            v_mesh[k]      = mc.v_mesh;
-            old_volumes[k] = mc.old_volume;
+            v_mesh[k] = mc.v_mesh;
 #endif
         }
 

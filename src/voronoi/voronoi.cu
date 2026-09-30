@@ -46,7 +46,7 @@ namespace voronoi {
     } // namespace
 
     static BuildStats build_mesh_growing_halo(
-        VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro, hydro::primvars* primvar, hydro::primvars* primvar_aux);
+        VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro, hydro::primvars* primvar, hydro::ConsVars* cons);
     static void cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt);
     static void exchange_used_ghost_primvars(VMesh* mesh, hydro::primvars* primvar);
     static void adapt_halo_width(const BuildStats& stats);
@@ -76,11 +76,11 @@ namespace voronoi {
                                POINT_TYPE*      pts_data,
                                uint64_t         num_points,
                                hydro::primvars* primvar,
-                               hydro::primvars* primvar_aux,
+                               hydro::ConsVars* cons,
                                double           dt) {
         PROFILE("MESH");
 
-        BuildStats stats = build_mesh_growing_halo(mesh, pts_data, num_points, primvar, primvar_aux);
+        BuildStats stats = build_mesh_growing_halo(mesh, pts_data, num_points, primvar, cons);
 
         stats.global_failed_cells = logging::sum_global(stats.local_failed_cells);
 
@@ -98,7 +98,7 @@ namespace voronoi {
 
     // builds all cells, with a wider halo each round while cells reach past the rank data
     static BuildStats build_mesh_growing_halo(
-        VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
+        VMesh* mesh, POINT_TYPE* pts_data, uint64_t n_hydro, hydro::primvars* primvar, hydro::ConsVars* cons) {
         constexpr int MAX_WIDEN_ITERS = 4;
 
         // upper bound for the periodic copies
@@ -132,7 +132,7 @@ namespace voronoi {
 
             mesh->n_mpi_ghosts = proteus_mpi::halo.n_mpi_ghosts;
             set_data_extent_for_build(mesh, stats.final_halo_width, have_mpi);
-            compute_mesh(mesh, pts, (int)(n_hydro + n_ghosts + n_mpi), primvar, primvar_aux, iter);
+            compute_mesh(mesh, pts, (int)(n_hydro + n_ghosts + n_mpi), primvar, cons, iter);
             // the first round sorted the cells, the exports follow
             if (iter == 0 && have_mpi) remap_exports_and_pts(mesh, pts_data, n_hydro);
 

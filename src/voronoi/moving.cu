@@ -27,11 +27,8 @@ namespace voronoi {
 
     HD void compute_mesh_velocity_for_cell(uint64_t, VMesh*, const hydro::primvars*, const gradients::PrimGradients*);
     HD void move_mesh_for_cell(uint64_t, const VMesh*, double, POINT_TYPE*);
-    HD void
-    volume_correct_for_cell(uint64_t i, const double* old_volumes, const double* new_volumes, double* rho, double* E);
 
     static void                 advance_seeds_by_dt(VMesh* mesh, double dt, POINT_TYPE* pts);
-    static void                 correct_for_volume_change(VMesh* mesh, hydro::primvars* primvar);
     static HD POINT_TYPE        gas_velocity_for_cell(uint64_t i, const hydro::primvars* primvar);
     static HD LloydDisplacement lloyd_correction_for_cell(uint64_t                        i,
                                                           const VMesh*                    mesh,
@@ -46,24 +43,19 @@ namespace voronoi {
     }
 
     // moves the seeds, migrates cells, builds the mesh again
-    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::primvars* primvar_aux) {
-
-        // the state is per volume, keep the old one
-        gpu_memcpy(mesh->old_volumes, mesh->volumes, mesh->n_hydro * sizeof(double));
+    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::ConsVars* cons) {
 
         advance_seeds_by_dt(mesh, dt, mesh->scratch_move);
 
         // a rebalance moves the brick borders, so more cells change rank
         if (proteus_mpi::rebalance_decide(sim.step, mesh, mesh->scratch_move)) {
-            proteus_mpi::migrate_for_rebalance(mesh, primvar, primvar_aux);
+            proteus_mpi::migrate_for_rebalance(mesh, primvar, cons);
             proteus_mpi::rebalance_log_after_migration(mesh);
         } else {
-            proteus_mpi::migrate_seeds(mesh, primvar, primvar_aux);
+            proteus_mpi::migrate_seeds(mesh, primvar, cons);
         }
 
-        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, primvar_aux, dt);
-
-        correct_for_volume_change(mesh, primvar_aux);
+        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, cons, dt);
     }
 
     // writes the moved positions into pts, mesh->seeds stays
@@ -72,18 +64,6 @@ namespace voronoi {
         parallel_for<_MESH_BLOCK_SIZE_>(
             "MOVE_MESH", n_hydro, [=] HD(size_t i) { move_mesh_for_cell(i, mesh, dt, pts); });
         GPU_SYNC();
-    }
-
-    // the cell volume changed, so rho and E follow
-    static void correct_for_volume_change(VMesh* mesh, hydro::primvars* primvar) {
-        const uint64_t n_hydro     = mesh->n_hydro;
-        const double*  old_volumes = mesh->old_volumes;
-        const double*  new_volumes = mesh->volumes;
-        double*        rho         = primvar->rho;
-        double*        E           = primvar->E;
-
-        parallel_for<_MESH_BLOCK_SIZE_>(
-            "VOL_CORRECT", n_hydro, [=] HD(size_t i) { volume_correct_for_cell(i, old_volumes, new_volumes, rho, E); });
     }
 
     HD void compute_mesh_velocity_for_cell(uint64_t                        i,
@@ -102,13 +82,6 @@ namespace voronoi {
 #ifdef dim_3D
         pts[i].z = fmod((mesh->seeds[i].z + dt * mesh->v_mesh[i].z) + 1.0, 1.0);
 #endif
-    }
-
-    HD void
-    volume_correct_for_cell(uint64_t i, const double* old_volumes, const double* new_volumes, double* rho, double* E) {
-        const double ratio = old_volumes[i] / new_volumes[i];
-        rho[i] *= ratio;
-        E[i] *= ratio;
     }
 
     HD static POINT_TYPE gas_velocity_for_cell(uint64_t i, const hydro::primvars* primvar) {

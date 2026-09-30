@@ -9,7 +9,8 @@
 
 namespace hydro {
     struct primvars;
-}
+    struct ConsVars;
+} // namespace hydro
 
 // allocated once in allocate_mesh, lives until endrun
 struct VMesh {
@@ -31,7 +32,6 @@ struct VMesh {
     voronoi::Status* cell_status;
 #ifdef MOVING_MESH
     POINT_TYPE* v_mesh;
-    double*     old_volumes; // volume before the move
 #endif
 
     double* security_d2; // (2 x farthest vertex)^2, a seed outside of that cannot cut the cell
@@ -100,13 +100,13 @@ namespace voronoi {
                                POINT_TYPE*      pts_data,
                                uint64_t         num_points,
                                hydro::primvars* primvar,
-                               hydro::primvars* primvar_aux,
+                               hydro::ConsVars* cons,
                                double           dt);
 
     // move it
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);
 
-    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::primvars* primvar_aux);
+    void move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::ConsVars* cons);
 
 } // namespace voronoi
 

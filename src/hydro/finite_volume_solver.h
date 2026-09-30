@@ -21,7 +21,7 @@ namespace hydro {
                            const VMesh*                    mesh,
                            const primvars*                 prim_old,
                            const gradients::PrimGradients* grads,
-                           primvars*                       prim_new);
+                           ConsVars*                       cons);
     // smallest CFL step over all cells and ranks
     double calc_timestep(double CFL, const VMesh* mesh, const primvars* primvar);
 
@@ -48,8 +48,8 @@ namespace hydro {
     HD void convert_flux_to_lab_frame(flux_t* flux, POINT_TYPE vel_face_turned);
 #endif
 
-    // one set of primvars: cells with growth headroom, ghosts only for the current state
-    inline void allocate_prim_buffer(uint64_t n_hydro, primvars* primvar, bool with_ghosts) {
+    // the primvars: cells with growth headroom, plus the MPI ghosts
+    inline void allocate_prim_buffer(uint64_t n_hydro, primvars* primvar) {
         const uint64_t ext = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
         primvar->rho       = gpu_alloc<double>(ext);
         primvar->v         = gpu_alloc<POINT_TYPE>(ext);
@@ -59,7 +59,7 @@ namespace hydro {
         gpu_advise_gpu_preferred(primvar->v, ext * sizeof(POINT_TYPE));
         gpu_advise_gpu_preferred(primvar->E, ext * sizeof(double));
 
-        const int gc = with_ghosts ? proteus_mpi::n_mpi_capacity : 0;
+        const int gc = proteus_mpi::n_mpi_capacity;
         if (gc > 0) {
             primvar->rho_g = gpu_alloc<double>(gc);
             primvar->v_g   = gpu_alloc<POINT_TYPE>(gc);
@@ -84,6 +84,24 @@ namespace hydro {
         primvar->rho_g = nullptr;
         primvar->v_g   = nullptr;
         primvar->E_g   = nullptr;
+    }
+
+    // the conserved variables: cells with growth headroom, no ghosts
+    inline void allocate_cons_buffer(uint64_t n_hydro, ConsVars* cons) {
+        const uint64_t ext = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
+        cons->mass         = gpu_alloc<double>(ext);
+        cons->momentum     = gpu_alloc<POINT_TYPE>(ext);
+        cons->energy       = gpu_alloc<double>(ext);
+
+        gpu_advise_gpu_preferred(cons->mass, ext * sizeof(double));
+        gpu_advise_gpu_preferred(cons->momentum, ext * sizeof(POINT_TYPE));
+        gpu_advise_gpu_preferred(cons->energy, ext * sizeof(double));
+    }
+
+    inline void free_cons_buffer(ConsVars* cons) {
+        gpu_free(cons->mass);
+        gpu_free(cons->momentum);
+        gpu_free(cons->energy);
     }
 
     inline void primvar_grow_ghosts(primvars* primvar, int new_cap) {
