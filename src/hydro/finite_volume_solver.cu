@@ -270,12 +270,15 @@ namespace hydro {
                          &vel_face_turned);
 #endif
 
-            prim       state_l, state_r;
-            POINT_TYPE dx = point_diff_periodic(seed_j, mesh->seeds[i]);
+            prim          state_l, state_r;
+            POINT_TYPE    dx    = point_diff_periodic(seed_j, mesh->seeds[i]);
+            const double* f_mid = &mesh->f_mid_local[face_idx * (DIMENSION - 1)];
 
-            // both states, extrapolated from the seed to the middle of the face
-            apply_spatial_extrapolation(state_i, grad_i, point_mul(0.5, dx), &state_l);
-            apply_spatial_extrapolation(state_j, grad_j, point_mul(-0.5, dx), &state_r);
+            // both states, extrapolated from the seed to the face centroid
+            apply_spatial_extrapolation(
+                state_i, grad_i, face_centroid_from_seed(point_mul(0.5, dx), g, f_mid), &state_l);
+            apply_spatial_extrapolation(
+                state_j, grad_j, face_centroid_from_seed(point_mul(-0.5, dx), g, f_mid), &state_r);
 
             // and to the end of the step
             if (do_time_extrap) {

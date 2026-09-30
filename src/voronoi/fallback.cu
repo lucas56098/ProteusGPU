@@ -545,10 +545,8 @@ namespace voronoi {
         for (uint64_t i = first; i < first + count; i++) {
             mesh->neighbor_cell[i] = -1;
             mesh->face_area[i]     = 0.0;
-#ifdef MOVING_MESH
             for (int c = 0; c < DIMENSION - 1; c++)
                 mesh->f_mid_local[i * (DIMENSION - 1) + c] = 0.0;
-#endif
         }
     }
 
@@ -584,11 +582,9 @@ namespace voronoi {
             for (uint64_t i = 0; i < fc_new; i++) {
                 mesh->neighbor_cell[fp_old + i] = mesh->neighbor_cell[fp_new + i];
                 mesh->face_area[fp_old + i]     = mesh->face_area[fp_new + i];
-#ifdef MOVING_MESH
                 for (int c = 0; c < DIMENSION - 1; c++)
                     mesh->f_mid_local[(fp_old + i) * (DIMENSION - 1) + c] =
                         mesh->f_mid_local[(fp_new + i) * (DIMENSION - 1) + c];
-#endif
             }
             mesh->face_ptr[k] = fp_old;
             retire_face_range(mesh, fp_old + fc_new, fc_old - fc_new);

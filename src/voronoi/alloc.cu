@@ -93,9 +93,7 @@ namespace voronoi {
         // per face
         mesh->neighbor_cell = gpu_alloc<int>(max_faces);
         mesh->face_area     = gpu_alloc<double>(max_faces);
-#ifdef MOVING_MESH
-        mesh->f_mid_local = gpu_alloc<double>(max_faces * (DIMENSION - 1));
-#endif
+        mesh->f_mid_local   = gpu_alloc<double>(max_faces * (DIMENSION - 1));
 
         mesh->ghost_ids = gpu_alloc<uint64_t>(max_ghosts);
 
@@ -150,10 +148,10 @@ namespace voronoi {
 #ifdef MOVING_MESH
         gpu_free(mesh->v_mesh);
         gpu_free(mesh->old_volumes);
-        gpu_free(mesh->f_mid_local);
 #endif
         gpu_free(mesh->neighbor_cell);
         gpu_free(mesh->face_area);
+        gpu_free(mesh->f_mid_local);
         gpu_free(mesh->ghost_ids);
         gpu_free(mesh->real_sorted_ids);
         gpu_free(mesh->sid_to_neighbor);

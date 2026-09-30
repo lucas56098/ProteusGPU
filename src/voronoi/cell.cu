@@ -727,17 +727,11 @@ namespace voronoi {
                               int              n_face_verts,
                               double4_t        seed,
                               double4_t        neighbor) {
-        (void)face_verts;
-        (void)n_face_verts;
-        (void)seed;
-        (void)neighbor;
-
         // faces name the neighbour cell, not the point
         const int remapped      = (neighbor_id >= 0) ? (int)mesh->sid_to_neighbor[neighbor_id] : neighbor_id;
         mesh->neighbor_cell[fi] = remapped;
         mesh->face_area[fi]     = face_measure;
 
-#ifdef MOVING_MESH
         double fmx = 0.0, fmy = 0.0, fmz = 0.0;
         compute_face_centroid(face_verts, n_face_verts, fmx, fmy, fmz);
 
@@ -761,7 +755,6 @@ namespace voronoi {
             mesh->f_mid_local[2 * fi + 1] = 0.0;
 #endif
         }
-#endif
     }
 
     template <typename VERT>

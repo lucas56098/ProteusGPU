@@ -49,9 +49,7 @@ struct VMesh {
     // per face, cell k owns [face_ptr[k], face_ptr[k] + face_counts[k])
     int*    neighbor_cell; // -1 on the box wall
     double* face_area;
-#ifdef MOVING_MESH
     double* f_mid_local; // face centre - middle of the two seeds, tangential
-#endif
 
     uint64_t* ghost_ids; // periodic ghost -> its cell, MPI ghost -> n_hydro + slot
 
@@ -127,6 +125,21 @@ HD inline hydro::prim get_state(uint64_t k, const hydro::primvars* primvar) {
 // k < n_hydro: cell, above: MPI ghost
 HD inline double3 get_seed_at(int k, int n_hydro, const VMesh* mesh) {
     return (k < n_hydro) ? mesh->seeds[k] : mesh->seeds_g[k - n_hydro];
+}
+
+// face centroid seen from a seed: half_dx is +-0.5 (seed j - seed i), g the frame of the face
+HD inline POINT_TYPE face_centroid_from_seed(const POINT_TYPE& half_dx, const geom& g, const double* f_mid_local) {
+#ifdef dim_2D
+    const double cx = f_mid_local[0] * g.m.x;
+    const double cy = f_mid_local[0] * g.m.y;
+    POINT_TYPE   r  = {half_dx.x + cx, half_dx.y + cy};
+#else
+    const double cx = f_mid_local[0] * g.m.x + f_mid_local[1] * g.p.x;
+    const double cy = f_mid_local[0] * g.m.y + f_mid_local[1] * g.p.y;
+    const double cz = f_mid_local[0] * g.m.z + f_mid_local[1] * g.p.z;
+    POINT_TYPE   r  = {half_dx.x + cx, half_dx.y + cy, half_dx.z + cz};
+#endif
+    return r;
 }
 
 #ifdef MOVING_MESH

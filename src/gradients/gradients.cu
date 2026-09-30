@@ -16,6 +16,7 @@ namespace gradients {
     recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s);
     HD static inline double
     pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor);
+    HD static inline POINT_TYPE face_point(uint64_t i, uint64_t face_idx, const VMesh* mesh, int n_hydro_int);
 
     // one gradient per cell
     void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
@@ -192,11 +193,7 @@ namespace gradients {
         double alpha_vz = 1.0;
 #endif
         for (uint64_t fj = 0; fj < face_count; fj++) {
-            uint64_t   face_idx = face_start + fj;
-            int        neighbor = mesh->neighbor_cell[face_idx];
-            POINT_TYPE dx       = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
-            // halfway to the neighbour seed
-            POINT_TYPE d = point_mul(0.5, dx);
+            const POINT_TYPE d = face_point(i, face_start + fj, mesh, n_hydro_int);
 
             alpha_rho = fmin(alpha_rho, limit_single_gradient(state_i.rho, min_rho, max_rho, d, grads->rho[i]));
             alpha_vx  = fmin(alpha_vx, limit_single_gradient(state_i.v.x, min_vx, max_vx, d, grads->vx[i]));
@@ -220,11 +217,8 @@ namespace gradients {
         PrimGradient grad_i_scaled = grads->load(i);
         double       alpha_p       = 1.0;
         for (uint64_t fj = 0; fj < face_count; fj++) {
-            uint64_t   face_idx = face_start + fj;
-            int        neighbor = mesh->neighbor_cell[face_idx];
-            POINT_TYPE dx       = point_diff_periodic(get_seed_at(neighbor, n_hydro_int, mesh), mesh->seeds[i]);
-            POINT_TYPE d        = point_mul(0.5, dx);
-            alpha_p             = fmin(alpha_p, pressure_safe_scale(state_i, grad_i_scaled, d, p_floor));
+            const POINT_TYPE d = face_point(i, face_start + fj, mesh, n_hydro_int);
+            alpha_p            = fmin(alpha_p, pressure_safe_scale(state_i, grad_i_scaled, d, p_floor));
         }
         if (alpha_p < 1.0) {
             grads->rho[i] = point_mul(alpha_p, grads->rho[i]);
@@ -301,6 +295,17 @@ namespace gradients {
                 s_hi = s_mid;
         }
         return s_lo;
+    }
+
+    // face centroid seen from seed i, the same point the flux extrapolates to
+    HD static inline POINT_TYPE face_point(uint64_t i, uint64_t face_idx, const VMesh* mesh, int n_hydro_int) {
+        const double3    seed_j = get_seed_at(mesh->neighbor_cell[face_idx], n_hydro_int, mesh);
+        const double3    delta  = {wrap_periodic_delta(seed_j.x - mesh->seeds[i].x),
+                                   wrap_periodic_delta(seed_j.y - mesh->seeds[i].y),
+                                   wrap_periodic_delta(seed_j.z - mesh->seeds[i].z)};
+        const POINT_TYPE dx     = point_diff_periodic(seed_j, mesh->seeds[i]);
+        return face_centroid_from_seed(
+            point_mul(0.5, dx), compute_geom(delta), &mesh->f_mid_local[face_idx * (DIMENSION - 1)]);
     }
 
 } // namespace gradients
