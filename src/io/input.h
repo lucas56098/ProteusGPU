@@ -19,8 +19,6 @@ struct ICHeader {
     uint64_t n_seeds  = 0; // cells on this rank
     int64_t  n_global = 0; // cells on all ranks
 
-    int knn_N_grid = 0; // ngb grid size loaded from snap; 0 = estimate from cell count
-
 #ifdef USE_MPI
     std::vector<int> decomp_splits[3]; // old domain decomp split table per axis (only loaded from snap)
 #endif

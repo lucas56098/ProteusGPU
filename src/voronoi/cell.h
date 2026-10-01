@@ -111,7 +111,7 @@ namespace voronoi {
     HD void
     close_cell_by_tree_walk(BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell, int seed_id, const knn_problem* knn);
 
-    // build cell k and write it into the mesh; WALK finishes a cell its K points did not close on the tree
+    // build cell k and write it into the mesh; WALK finishes a cell its K points did not close
     template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT, bool WALK = false>
     HD void compute_single_voronoi_cell(int                 k,
                                         int                 seed_id,

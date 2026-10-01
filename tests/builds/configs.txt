@@ -97,19 +97,6 @@ full     2D_custom_constants            dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP 
 full     3D_custom_constants            dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP _K_=150 _MAX_P_=48 _MAX_T_=92 _FAST_K_=30 _FAST_MAX_P_=28 _FAST_MAX_T_=56 _FACE_CAPACITY_MULT_=15 _BIG_MAX_P_=512 _BIG_MAX_T_=1024 _GAMMA_EOS_=1.4 _CELL_SHAPING_SPEED_=0.5 _CELL_SHAPING_FACTOR_=0.3 _VOL_SHAPING_SPEED_=0.6
 
 ################################################################
-# Neighbour search
-################################################################
-
-basic    3D_knn_tree                    dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP KNN_TREE
-full     2D_knn_tree                    dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP KNN_TREE
-full     3D_knn_tree_mpi                dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI KNN_TREE
-full     2D_knn_crosscheck              dim_2D CPU_DEBUG MOVING_MESH USE_OPENMP KNN_CROSSCHECK
-full     3D_knn_tree_crosscheck_mpi     dim_3D CPU_DEBUG MOVING_MESH USE_OPENMP USE_MPI KNN_TREE KNN_CROSSCHECK
-cuda     cuda_3D_knn_tree               dim_3D CUDA MOVING_MESH USE_OPENMP KNN_TREE
-cuda     cuda_3D_knn_tree_fast          dim_3D CUDA CUDA_FAST_MATH MOVING_MESH USE_OPENMP KNN_TREE
-cuda     cuda_2D_knn_crosscheck         dim_2D CUDA MOVING_MESH USE_OPENMP KNN_CROSSCHECK
-
-################################################################
 # Guards that must fire to prove an invalid config is rejected
 ################################################################
 

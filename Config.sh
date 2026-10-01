@@ -38,13 +38,6 @@ MOVING_MESH                         # enable moving mesh hydrodynamics
 #_GAMMA_EOS_=1.6666666666666667     # adiabatic index
 
 ################################################################
-# neighbour search
-################################################################
-
-#KNN_TREE                           # search on a Morton tree instead of the bucket grid
-#KNN_CROSSCHECK                     # build both searches and compare them every build (slow, for testing)
-
-################################################################
 # astrophysics source terms
 ################################################################
 
@@ -65,7 +58,7 @@ MOVING_MESH                         # enable moving mesh hydrodynamics
 ################################################################
 # cell construction array sizes
 ################################################################
-# K is the max number of KNN to be checked
+# K nearest points are clipped first; the fast tier stops there, the slow tier walks the tree on
 # P and T are the max clipping planes / triangles stored per cell
 
 # fast-tier (overflowing cells -> slow tier)
@@ -74,7 +67,7 @@ MOVING_MESH                         # enable moving mesh hydrodynamics
 #_FAST_MAX_T_=60                     # default 2D/3D ~20/60
 
 # slow tier (overflowing cells -> CPU-fallback)
-#_K_=190                             # default 2D/3D ~35/190
+#_K_=64                              # default 2D/3D ~35/64
 #_MAX_P_=50                          # default 2D/3D ~30/50
 #_MAX_T_=96                          # default 2D/3D ~60/96
 
@@ -90,7 +83,7 @@ MOVING_MESH                         # enable moving mesh hydrodynamics
 
 # GPU kernel block sizes
 #_VORO_BLOCK_SIZE_=64               # voronoi cell computation
-#_KNN_BLOCK_SIZE_=256               # KNN grid sort
+#_KNN_BLOCK_SIZE_=256               # KNN sort and tree build
 #_GRAD_BLOCK_SIZE_=256              # gradient computation
 #_HYDRO_BLOCK_SIZE_=256             # hydro kernels
 #_MESH_BLOCK_SIZE_=256              # periodic mesh / ghost / scaling

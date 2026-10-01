@@ -69,7 +69,7 @@ namespace voronoi {
             }
         }
 
-        // K neighbours were not enough; on the tree the walk finds the rest
+        // K neighbours were not enough; the walk finds the rest
         if (!cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * local_knn[K - 1]))) {
             if (WALK && stat[k] == success) {
                 close_cell_by_tree_walk(cell, seed_id, knn);

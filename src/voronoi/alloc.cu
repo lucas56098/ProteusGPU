@@ -114,7 +114,7 @@ namespace voronoi {
         mesh->scratch_pts  = gpu_alloc<POINT_TYPE>(total);
         mesh->scratch_move = gpu_alloc<POINT_TYPE>(ext);
 
-        mesh->knn = knn::init_once((int)n_hydro, ic_data.header.knn_N_grid);
+        mesh->knn = knn::init_once((int)n_hydro);
 
         // keep the hot arrays on the device
         gpu_advise_gpu_preferred(mesh->seeds, ext * sizeof(double3));

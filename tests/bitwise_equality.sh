@@ -30,8 +30,6 @@ Within one launch configuration (a fixed rank count), these must all match:
   gpu/t1       CUDA, 1 host thread               catches backend divergence
   gpu/tN       CUDA, N host threads              the MPI halo build is host-side OpenMP
   cpu/restart  CPU_DEBUG, resumed mid-run        catches state the snapshot fails to restore
-  cpu/tree     CPU_DEBUG + KNN_TREE, N threads   the tree search must give the grid's answers
-  gpu/tree     CUDA + KNN_TREE, N host threads   the same on the GPU
 
 and that whole set is repeated per launch configuration:
 
@@ -144,16 +142,14 @@ if [ "$CAP_MPI" = yes ]; then
     fi
 fi
 
-# variant spec: "label backend threads [mode [extra Config.sh flags]]"
+# variant spec: "label backend threads"
 VARIANTS=("cpu/t1 cpu 1")
 [ "$THREADS_N" -gt 1 ] && VARIANTS+=("cpu/t$THREADS_N cpu $THREADS_N")
 VARIANTS+=("cpu/rerun cpu $THREADS_N")
 VARIANTS+=("cpu/restart cpu $THREADS_N restart")
-VARIANTS+=("cpu/tree cpu $THREADS_N run KNN_TREE")
 if [ "$CAP_NVCC" = yes ]; then
     VARIANTS+=("gpu/t1 gpu 1")
     [ "$THREADS_N" -gt 1 ] && VARIANTS+=("gpu/t$THREADS_N gpu $THREADS_N")
-    VARIANTS+=("gpu/tree gpu $THREADS_N run KNN_TREE")
 fi
 
 printf '\033[1mProteus bitwise reproducibility\033[0m\n'
@@ -266,17 +262,17 @@ for case_name in "${CASES[@]}"; do
 
         for variant in "${VARIANTS[@]}"; do
             set -- $variant
-            v_label="$1"; v_backend="$2"; v_threads="$3"; v_mode="${4:-run}"; v_flags="${5:-}"
+            v_label="$1"; v_backend="$2"; v_threads="$3"; v_mode="${4:-run}"
             [ "$g_scope" = 3dcpu ] && [ "$v_backend" != cpu ] && continue
             if [ "$v_threads" -gt 1 ]; then
                 v_label="${v_label/\/t$v_threads//t$g_threads}"
                 v_threads="$g_threads"
             fi
 
-            exe="$(build_for "$CASE_DIM" "$v_backend" "$g_mpi" "$CASE_FLAGS $v_flags")"
+            exe="$(build_for "$CASE_DIM" "$v_backend" "$g_mpi" "$CASE_FLAGS")"
             if [ -z "$exe" ]; then
                 problem="$v_label build"
-                key="${CASE_DIM}d_${v_backend}_mpi${g_mpi}_$(echo "$CASE_FLAGS $v_flags" | tr ' ' '_')"
+                key="${CASE_DIM}d_${v_backend}_mpi${g_mpi}_$(echo "$CASE_FLAGS" | tr ' ' '_')"
                 tail -4 "$WORK/build_$key.log" > "$WORK/$case_name/why" 2>/dev/null
                 break
             fi
@@ -336,9 +332,8 @@ for case_name in "${CASES[@]}"; do
                 continue
             fi
 
-            # another build records another timer set, so its profile structure is not compared
             cmp_opts=()
-            [ "$v_backend" = "$ref_backend" ] && [ -z "$v_flags" ] && cmp_opts=(--profile)
+            [ "$v_backend" = "$ref_backend" ] && cmp_opts=(--profile)
             if ! timeout 900 python3 "$CASES_DIR/compare.py" "$ref_dir" "$out" \
                     ${cmp_opts[@]+"${cmp_opts[@]}"} >"$WORK/cmp.out" 2>&1; then
                 problem="$v_label != $ref_label"

@@ -142,7 +142,7 @@ namespace knn {
     }
 
     // nearest max_k points, sorted
-    static std::vector<std::pair<double, int>> tree_nearest_on_host(const knn_problem* knn, int sid, int max_k) {
+    std::vector<std::pair<double, int>> nearest_on_host(const knn_problem* knn, int sid, int max_k) {
         std::vector<std::pair<double, int>> best; // max heap, front is the last of them
         const int                           n = knn->len_pts;
         if (n < 2 || max_k <= 0) return best;
@@ -191,7 +191,7 @@ namespace knn {
     }
 
     // every point with distance^2 <= r2 from p
-    static void tree_points_within_on_host(const knn_problem* knn, POINT_TYPE p, double r2, std::vector<int>* out) {
+    void points_within_on_host(const knn_problem* knn, POINT_TYPE p, double r2, std::vector<int>* out) {
         out->clear();
         const int n = knn->len_pts;
         if (n == 0) return;
@@ -217,7 +217,7 @@ namespace knn {
     }
 
     // the leaf takes the new position, the boxes above it widen until one already holds it
-    static void tree_point_moved(knn_problem* knn, int sid) {
+    void point_moved(knn_problem* knn, int sid) {
         const int n = knn->len_pts;
         if (n < 2) return;
         const POINT_TYPE p     = knn->d_stored_points[sid];

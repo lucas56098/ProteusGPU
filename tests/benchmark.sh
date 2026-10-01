@@ -15,7 +15,7 @@ Benchmarks two versions of Proteus and reports timings from the profiler.
 Options:
   --ref SPEC       baseline: any commit-ish, or WORKTREE (default: HEAD)
   --new SPEC       comparison: any commit-ish, or WORKTREE (default: WORKTREE)
-  --new-flags F    extra Config.sh flags for the new build only, e.g. "KNN_TREE"
+  --new-flags F    extra Config.sh flags for the new build only, e.g. "_K_=96"
   --n N            cells per side
   --time-end T     simulated end time (default: 0.02)
   --reps R         pairs per order; 2*R runs per build per mode (default: 2)

@@ -24,42 +24,6 @@ namespace voronoi {
             const int* begin_for(int k) const { return per_cell.at(k).data(); }
         };
 
-        // every point but the seed by distance, sorted only as far as it is read
-        class SortedByDistance {
-          public:
-            SortedByDistance(double* d_stored_points, int seed_id, int n_seeds) {
-                const double4_t seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
-                dists.reserve(n_seeds - 1);
-                for (int j = 0; j < n_seeds; j++) {
-                    if (j == seed_id) continue;
-                    const double4_t other = point_from_ptr(d_stored_points + DIMENSION * j);
-                    const double    dx    = other.x - seed_pos.x;
-                    const double    dy    = other.y - seed_pos.y;
-                    const double    dz    = other.z - seed_pos.z;
-                    dists.push_back({dx * dx + dy * dy + dz * dz, j});
-                }
-            }
-
-            size_t size() const { return dists.size(); }
-
-            const std::pair<double, int>& operator[](size_t i) {
-                if (i >= n_sorted) sort_up_to(i + 1);
-                return dists[i];
-            }
-
-          private:
-            // the next block in order, at least twice what is sorted already
-            void sort_up_to(size_t need) {
-                const size_t m = std::min(dists.size(), std::max(need, std::max(2 * n_sorted, (size_t)4096)));
-                std::nth_element(dists.begin() + n_sorted, dists.begin() + (m - 1), dists.end());
-                std::sort(dists.begin() + n_sorted, dists.begin() + m);
-                n_sorted = m;
-            }
-
-            std::vector<std::pair<double, int>> dists;
-            size_t                              n_sorted = 0;
-        };
-
         // a built cell kept until it is written; its status lives next to it, the cell points at it
         template <typename CellT> struct KeptCell {
             Status status = success;
@@ -67,17 +31,11 @@ namespace voronoi {
             KeptCell(int seed_id, double* pts, double buff) : cell(seed_id, pts, &status, buff) {}
         };
 
-        // what the attempts without a moved seed gave for one cell
+        // what the build without a moved seed gave for one cell; no cell means the kick ladder
         struct FirstPass {
-            enum class Result { basic, wide, ladder, failed };
-            Result                                   result = Result::failed;
-            std::unique_ptr<KeptCell<ConvexCell>>    basic;
-            std::unique_ptr<KeptCell<BigConvexCell>> wide;
-            std::vector<std::pair<double, int>>      bounded;             // kept for the kick ladder only
-            bool                                     all_points  = false; // built from every point, not closed
-            bool                                     overflowed  = false;
-            bool                                     full_tried  = false;
-            bool                                     wide_tried  = false;
+            std::unique_ptr<KeptCell<BigConvexCell>> cell;
+            std::vector<std::pair<double, int>>      start;               // kept for the kick ladder only
+            bool                                     overflowed  = false; // a GPU tier ran out of slots
             Status                                   last_status = success;
         };
     } // namespace
@@ -86,8 +44,7 @@ namespace voronoi {
     static CellSids        build_cell_sids_for(const VMesh* mesh, const std::vector<int>& target_ks);
     static FallbackOutcome rebuild_cell_with_perturb_retry(
         VMesh* mesh, int k, double* d_stored_points, CellSids& cell_sids, double dt, Status& last_status_out);
-    static void first_pass(const VMesh* mesh, int k, double* d_stored_points, FirstPass& r);
-    static void first_pass_on_tree(const VMesh* mesh, int k, int seed_id, double* d_stored_points, FirstPass& r);
+    static void            first_pass(const VMesh* mesh, int k, double* d_stored_points, FirstPass& r);
     static FallbackOutcome finish_cell(VMesh*     mesh,
                                        int        k,
                                        double*    d_stored_points,
@@ -95,56 +52,27 @@ namespace voronoi {
                                        double     dt,
                                        FirstPass& r,
                                        Status&    last_status_out);
-    template <typename CellT, typename List>
-    static bool                           clip_cell(CellT&        cell,
-                                                    const Status& status,
-                                                    double*       d_stored_points,
-                                                    List&         sorted,
-                                                    bool          require_security,
-                                                    Status&       last_status_out);
-    template <typename CellT> static void commit_cell(VMesh* mesh, int k, const CellT& cell);
-    template <typename CellT, typename List>
-    static std::unique_ptr<KeptCell<CellT>> build_kept(const VMesh* mesh,
-                                                       int          seed_id,
-                                                       double*      d_stored_points,
-                                                       List&        sorted,
-                                                       bool         require_security,
-                                                       Status&      last_status_out);
-    template <typename CellT, typename List>
-    static bool                                     try_build_cell_from_neighbours_as(VMesh*  mesh,
-                                                                                      int     k,
-                                                                                      int     seed_id,
-                                                                                      double* d_stored_points,
-                                                                                      List&   sorted,
-                                                                                      bool    require_security,
-                                                                                      Status& last_status_out);
-    static std::unique_ptr<KeptCell<BigConvexCell>> wide_attempts(const VMesh* mesh,
-                                                                  int          seed_id,
-                                                                  double*      d_stored_points,
-                                                                  const std::vector<std::pair<double, int>>& bounded,
-                                                                  bool*                                      all_points,
-                                                                  Status& last_status_out);
-    template <typename CellT, typename List>
-    static bool clip_and_walk(CellT&             cell,
-                              const Status&      status,
-                              double*            d_stored_points,
-                              List&              start,
-                              int                seed_id,
-                              const knn_problem* knn,
-                              Status&            last_status_out);
-    template <typename List>
-    static std::unique_ptr<KeptCell<BigConvexCell>>
-    build_kept_on_tree(const VMesh* mesh, int seed_id, double* d_stored_points, List& start, Status& last_status_out);
-    template <typename List>
-    static bool
-    try_build_on_tree(VMesh* mesh, int k, int seed_id, double* d_stored_points, List& start, Status& last_status_out);
+    template <typename CellT>
+    static bool                                     clip_and_walk(CellT&                                     cell,
+                                                                  const Status&                              status,
+                                                                  double*                                    d_stored_points,
+                                                                  const std::vector<std::pair<double, int>>& start,
+                                                                  int                                        seed_id,
+                                                                  const knn_problem*                         knn,
+                                                                  Status&                                    last_status_out);
+    template <typename CellT> static void           commit_cell(VMesh* mesh, int k, const CellT& cell);
+    static std::unique_ptr<KeptCell<BigConvexCell>> build_kept(const VMesh* mesh,
+                                                               int          seed_id,
+                                                               double*      d_stored_points,
+                                                               const std::vector<std::pair<double, int>>& start,
+                                                               Status& last_status_out);
+    static bool                                     try_build_cell(VMesh*                                     mesh,
+                                                                   int                                        k,
+                                                                   int                                        seed_id,
+                                                                   double*                                    d_stored_points,
+                                                                   const std::vector<std::pair<double, int>>& start,
+                                                                   Status&                                    last_status_out);
     static bool    first_pass_still_valid(const FirstPass& r, const std::vector<double4_t>& moved);
-    static bool    rebuild_on_wide_tier(VMesh*                                     mesh,
-                                        int                                        k,
-                                        int                                        seed_id,
-                                        double*                                    d_stored_points,
-                                        const std::vector<std::pair<double, int>>& bounded,
-                                        Status&                                    last_status_out);
     static double3 compute_perturbation_delta(int seed_id, int attempt, double scale);
     static void    apply_perturbation(knn_problem*     knn,
                                       double*          d_stored_points,
@@ -252,7 +180,7 @@ namespace voronoi {
             }
 
             std::vector<double4_t> before;
-            if (r.result == FirstPass::Result::ladder) {
+            if (!r.cell) {
                 cell_sids.ensure_built_for(k);
                 for (int s = 0; s < cell_sids.size_for(k); s++)
                     before.push_back(point_from_ptr(d_stored_points + DIMENSION * cell_sids.begin_for(k)[s]));
@@ -319,45 +247,30 @@ namespace voronoi {
         return cs;
     }
 
-    static constexpr int FALLBACK_BOUNDED_K = 2048; // candidates of the bounded search
-
     static bool is_overflow(Status s) {
         return s == vertex_overflow || s == triangle_overflow;
     }
 
-    // build with the seed moved, the step ten times larger each try; attempt 0 is the seed as it is
-    template <typename List>
-    static FallbackOutcome run_perturb_ladder(VMesh*           mesh,
-                                              int              k,
-                                              int              seed_id,
-                                              double*          d_stored_points,
-                                              List&            sorted,
-                                              const int*       sids,
-                                              size_t           n_sids,
-                                              const double4_t* orig_positions,
-                                              double           dt,
-                                              bool             require_security,
-                                              int              first_attempt,
-                                              Status&          last_status_out,
-                                              bool&            overflowed) {
+    // build with the seed moved, the step ten times larger each try
+    static FallbackOutcome run_perturb_ladder(VMesh*                                     mesh,
+                                              int                                        k,
+                                              int                                        seed_id,
+                                              double*                                    d_stored_points,
+                                              const std::vector<std::pair<double, int>>& start,
+                                              const int*                                 sids,
+                                              size_t                                     n_sids,
+                                              const double4_t*                           orig_positions,
+                                              double                                     dt,
+                                              Status&                                    last_status_out) {
         constexpr int max_perturb = 12;
         double        scale       = 1e-13;
-        for (int attempt = 0; attempt < first_attempt; attempt++)
+        for (int attempt = 1; attempt <= max_perturb; attempt++) {
             scale *= 10.0;
-        for (int attempt = first_attempt; attempt <= max_perturb; attempt++) {
-            double3 delta = {0.0, 0.0, 0.0};
-            if (attempt > 0) {
-                delta = compute_perturbation_delta(seed_id, attempt, scale);
-                apply_perturbation(mesh->knn, d_stored_points, delta, sids, n_sids, orig_positions);
-            }
+            const double3 delta = compute_perturbation_delta(seed_id, attempt, scale);
+            apply_perturbation(mesh->knn, d_stored_points, delta, sids, n_sids, orig_positions);
 
-            Status     attempt_status = success;
-            const bool ok             = knn::USE_TREE
-                                            ? try_build_on_tree(mesh, k, seed_id, d_stored_points, sorted, attempt_status)
-                                            : try_build_cell_from_neighbours_as<ConvexCell>(
-                                      mesh, k, seed_id, d_stored_points, sorted, require_security, attempt_status);
-            if (ok) {
-                if (attempt == 0) return FallbackOutcome::ok_unchanged;
+            Status attempt_status = success;
+            if (try_build_cell(mesh, k, seed_id, d_stored_points, start, attempt_status)) {
 #ifdef MOVING_MESH
                 apply_vmesh_perturbation_correction(mesh, k, delta, dt);
 #else
@@ -367,9 +280,7 @@ namespace voronoi {
             }
 
             last_status_out = attempt_status;
-            if (is_overflow(attempt_status)) overflowed = true;
-            if (attempt > 0) rewind_perturbation(mesh->knn, d_stored_points, sids, n_sids, orig_positions);
-            scale *= 10.0;
+            rewind_perturbation(mesh->knn, d_stored_points, sids, n_sids, orig_positions);
         }
         return FallbackOutcome::failed;
     }
@@ -382,67 +293,16 @@ namespace voronoi {
         return finish_cell(mesh, k, d_stored_points, cell_sids, dt, r, last_status_out);
     }
 
-    // every attempt that moves no seed; it only reads the points and the mesh
+    // the build that moves no seed: the slow tier's start list, then the walk, on the wide slots;
+    // it only reads the points and the mesh
     static void first_pass(const VMesh* mesh, int k, double* d_stored_points, FirstPass& r) {
         const int seed_id = (int)mesh->real_sorted_ids[k];
-        if (knn::USE_TREE) {
-            first_pass_on_tree(mesh, k, seed_id, d_stored_points, r);
-            return;
-        }
-        r.bounded = knn::nearest_on_host(mesh->knn, seed_id, FALLBACK_BOUNDED_K);
-
-        // out of slots: only the wide tier can help
-        if (is_overflow(mesh->cell_status[k])) {
-            r.wide   = wide_attempts(mesh, seed_id, d_stored_points, r.bounded, &r.all_points, r.last_status);
-            r.result = r.wide ? FirstPass::Result::wide : FirstPass::Result::failed;
-            r.bounded.clear();
-            return;
-        }
-
-        // the near points
-        Status st    = success;
-        r.basic      = build_kept<ConvexCell>(mesh, seed_id, d_stored_points, r.bounded, true, st);
-        r.overflowed = is_overflow(st);
-
-        // too few of them: all points, a kick does not bring in the ones that are missing
-        if (!r.basic && st == security_radius_not_reached) {
-            SortedByDistance full(d_stored_points, seed_id, (int)mesh->n_seeds);
-            r.basic      = build_kept<ConvexCell>(mesh, seed_id, d_stored_points, full, false, st);
-            r.overflowed = r.overflowed || (!r.basic && is_overflow(st));
-            r.full_tried = true;
-            r.all_points = (bool)r.basic;
-        }
-
-        // out of slots: more slots before a kick
-        if (!r.basic && r.overflowed) {
-            r.wide       = wide_attempts(mesh, seed_id, d_stored_points, r.bounded, &r.all_points, r.last_status);
-            r.wide_tried = !r.wide;
-        }
-
-        if (r.basic) {
-            r.result = FirstPass::Result::basic;
-        } else if (r.wide) {
-            r.result = FirstPass::Result::wide;
-        } else {
-            r.result = FirstPass::Result::ladder;
-            return;
-        }
-        r.bounded.clear();
-        r.bounded.shrink_to_fit();
-    }
-
-    // the slow tier's start list, then the walk, on the wide slots; the walk finds every point that can cut
-    static void first_pass_on_tree(const VMesh* mesh, int k, int seed_id, double* d_stored_points, FirstPass& r) {
-        r.bounded    = knn::nearest_on_host(mesh->knn, seed_id, _K_);
-        r.overflowed = is_overflow(mesh->cell_status[k]);
-        r.wide       = build_kept_on_tree(mesh, seed_id, d_stored_points, r.bounded, r.last_status);
-        if (!r.wide) {
-            r.result = FirstPass::Result::ladder;
-            return;
-        }
-        r.result = FirstPass::Result::wide;
-        r.bounded.clear();
-        r.bounded.shrink_to_fit();
+        r.start           = knn::nearest_on_host(mesh->knn, seed_id, _K_);
+        r.overflowed      = is_overflow(mesh->cell_status[k]);
+        r.cell            = build_kept(mesh, seed_id, d_stored_points, r.start, r.last_status);
+        if (!r.cell) return;
+        r.start.clear();
+        r.start.shrink_to_fit();
     }
 
     // writes what the first pass built, or moves the seed until the cell builds
@@ -453,26 +313,16 @@ namespace voronoi {
                                        double     dt,
                                        FirstPass& r,
                                        Status&    last_status_out) {
-        switch (r.result) {
-        case FirstPass::Result::basic:
-            commit_cell(mesh, k, r.basic->cell);
+        if (r.cell) {
+            commit_cell(mesh, k, r.cell->cell);
+            // every cell here gets the wide slots, count those that needed them
+            if (r.overflowed) s_wide_tier_rebuilds++;
             return FallbackOutcome::ok_unchanged;
-        case FirstPass::Result::wide:
-            commit_cell(mesh, k, r.wide->cell);
-            // on the tree every cell gets the wide slots, count those that needed them
-            if (!knn::USE_TREE || r.overflowed) s_wide_tier_rebuilds++;
-            return FallbackOutcome::ok_unchanged;
-        case FirstPass::Result::failed:
-            last_status_out = r.last_status;
-            return FallbackOutcome::failed;
-        case FirstPass::Result::ladder:
-            break;
         }
 
         // what is left is degenerate, a small move of the seed can fix that
-        const int seed_id    = (int)mesh->real_sorted_ids[k];
-        bool      overflowed = r.overflowed;
-        last_status_out      = r.last_status;
+        const int seed_id = (int)mesh->real_sorted_ids[k];
+        last_status_out   = r.last_status;
         cell_sids.ensure_built_for(k);
         const int*   sids   = cell_sids.begin_for(k);
         const size_t n_sids = (size_t)cell_sids.size_for(k);
@@ -481,71 +331,32 @@ namespace voronoi {
         for (size_t i = 0; i < n_sids; i++)
             orig_positions[i] = point_from_ptr(d_stored_points + DIMENSION * sids[i]);
 
-        FallbackOutcome outcome = run_perturb_ladder(mesh,
-                                                     k,
-                                                     seed_id,
-                                                     d_stored_points,
-                                                     r.bounded,
-                                                     sids,
-                                                     n_sids,
-                                                     orig_positions.data(),
-                                                     dt,
-                                                     true,
-                                                     1,
-                                                     last_status_out,
-                                                     overflowed);
-        if (outcome != FallbackOutcome::failed) return outcome;
-        // on the tree the attempts had the wide slots and every point that can cut already
-        if (knn::USE_TREE) return FallbackOutcome::failed;
-
-        SortedByDistance full(d_stored_points, seed_id, (int)mesh->n_seeds);
-        outcome = run_perturb_ladder(mesh,
-                                     k,
-                                     seed_id,
-                                     d_stored_points,
-                                     full,
-                                     sids,
-                                     n_sids,
-                                     orig_positions.data(),
-                                     dt,
-                                     false,
-                                     r.full_tried ? 1 : 0,
-                                     last_status_out,
-                                     overflowed);
-        if (outcome != FallbackOutcome::failed) return outcome;
-
-        // more slots only help if some attempt ran out of them
-        if (!overflowed || r.wide_tried) return FallbackOutcome::failed;
-        return rebuild_on_wide_tier(mesh, k, seed_id, d_stored_points, r.bounded, last_status_out)
-                   ? FallbackOutcome::ok_unchanged
-                   : FallbackOutcome::failed;
+        return run_perturb_ladder(
+            mesh, k, seed_id, d_stored_points, r.start, sids, n_sids, orig_positions.data(), dt, last_status_out);
     }
 
-    // clips with the sorted points until the cell is closed; false if it failed or, when asked, is not closed
-    template <typename CellT, typename List>
-    static bool clip_cell(CellT&        cell,
-                          const Status& status,
-                          double*       d_stored_points,
-                          List&         sorted,
-                          bool          require_security,
-                          Status&       last_status_out) {
-        bool security_reached = false;
-        for (size_t di = 0; di < sorted.size(); di++) {
-            const int j = sorted[di].second;
+    // clips the start list until the cell is closed, the walk adds the points it was missing; false if it failed
+    template <typename CellT>
+    static bool clip_and_walk(CellT&                                     cell,
+                              const Status&                              status,
+                              double*                                    d_stored_points,
+                              const std::vector<std::pair<double, int>>& start,
+                              int                                        seed_id,
+                              const knn_problem*                         knn,
+                              Status&                                    last_status_out) {
+        bool closed = false;
+        for (size_t di = 0; di < start.size(); di++) {
+            const int j = start[di].second;
             cell.clip_by_plane(j);
             if (cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * j))) {
-                security_reached = true;
+                closed = true;
                 break;
             }
             if (status != success) break;
         }
+        if (status == success && !closed) close_cell_by_tree_walk(cell, seed_id, knn);
         if (status != success) {
             last_status_out = status;
-            return false;
-        }
-        // the last resort takes the cell without this check
-        if (require_security && !security_reached) {
-            last_status_out = security_radius_not_reached;
             return false;
         }
         return true;
@@ -569,80 +380,11 @@ namespace voronoi {
     }
 
     // builds a cell that outlives the call, or nothing
-    template <typename CellT, typename List>
-    static std::unique_ptr<KeptCell<CellT>> build_kept(const VMesh* mesh,
-                                                       int          seed_id,
-                                                       double*      d_stored_points,
-                                                       List&        sorted,
-                                                       bool         require_security,
-                                                       Status&      last_status_out) {
-        std::unique_ptr<KeptCell<CellT>> kept(new KeptCell<CellT>(seed_id, d_stored_points, mesh->buff));
-        if (!clip_cell(kept->cell, kept->status, d_stored_points, sorted, require_security, last_status_out))
-            return nullptr;
-        return kept;
-    }
-
-    // builds the cell with the sorted points and writes it if it came out complete
-    template <typename CellT, typename List>
-    static bool try_build_cell_from_neighbours_as(VMesh*  mesh,
-                                                  int     k,
-                                                  int     seed_id,
-                                                  double* d_stored_points,
-                                                  List&   sorted,
-                                                  bool    require_security,
-                                                  Status& last_status_out) {
-        Status status = success;
-        CellT  cell(seed_id, d_stored_points, &status, mesh->buff);
-        if (!clip_cell(cell, status, d_stored_points, sorted, require_security, last_status_out)) return false;
-        commit_cell(mesh, k, cell);
-        return true;
-    }
-
-    // the wide tier: the near points, then all of them
-    static std::unique_ptr<KeptCell<BigConvexCell>> wide_attempts(const VMesh* mesh,
-                                                                  int          seed_id,
-                                                                  double*      d_stored_points,
-                                                                  const std::vector<std::pair<double, int>>& bounded,
-                                                                  bool*                                      all_points,
-                                                                  Status& last_status_out) {
-        Status st   = success;
-        auto   kept = build_kept<BigConvexCell>(mesh, seed_id, d_stored_points, bounded, true, st);
-        if (kept) return kept;
-
-        SortedByDistance full(d_stored_points, seed_id, (int)mesh->n_seeds);
-        kept        = build_kept<BigConvexCell>(mesh, seed_id, d_stored_points, full, false, st);
-        *all_points = (bool)kept;
-        if (!kept) last_status_out = st;
-        return kept;
-    }
-
-    // clips the sorted points until the cell is closed; the walk adds what the list was missing
-    template <typename CellT, typename List>
-    static bool clip_and_walk(CellT&             cell,
-                              const Status&      status,
-                              double*            d_stored_points,
-                              List&              start,
-                              int                seed_id,
-                              const knn_problem* knn,
-                              Status&            last_status_out) {
-        Status clip_status = success;
-        if (clip_cell(cell, status, d_stored_points, start, true, clip_status)) return true;
-        if (status != success) {
-            last_status_out = status;
-            return false;
-        }
-        close_cell_by_tree_walk(cell, seed_id, knn);
-        if (status != success) {
-            last_status_out = status;
-            return false;
-        }
-        return true;
-    }
-
-    // a cell on the wide slots, built from the start list and the walk, or nothing
-    template <typename List>
-    static std::unique_ptr<KeptCell<BigConvexCell>>
-    build_kept_on_tree(const VMesh* mesh, int seed_id, double* d_stored_points, List& start, Status& last_status_out) {
+    static std::unique_ptr<KeptCell<BigConvexCell>> build_kept(const VMesh* mesh,
+                                                               int          seed_id,
+                                                               double*      d_stored_points,
+                                                               const std::vector<std::pair<double, int>>& start,
+                                                               Status& last_status_out) {
         std::unique_ptr<KeptCell<BigConvexCell>> kept(
             new KeptCell<BigConvexCell>(seed_id, d_stored_points, mesh->buff));
         if (!clip_and_walk(kept->cell, kept->status, d_stored_points, start, seed_id, mesh->knn, last_status_out))
@@ -650,11 +392,14 @@ namespace voronoi {
         return kept;
     }
 
-    // the same, written into the mesh if it came out complete
-    template <typename List>
-    static bool
-    try_build_on_tree(VMesh* mesh, int k, int seed_id, double* d_stored_points, List& start, Status& last_status_out) {
-        auto kept = build_kept_on_tree(mesh, seed_id, d_stored_points, start, last_status_out);
+    // builds the cell and writes it if it came out complete
+    static bool try_build_cell(VMesh*                                     mesh,
+                               int                                        k,
+                               int                                        seed_id,
+                               double*                                    d_stored_points,
+                               const std::vector<std::pair<double, int>>& start,
+                               Status&                                    last_status_out) {
+        auto kept = build_kept(mesh, seed_id, d_stored_points, start, last_status_out);
         if (!kept) return false;
         commit_cell(mesh, k, kept->cell);
         return true;
@@ -663,19 +408,11 @@ namespace voronoi {
     // a closed cell stays right if no point a kick moved, before or after, is inside its security sphere
     static bool first_pass_still_valid(const FirstPass& r, const std::vector<double4_t>& moved) {
         if (moved.empty()) return true;
-        if (r.all_points) return false;
+        if (!r.cell) return false;
 
-        double    r2_num, r2_denom;
-        double4_t seed;
-        if (r.result == FirstPass::Result::basic) {
-            r.basic->cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
-            seed = r.basic->cell.voro_seed;
-        } else if (r.result == FirstPass::Result::wide) {
-            r.wide->cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
-            seed = r.wide->cell.voro_seed;
-        } else {
-            return false;
-        }
+        double r2_num, r2_denom;
+        r.cell->cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
+        const double4_t seed = r.cell->cell.voro_seed;
 
         // the security test of the cell, with a margin for rounding
         for (const double4_t& m : moved) {
@@ -684,21 +421,6 @@ namespace voronoi {
             const double dz = m.z - seed.z;
             if (!((dx * dx + dy * dy + dz * dz) * r2_denom > 4.0 * r2_num * (1.0 + 1e-9))) return false;
         }
-        return true;
-    }
-
-    // the same with the big capacities, written into the mesh
-    static bool rebuild_on_wide_tier(VMesh*                                     mesh,
-                                     int                                        k,
-                                     int                                        seed_id,
-                                     double*                                    d_stored_points,
-                                     const std::vector<std::pair<double, int>>& bounded,
-                                     Status&                                    last_status_out) {
-        bool all_points = false;
-        auto kept       = wide_attempts(mesh, seed_id, d_stored_points, bounded, &all_points, last_status_out);
-        if (!kept) return false;
-        commit_cell(mesh, k, kept->cell);
-        s_wide_tier_rebuilds++;
         return true;
     }
 
@@ -875,7 +597,7 @@ namespace voronoi {
                 const uint64_t           fp_old     = mesh->face_ptr[kn];
                 const uint64_t           fc_old     = mesh->face_counts[kn];
                 const unsigned long long off_before = face_offset;
-                compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE, knn::USE_TREE>(
+                compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE, true>(
                     kn, seed_id, d_stored_points, mesh->knn, mesh->cell_status, mesh, &face_offset, &overflow);
                 if (overflow) {
                     proteus_mpi::exit_failure("VORONOI: face overflow during symmetry rebuild — increase "

@@ -58,12 +58,11 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
     }
 
     {
-        // header: dimension, time, step, cell counts and the ngb grid size
+        // header: dimension, time, step, cell counts
         h5::Group header_group(H5Gcreate(file, "header", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         if (!h5::write_attr(header_group, "dimension", DIMENSION) || !h5::write_attr(header_group, "time", sim.t_sim) ||
             !h5::write_attr(header_group, "step", sim.step) || !h5::write_attr(header_group, "n_global", n_global) ||
-            !h5::write_attr(header_group, "nranks", nranks) || !h5::write_attr(header_group, "rank", rank) ||
-            !h5::write_attr(header_group, "knn_N_grid", sim.mesh->knn->N_grid)) {
+            !h5::write_attr(header_group, "nranks", nranks) || !h5::write_attr(header_group, "rank", rank)) {
             return false;
         }
 

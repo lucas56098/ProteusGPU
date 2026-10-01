@@ -379,7 +379,7 @@ $(BUILD_DIR)/output.o: $(IO_DIR)/output.cu $(IO_DIR)/output.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # k-nearest-neighbour search
-$(BUILD_DIR)/knn.o: $(KNN_DIR)/knn.cu $(KNN_DIR)/knn.h $(KNN_DIR)/keys.h $(KNN_DIR)/grid.cu $(KNN_DIR)/tree.cu | $(BUILD_DIR)
+$(BUILD_DIR)/knn.o: $(KNN_DIR)/knn.cu $(KNN_DIR)/knn.h $(KNN_DIR)/keys.h $(KNN_DIR)/tree.cu | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # simulation initialization

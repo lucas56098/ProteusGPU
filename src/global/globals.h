@@ -8,8 +8,8 @@
 #include <cstddef>
 
 // Voronoi capacities per tier, separate for 2D and 3D; each one can be set in Config.sh
-// _K_ neighbours searched, _MAX_P_ clip planes, _MAX_T_ cell vertices, _FAST_* the fast tier,
-// _FACE_CAPACITY_MULT_ faces budgeted per cell
+// _K_ nearest points clipped before the tree walk, _MAX_P_ clip planes, _MAX_T_ cell vertices,
+// _FAST_* the fast tier, _FACE_CAPACITY_MULT_ faces budgeted per cell
 #ifdef dim_2D
 #ifndef _K_
 #define _K_ 35
@@ -34,7 +34,7 @@
 #endif
 #else
 #ifndef _K_
-#define _K_ 190
+#define _K_ 64
 #endif
 #ifndef _MAX_P_
 #define _MAX_P_ 50

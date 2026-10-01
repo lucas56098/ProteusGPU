@@ -354,16 +354,6 @@ bool InputHandler::read_snapshot_file(const std::string& filename, ICData& ic_da
             return false;
         }
 
-        // without it knn::init_once sets ngb grid from current cell count (needed for bitwise reproducible restart)
-        if (H5Aexists(header_group, "knn_N_grid") <= 0) {
-            std::cerr << "INPUT: Error! Snapshot " << filename
-                      << " has no header/knn_N_grid, so it predates reproducible restarts. Resuming from it "
-                         "would size the neighbour grid differently and reorder the cells."
-                      << std::endl;
-            return false;
-        }
-        if (!h5::read_attr(header_group, "knn_N_grid", ic_data.header.knn_N_grid)) { return false; }
-
         // optional: cumulative timer values of the old run
         if (H5Lexists(header_group, "profiler", H5P_DEFAULT) > 0) {
             h5::Group    prof_group(H5Gopen(header_group, "profiler", H5P_DEFAULT));
