@@ -2,12 +2,14 @@
 #define PARALLEL_H
 #pragma once
 
-// Launches per-cell work: parallel_for, parallel_reduce and parallel_exclusive_scan, one kernel on CUDA
-// and an OpenMP loop on CPU. A device lambda cannot capture a namespace-scope global, so copy such a
+// Launches per-cell work: parallel_for, parallel_reduce, parallel_exclusive_scan and parallel_sort_pairs,
+// one kernel on CUDA and an OpenMP loop on CPU. A device lambda cannot capture a namespace-scope global, so copy such a
 // global into a local before using it in a body.
 
 #include "../profiler/profiler.h"
 #include "gpu_compat.h"
+#include <cstdint>
+#include <utility>
 
 // CPU loop schedule; dynamic pays off where the cost per cell varies a lot
 enum class Sched { Static, Dynamic };
@@ -258,6 +260,183 @@ inline T parallel_reduce(const char* name, size_t n, T identity, Op op, F f) {
 // sum wrapper
 template <int BLOCK, typename T, typename F> inline T parallel_reduce_sum(const char* name, size_t n, F f) {
     return parallel_reduce<BLOCK, T>(name, n, (T)0, [] HD(T a, T b) { return a + b; }, f);
+}
+
+// ============================================================================
+// stable radix sort of (key, value) pairs
+// ============================================================================
+
+constexpr int    SORT_RADIX_BITS  = 8;
+constexpr int    SORT_RADIX       = 1 << SORT_RADIX_BITS; // also the CUDA block size
+constexpr int    SORT_ITEMS       = 8;                    // keys per thread and tile on CUDA
+constexpr size_t SORT_TILE        = (size_t)SORT_RADIX * SORT_ITEMS;
+constexpr size_t SORT_CPU_CHUNKS  = 1024;
+constexpr int    SORT_CUDA_WARPS  = SORT_RADIX / 32;
+constexpr size_t SORT_CPU_SCRATCH = (size_t)SORT_RADIX * SORT_CPU_CHUNKS;
+
+// scratch elements a sort of n pairs needs
+inline size_t sort_scratch_size(size_t n) {
+    const size_t tiles = (n + SORT_TILE - 1) / SORT_TILE;
+    const size_t hist  = (size_t)SORT_RADIX * (tiles > 0 ? tiles : 1);
+    const size_t gpu   = hist + scan_scratch_size(hist, SORT_RADIX);
+    return gpu > SORT_CPU_SCRATCH ? gpu : SORT_CPU_SCRATCH;
+}
+
+#ifndef CPU_DEBUG
+// keys per digit in each tile, digit-major so the scan gives every (digit, tile) its first slot
+static GLOBAL void LAUNCH_BOUNDS(SORT_RADIX, 1)
+    kernel_sort_count(size_t n, int shift, const uint64_t* keys, unsigned int* hist, size_t tiles) {
+    __shared__ unsigned int s_hist[SORT_RADIX];
+    const int               t = threadIdx.x;
+    s_hist[t]                 = 0;
+    __syncthreads();
+
+    const size_t base = (size_t)blockIdx.x * SORT_TILE;
+    for (int j = 0; j < SORT_ITEMS; j++) {
+        const size_t i = base + (size_t)j * SORT_RADIX + (size_t)t;
+        if (i < n) atomicAdd(&s_hist[(keys[i] >> shift) & (SORT_RADIX - 1)], 1u);
+    }
+    __syncthreads();
+    hist[(size_t)t * tiles + blockIdx.x] = s_hist[t];
+}
+
+// moves each pair to its slot; inside a tile the rank of a key among the same digit follows the input order
+static GLOBAL void LAUNCH_BOUNDS(SORT_RADIX, 1) kernel_sort_scatter(size_t              n,
+                                                                    int                 shift,
+                                                                    const uint64_t*     keys,
+                                                                    const unsigned int* vals,
+                                                                    uint64_t*           keys_out,
+                                                                    unsigned int*       vals_out,
+                                                                    const unsigned int* first_slot,
+                                                                    size_t              tiles) {
+    __shared__ unsigned int s_next[SORT_RADIX];
+    __shared__ unsigned int s_warp[SORT_CUDA_WARPS][SORT_RADIX];
+    const int               t    = threadIdx.x;
+    const int               lane = t & 31;
+    const int               w    = t >> 5;
+    s_next[t]                    = first_slot[(size_t)t * tiles + blockIdx.x];
+
+    // one key per thread and round, rounds in input order
+    const size_t base = (size_t)blockIdx.x * SORT_TILE;
+    for (int j = 0; j < SORT_ITEMS; j++) {
+        const size_t i     = base + (size_t)j * SORT_RADIX + (size_t)t;
+        const bool   valid = i < n;
+        uint64_t     key   = 0;
+        unsigned int val   = 0;
+        int          d     = SORT_RADIX; // matches no real digit
+        if (valid) {
+            key = keys[i];
+            val = vals[i];
+            d   = (int)((key >> shift) & (SORT_RADIX - 1));
+        }
+        for (int ww = 0; ww < SORT_CUDA_WARPS; ww++)
+            s_warp[ww][t] = 0;
+        __syncthreads();
+
+        // rank inside the warp, and how many of each digit every warp has
+        const unsigned int peers = __match_any_sync(0xffffffffu, d);
+        const int          below = __popc(peers & ((1u << lane) - 1u));
+        if (valid && below == 0) s_warp[w][d] = (unsigned int)__popc(peers);
+        __syncthreads();
+
+        if (valid) {
+            unsigned int pos = s_next[d] + (unsigned int)below;
+            for (int ww = 0; ww < w; ww++)
+                pos += s_warp[ww][d];
+            keys_out[pos] = key;
+            vals_out[pos] = val;
+        }
+        __syncthreads();
+
+        unsigned int total = 0;
+        for (int ww = 0; ww < SORT_CUDA_WARPS; ww++)
+            total += s_warp[ww][t];
+        s_next[t] += total;
+    }
+}
+#endif
+
+// sorts the pairs by the low key_bits of the key; equal keys keep their input order, so the result
+// is unique and the same on CPU and GPU. The pointers may come back swapped with the _alt ones.
+inline void parallel_sort_pairs(const char*    name,
+                                size_t         n,
+                                int            key_bits,
+                                uint64_t*&     keys,
+                                unsigned int*& vals,
+                                uint64_t*&     keys_alt,
+                                unsigned int*& vals_alt,
+                                unsigned int*  scratch) {
+    (void)name;
+    if (n <= 1) return;
+    const int passes = (key_bits + SORT_RADIX_BITS - 1) / SORT_RADIX_BITS;
+
+#ifndef CPU_DEBUG
+    PROFILE_KERNEL(name);
+    const size_t  tiles = (n + SORT_TILE - 1) / SORT_TILE;
+    const size_t  hist  = (size_t)SORT_RADIX * tiles;
+    unsigned int* scan  = scratch + hist;
+    for (int p = 0; p < passes; p++) {
+        const int shift = p * SORT_RADIX_BITS;
+        kernel_sort_count<<<(unsigned int)tiles, SORT_RADIX>>>(n, shift, keys, scratch, tiles);
+        GPU_SYNC();
+        scan_device<SORT_RADIX, unsigned int>(hist, scratch, scratch, scan);
+        kernel_sort_scatter<<<(unsigned int)tiles, SORT_RADIX>>>(
+            n, shift, keys, vals, keys_alt, vals_alt, scratch, tiles);
+        GPU_SYNC();
+        std::swap(keys, keys_alt);
+        std::swap(vals, vals_alt);
+    }
+#else
+    PROFILE(name);
+    const size_t chunk = (n + SORT_CPU_CHUNKS - 1) / SORT_CPU_CHUNKS;
+    for (int p = 0; p < passes; p++) {
+        const int           shift = p * SORT_RADIX_BITS;
+        const uint64_t*     k_in  = keys;
+        const unsigned int* v_in  = vals;
+        uint64_t*           k_out = keys_alt;
+        unsigned int*       v_out = vals_alt;
+
+        // keys per digit in each chunk, digit-major
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (size_t c = 0; c < SORT_CPU_CHUNKS; c++) {
+            unsigned int count[SORT_RADIX] = {0};
+            const size_t lo                = c * chunk;
+            const size_t hi                = (lo + chunk < n) ? lo + chunk : n;
+            for (size_t i = lo; i < hi; i++)
+                count[(k_in[i] >> shift) & (SORT_RADIX - 1)]++;
+            for (int d = 0; d < SORT_RADIX; d++)
+                scratch[(size_t)d * SORT_CPU_CHUNKS + c] = count[d];
+        }
+
+        unsigned int running = 0;
+        for (size_t e = 0; e < SORT_CPU_SCRATCH; e++) {
+            const unsigned int v = scratch[e];
+            scratch[e]           = running;
+            running += v;
+        }
+
+        // each chunk fills its slots in input order
+#ifdef USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (size_t c = 0; c < SORT_CPU_CHUNKS; c++) {
+            unsigned int next[SORT_RADIX];
+            for (int d = 0; d < SORT_RADIX; d++)
+                next[d] = scratch[(size_t)d * SORT_CPU_CHUNKS + c];
+            const size_t lo = c * chunk;
+            const size_t hi = (lo + chunk < n) ? lo + chunk : n;
+            for (size_t i = lo; i < hi; i++) {
+                const unsigned int pos = next[(k_in[i] >> shift) & (SORT_RADIX - 1)]++;
+                k_out[pos]             = k_in[i];
+                v_out[pos]             = v_in[i];
+            }
+        }
+        std::swap(keys, keys_alt);
+        std::swap(vals, vals_alt);
+    }
+#endif
 }
 
 #endif

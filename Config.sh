@@ -38,6 +38,13 @@ MOVING_MESH                         # enable moving mesh hydrodynamics
 #_GAMMA_EOS_=1.6666666666666667     # adiabatic index
 
 ################################################################
+# neighbour search
+################################################################
+
+#KNN_TREE                           # search on a Morton tree instead of the bucket grid
+#KNN_CROSSCHECK                     # build both searches and compare them every build (slow, for testing)
+
+################################################################
 # astrophysics source terms
 ################################################################
 

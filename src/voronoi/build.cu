@@ -43,8 +43,7 @@ namespace voronoi {
                       int                       iter) {
         {
             PROFILE("KNN_PREP");
-            // sort the points into the neighbour grid
-            knn::set_local_extent(mesh->knn, mesh->data_lo, mesh->data_hi);
+            // sort the points and build the neighbour search
             knn::prepare(mesh->knn, (const POINT_TYPE*)pts_data, n_total);
         }
 

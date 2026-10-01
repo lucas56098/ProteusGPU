@@ -15,6 +15,7 @@ Benchmarks two versions of Proteus and reports timings from the profiler.
 Options:
   --ref SPEC       baseline: any commit-ish, or WORKTREE (default: HEAD)
   --new SPEC       comparison: any commit-ish, or WORKTREE (default: WORKTREE)
+  --new-flags F    extra Config.sh flags for the new build only, e.g. "KNN_TREE"
   --n N            cells per side
   --time-end T     simulated end time (default: 0.02)
   --reps R         pairs per order; 2*R runs per build per mode (default: 2)
@@ -36,12 +37,13 @@ USAGE
 }
 
 main() {
-    REF="HEAD"; NEW="WORKTREE"; N=100; TEND=0.02; REPS=2; TOP=12
+    REF="HEAD"; NEW="WORKTREE"; NEW_FLAGS=""; N=100; TEND=0.02; REPS=2; TOP=12
     RANKS_CPU=4; RANKS_GPU=2; KEEP=0; LIST=0; QUICK=0; PASSES=2; ONLY=()
     while [ $# -gt 0 ]; do
         case "$1" in
             --ref)      REF="${2:?}"; shift ;;
             --new)      NEW="${2:?}"; shift ;;
+            --new-flags) NEW_FLAGS="${2:?}"; shift ;;
             --n)        N="${2:?}"; shift ;;
             --time-end) TEND="${2:?}"; shift ;;
             --reps)     REPS="${2:?}"; shift ;;
@@ -120,6 +122,7 @@ main() {
     printf '\033[1mProteus performance comparison\033[0m\n'
     printf '  ref        %s\n' "$(describe "$REF")"
     printf '  new        %s\n' "$(describe "$NEW")"
+    [ -n "$NEW_FLAGS" ] && printf '  new flags  %s\n' "$NEW_FLAGS"
     printf '  problem    3D acoustic wave, n=%s (%s cells), time_end=%s\n' "$N" "$CELLS" "$TEND"
     printf '  modes      %s\n' "$(for m in "${MODES[@]}"; do printf '%s ' "${m%%|*}"; done)"
     if [ "$QUICK" -eq 1 ]; then
@@ -179,7 +182,7 @@ main() {
     build_one() {   # tree label mode flags -> prints exec path
         local tree="$1" label="$2" mode="$3" flags="$4" dir cfg
         dir="$WORK/build_${label}_${mode}"
-        cfg="$WORK/config_${mode}.sh"
+        cfg="$WORK/config_${label}_${mode}.sh"
         {
             printf 'dim_3D\nMOVING_MESH\nENABLE_PROFILING\n'
             for f in $flags; do printf '%s\n' "$f"; done
@@ -234,7 +237,7 @@ main() {
         IFS='|' read -r mode flags ranks needs <<< "$spec"
 
         exe_ref="$(build_one "$TREE_REF" ref "$mode" "$flags")"
-        exe_new="$(build_one "$TREE_NEW" new "$mode" "$flags")"
+        exe_new="$(build_one "$TREE_NEW" new "$mode" "$flags $NEW_FLAGS")"
         if [ -z "$exe_ref" ] || [ -z "$exe_new" ]; then
             side=new; [ -z "$exe_ref" ] && side=ref
             printf '\033[31mFAIL\033[0m  %-8s %s build\n' "$mode" "$side"

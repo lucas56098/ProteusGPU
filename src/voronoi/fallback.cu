@@ -30,8 +30,6 @@ namespace voronoi {
     static FallbackOutcome rebuild_cell_with_perturb_retry(
         VMesh* mesh, int k, double* d_stored_points, CellSids& cell_sids, double dt, Status& last_status_out);
     static std::vector<std::pair<double, int>>
-    gather_nearby_seeds_sorted(double* d_stored_points, int seed_id, const knn_problem* knn, int max_candidates);
-    static std::vector<std::pair<double, int>>
     sort_neighbours_by_distance(double* d_stored_points, int seed_id, int n_seeds);
     template <typename CellT>
     static bool    try_build_cell_from_neighbours_as(VMesh*                                     mesh,
@@ -48,10 +46,14 @@ namespace voronoi {
                                         const std::vector<std::pair<double, int>>& bounded,
                                         Status&                                    last_status_out);
     static double3 compute_perturbation_delta(int seed_id, int attempt, double scale);
-    static void    apply_perturbation(
-           double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4_t* orig_positions);
-    static void
-    rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4_t* orig_positions);
+    static void    apply_perturbation(knn_problem*     knn,
+                                      double*          d_stored_points,
+                                      double3          delta,
+                                      const int*       sids,
+                                      size_t           n_sids,
+                                      const double4_t* orig_positions);
+    static void    rewind_perturbation(
+           knn_problem* knn, double* d_stored_points, const int* sids, size_t n_sids, const double4_t* orig_positions);
 #ifdef MOVING_MESH
     static void apply_vmesh_perturbation_correction(VMesh* mesh, int k, double3 delta, double dt);
 #endif
@@ -219,7 +221,7 @@ namespace voronoi {
             double3 delta = {0.0, 0.0, 0.0};
             if (attempt > 0) {
                 delta = compute_perturbation_delta(seed_id, attempt, scale);
-                apply_perturbation(d_stored_points, delta, sids, n_sids, orig_positions);
+                apply_perturbation(mesh->knn, d_stored_points, delta, sids, n_sids, orig_positions);
             }
 
             Status     attempt_status = success;
@@ -237,7 +239,7 @@ namespace voronoi {
 
             last_status_out = attempt_status;
             if (is_overflow(attempt_status)) overflowed = true;
-            if (attempt > 0) rewind_perturbation(d_stored_points, sids, n_sids, orig_positions);
+            if (attempt > 0) rewind_perturbation(mesh->knn, d_stored_points, sids, n_sids, orig_positions);
             scale *= 10.0;
         }
         return FallbackOutcome::failed;
@@ -248,7 +250,7 @@ namespace voronoi {
         VMesh* mesh, int k, double* d_stored_points, CellSids& cell_sids, double dt, Status& last_status_out) {
         const int seed_id = (int)mesh->real_sorted_ids[k];
 
-        const auto bounded = gather_nearby_seeds_sorted(d_stored_points, seed_id, mesh->knn, FALLBACK_BOUNDED_K);
+        const auto bounded = knn::nearest_on_host(mesh->knn, seed_id, FALLBACK_BOUNDED_K);
 
         // out of slots: only the wide tier can help
         if (is_overflow(mesh->cell_status[k])) {
@@ -329,60 +331,6 @@ namespace voronoi {
         return rebuild_on_wide_tier(mesh, k, seed_id, d_stored_points, bounded, last_status_out)
                    ? FallbackOutcome::ok_unchanged
                    : FallbackOutcome::failed;
-    }
-
-    static std::vector<std::pair<double, int>>
-    // nearest max_candidates points, sorted, read straight from the grid
-    gather_nearby_seeds_sorted(double* d_stored_points, int seed_id, const knn_problem* knn, int max_candidates) {
-        const double4_t seed_pos = point_from_ptr(d_stored_points + DIMENSION * seed_id);
-        const int       seed_cell =
-            knn::cell_from_point(knn->N_grid, knn->grid_lo, knn->inv_cell_size, knn->d_stored_points[seed_id]);
-        int ix, iy, iz;
-        knn::bucket_coords(seed_cell, knn->N_grid, &ix, &iy, &iz);
-
-        std::vector<std::pair<double, int>> candidates;
-        candidates.reserve(max_candidates * 2);
-
-        double kth_dist      = DBL_MAX;
-        bool   stopped_early = false;
-        for (int ring = 0; ring < knn->N_cell_offsets; ring++) {
-            if ((int)candidates.size() >= max_candidates && knn->d_cell_offset_dists[ring] >= kth_dist) {
-                stopped_early = true;
-                break;
-            }
-
-            if (!knn::ring_step_in_grid(knn->d_cell_offset_axes[ring], ix, iy, iz, knn->N_grid)) continue;
-            const int cell = seed_cell + knn->d_cell_offsets[ring];
-
-            const int cell_base  = knn->d_ptrs[cell];
-            const int cell_count = knn->d_counters[cell];
-            for (int i = 0; i < cell_count; i++) {
-                const int sid = cell_base + i;
-                if (sid == seed_id) continue;
-                const double4_t other = point_from_ptr(d_stored_points + DIMENSION * sid);
-                const double    dx    = other.x - seed_pos.x;
-                const double    dy    = other.y - seed_pos.y;
-                const double    dz    = other.z - seed_pos.z;
-                candidates.push_back({dx * dx + dy * dy + dz * dz, sid});
-            }
-
-            // distance of the last candidate, the ring loop stops beyond it
-            if ((int)candidates.size() >= max_candidates) {
-                std::nth_element(candidates.begin(), candidates.begin() + max_candidates - 1, candidates.end());
-                kth_dist = candidates[max_candidates - 1].first;
-            }
-        }
-
-        if ((int)candidates.size() > max_candidates) candidates.resize(max_candidates);
-        std::sort(candidates.begin(), candidates.end());
-
-        // all rings walked: the list is complete only as far as they reach
-        if (!stopped_early) {
-            const auto past =
-                std::lower_bound(candidates.begin(), candidates.end(), std::make_pair(knn->reach2, INT_MIN));
-            candidates.erase(past, candidates.end());
-        }
-        return candidates;
     }
 
     static std::vector<std::pair<double, int>>
@@ -490,8 +438,12 @@ namespace voronoi {
     }
 
     // moves every copy of the seed, ghosts included
-    static void apply_perturbation(
-        double* d_stored_points, double3 delta, const int* sids, size_t n_sids, const double4_t* orig_positions) {
+    static void apply_perturbation(knn_problem*     knn,
+                                   double*          d_stored_points,
+                                   double3          delta,
+                                   const int*       sids,
+                                   size_t           n_sids,
+                                   const double4_t* orig_positions) {
         for (size_t i = 0; i < n_sids; i++) {
             const int sid                        = sids[i];
             d_stored_points[DIMENSION * sid + 0] = orig_positions[i].x + delta.x;
@@ -499,6 +451,7 @@ namespace voronoi {
 #ifdef dim_3D
             d_stored_points[DIMENSION * sid + 2] = orig_positions[i].z + delta.z;
 #endif
+            knn::point_moved(knn, sid);
         }
     }
 
@@ -528,8 +481,8 @@ namespace voronoi {
     }
 #endif
 
-    static void
-    rewind_perturbation(double* d_stored_points, const int* sids, size_t n_sids, const double4_t* orig_positions) {
+    static void rewind_perturbation(
+        knn_problem* knn, double* d_stored_points, const int* sids, size_t n_sids, const double4_t* orig_positions) {
         for (size_t i = 0; i < n_sids; i++) {
             const int sid                        = sids[i];
             d_stored_points[DIMENSION * sid + 0] = orig_positions[i].x;
@@ -537,6 +490,7 @@ namespace voronoi {
 #ifdef dim_3D
             d_stored_points[DIMENSION * sid + 2] = orig_positions[i].z;
 #endif
+            knn::point_moved(knn, sid);
         }
     }
 
@@ -704,20 +658,19 @@ namespace voronoi {
     // cells that had the ghost inside their security radius
     static void collect_affected_by_moved_ghost(
         const VMesh* mesh, double4_t g_old, double4_t g_new, double search_l2, std::unordered_set<int>* affected) {
-        const knn_problem* knn = mesh->knn;
-
         POINT_TYPE gp;
         gp.x = g_old.x;
         gp.y = g_old.y;
 #ifdef dim_3D
         gp.z = g_old.z;
 #endif
-        const int center = knn::cell_from_point(knn->N_grid, knn->grid_lo, knn->inv_cell_size, gp);
 
-        auto consider = [&](int sid) {
+        std::vector<int> near;
+        knn::points_within_on_host(mesh->knn, gp, search_l2, &near);
+        for (const int sid : near) {
             const int k = (int)mesh->sid_to_neighbor[sid];
-            if (k >= (int)mesh->n_hydro) return;
-            if (affected->count(k)) return;
+            if (k >= (int)mesh->n_hydro) continue;
+            if (affected->count(k)) continue;
 
             const double3 s   = mesh->seeds[k];
             const double  dox = s.x - g_old.x, doy = s.y - g_old.y, doz = s.z - g_old.z;
@@ -725,26 +678,6 @@ namespace voronoi {
             const double  d2o = dox * dox + doy * doy + doz * doz;
             const double  d2n = dnx * dnx + dny * dny + dnz * dnz;
             if (d2o <= mesh->security_d2[k] || d2n <= mesh->security_d2[k]) affected->insert(k);
-        };
-
-        // farther than the rings reach: every point
-        if (search_l2 >= knn->reach2) {
-            for (int sid = 0; sid < (int)mesh->n_seeds; sid++)
-                consider(sid);
-            return;
-        }
-
-        int cx, cy, cz;
-        knn::bucket_coords(center, knn->N_grid, &cx, &cy, &cz);
-        for (int ring = 0; ring < knn->N_cell_offsets; ring++) {
-            if (knn->d_cell_offset_dists[ring] > search_l2) break;
-            if (!knn::ring_step_in_grid(knn->d_cell_offset_axes[ring], cx, cy, cz, knn->N_grid)) continue;
-            const int cell = center + knn->d_cell_offsets[ring];
-
-            const int base  = knn->d_ptrs[cell];
-            const int count = knn->d_counters[cell];
-            for (int i = 0; i < count; i++)
-                consider(base + i);
         }
     }
 
@@ -806,6 +739,7 @@ namespace voronoi {
 #ifdef dim_3D
             d_stored_points[DIMENSION * sid + 2] = g_new.z;
 #endif
+            knn::point_moved(mesh->knn, sid);
             mesh->seeds_g[m.ghost_slot] = double3{g_new.x, g_new.y, g_new.z};
         }
 
