@@ -4,19 +4,18 @@
 namespace voronoi {
 
     static void                       check_seed_capacity(const VMesh* mesh, int n_total);
-    static void                       save_orig_to_k_for_lookup(VMesh* mesh);
     static void                       clear_cell_arrays(VMesh* mesh);
-    static void                       build_index_maps(VMesh* mesh, int iter);
-    static void                       compute_gather_perm(VMesh* mesh);
+    static void                       build_index_maps(VMesh* mesh);
     static void                       permute_persistent_state(VMesh*                    mesh,
                                                                hydro::primvars*          primvar,
                                                                hydro::ConsVars*          cons,
                                                                gradients::PrimGradients* grads);
     template <typename T> static void permute_inplace(T*& live, T*& scratch, uint64_t n, const unsigned int* perm);
-    static void                       compute_cells(VMesh* mesh);
+    static void                       compute_cells(VMesh* mesh, bool only_open);
 
-    static void allocate_cell_scratch(uint64_t n_hydro);
-    static void run_fast_cell_kernel(VMesh* mesh);
+    static void allocate_cell_scratch(uint64_t n_hydro, uint64_t first_face);
+    static int  reopen_cells(VMesh* mesh);
+    static void run_fast_cell_kernel(VMesh* mesh, int n_listed);
     static int  collect_failed_cells(VMesh* mesh);
     static int  count_failed_cells(const VMesh* mesh);
     static void print_cell_build_summary(uint64_t n_hydro, int n_failed);
@@ -33,56 +32,62 @@ namespace voronoi {
     static int                s_cpu_overflow_flag = 0;
 #endif
 
-    // sorts the points, maps the indices, builds all cells
-    void compute_mesh(VMesh*                    mesh,
-                      POINT_TYPE*               pts_data,
-                      int                       n_total,
-                      hydro::primvars*          primvar,
-                      hydro::ConsVars*          cons,
-                      gradients::PrimGradients* grads,
-                      int                       iter) {
+    // the cells alone in Morton order give the cell order of this step; the state and the positions follow,
+    // so input point k is cell k from now on, and the tree is built again over the cells in that order
+    void fix_cell_order(VMesh*                    mesh,
+                        POINT_TYPE*               cell_pos,
+                        hydro::primvars*          primvar,
+                        hydro::ConsVars*          cons,
+                        gradients::PrimGradients* grads) {
+        const uint64_t n = mesh->n_hydro;
+        knn::prepare(mesh->knn, (const POINT_TYPE*)cell_pos, (int)n);
+        mesh->n_seeds = n;
+
+        const unsigned int* dperm    = mesh->knn->d_permutation;
+        unsigned int*       gathered = mesh->gather_perm;
+        parallel_for<_MESH_BLOCK_SIZE_>("GATHER_PERM", n, [=] HD(size_t k) { gathered[k] = dperm[k]; });
+        permute_persistent_state(mesh, primvar, cons, grads);
+
+        POINT_TYPE* tmp = mesh->scratch_point;
+        parallel_for<_MESH_BLOCK_SIZE_>("PERMUTE_POS", n, [=] HD(size_t k) { tmp[k] = cell_pos[gathered[k]]; });
+        gpu_memcpy(cell_pos, tmp, n * sizeof(POINT_TYPE));
+
+        knn::prepare(mesh->knn, (const POINT_TYPE*)cell_pos, (int)n);
+        build_index_maps(mesh);
+    }
+
+    // sorts the points, maps the indices, builds all cells or only those not finished yet
+    void compute_mesh(VMesh* mesh, POINT_TYPE* pts, int n_total, bool only_open) {
         {
             PROFILE("KNN_PREP");
-            // sort the points and build the neighbour search
-            knn::prepare(mesh->knn, (const POINT_TYPE*)pts_data, n_total);
+            knn::prepare(mesh->knn, (const POINT_TYPE*)pts, n_total);
         }
 
         check_seed_capacity(mesh, n_total);
-        mesh->n_seeds   = (uint64_t)n_total;
-        mesh->num_faces = 0;
+        mesh->n_seeds = (uint64_t)n_total;
 
         {
-            PROFILE("PERMUTE");
-            // the first round also fixes the cell order of this step
-            build_index_maps(mesh, iter);
-            if (iter == 0) {
-                save_orig_to_k_for_lookup(mesh);
-                compute_gather_perm(mesh);
-                permute_persistent_state(mesh, primvar, cons, grads);
-            }
+            PROFILE("INDEX_MAPS");
+            build_index_maps(mesh);
         }
 
         {
             PROFILE("CELLS");
-            clear_cell_arrays(mesh);
-            compute_cells(mesh);
+            if (!only_open) {
+                mesh->num_faces = 0;
+                clear_cell_arrays(mesh);
+            }
+            compute_cells(mesh, only_open);
         }
     }
 
     // stops the run if the point list is longer than the arrays
     static void check_seed_capacity(const VMesh* mesh, int n_total) {
         if ((uint64_t)n_total > mesh->total_capacity) {
-            proteus_mpi::exit_failure("VORONOI: Error! point count %d exceeds pre-allocated capacity %llu. "
-                                      "Increase ghost headroom.\n",
+            proteus_mpi::exit_failure("VORONOI: Error! point count %d exceeds pre-allocated capacity %llu.\n",
                                       n_total,
                                       (unsigned long long)mesh->total_capacity);
         }
-    }
-
-    // keeps the cell order of the first round
-    static void save_orig_to_k_for_lookup(VMesh* mesh) {
-        const uint64_t n_hydro = mesh->n_hydro;
-        gpu_memcpy(mesh->orig_to_k_save, mesh->scratch_uint, n_hydro * sizeof(unsigned int));
     }
 
     // faces and status of the new build
@@ -94,80 +99,25 @@ namespace voronoi {
         parallel_for<_MESH_BLOCK_SIZE_>("INIT", n_hydro, [=] HD(size_t i) { stat[i] = security_radius_not_reached; });
     }
 
-    // maps input point <-> sorted point <-> cell k
-    static void build_index_maps(VMesh* mesh, int iter) {
-        const int      n_total = (int)mesh->n_seeds;
-        const uint64_t n_hydro = mesh->n_hydro;
+    // sorted point <-> neighbour index; the cells come first in the input, as cell k, the ghosts after them
+    static void build_index_maps(VMesh* mesh) {
+        const int       n_total         = (int)mesh->n_seeds;
+        const uint64_t  n_hydro         = mesh->n_hydro;
+        const unsigned* dperm           = mesh->knn->d_permutation;
+        unsigned int*   real_sorted_ids = mesh->real_sorted_ids;
+        unsigned int*   sid_to_neighbor = mesh->sid_to_neighbor;
+        const uint64_t* ghost_ids       = mesh->ghost_ids;
 
-        const unsigned int* dperm           = mesh->knn->d_permutation;
-        unsigned int*       real_sorted_ids = mesh->real_sorted_ids;
-        unsigned int*       sid_to_neighbor = mesh->sid_to_neighbor;
-        unsigned int*       orig_to_k       = mesh->scratch_uint;
-
-        if (iter == 0) {
-            unsigned int* flags   = mesh->scan_flags;
-            unsigned int* scratch = mesh->scan_scratch;
-
-            // flag the real points; after the scan the flag of a real point is its cell index
-            parallel_for<_MESH_BLOCK_SIZE_>(
-                "INDEX_FLAG", n_total, [=] HD(int sid) { flags[sid] = ((uint64_t)dperm[sid] < n_hydro) ? 1u : 0u; });
-
-            parallel_exclusive_scan<_MESH_BLOCK_SIZE_>("INDEX_SCAN", (size_t)n_total, flags, flags, scratch);
-
-            parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P1", n_total, [=] HD(int sid) {
-                const unsigned int orig = dperm[sid];
-                if ((uint64_t)orig < n_hydro) {
-                    const unsigned int k = flags[sid];
-                    real_sorted_ids[k]   = (unsigned int)sid;
-                    sid_to_neighbor[sid] = k;
-                    orig_to_k[orig]      = k;
-                }
-            });
-
-            // all real points must have got a cell
-            const uint64_t n_reals =
-                (n_total > 0) ? (uint64_t)flags[n_total - 1] + (((uint64_t)dperm[n_total - 1] < n_hydro) ? 1 : 0) : 0;
-
-            if (n_reals != n_hydro) {
-                proteus_mpi::exit_failure(
-                    "VORONOI: build_index_maps: counted %llu reals but n_hydro = %llu. Aborting.\n",
-                    (unsigned long long)n_reals,
-                    (unsigned long long)n_hydro);
-            }
-        } else {
-            // later rounds keep the order of the first one
-            const unsigned int* orig_to_k_save = mesh->orig_to_k_save;
-            parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P1", n_total, [=] HD(int sid) {
-                const unsigned int orig = dperm[sid];
-                if ((uint64_t)orig < n_hydro) {
-                    const unsigned int k = orig_to_k_save[orig];
-                    real_sorted_ids[k]   = (unsigned int)sid;
-                    sid_to_neighbor[sid] = k;
-                    orig_to_k[orig]      = k;
-                }
-            });
-        }
-
-        // ghosts: periodic -> its cell, MPI -> its own slot
-        const uint64_t* ghost_ids = mesh->ghost_ids;
-        parallel_for<_MESH_BLOCK_SIZE_>("INDEX_P2", n_total, [=] HD(int sid) {
+        // a copy of an own cell stands for that cell, any other ghost for its slot
+        parallel_for<_MESH_BLOCK_SIZE_>("INDEX", n_total, [=] HD(int sid) {
             const unsigned int orig = dperm[sid];
-            if ((uint64_t)orig >= n_hydro) {
-                const uint64_t     g = (uint64_t)orig - n_hydro;
-                const unsigned int v = (unsigned int)ghost_ids[g];
-                sid_to_neighbor[sid] = (v >= (unsigned int)n_hydro) ? v : orig_to_k[v];
+            if ((uint64_t)orig < n_hydro) {
+                real_sorted_ids[orig] = (unsigned int)sid;
+                sid_to_neighbor[sid]  = orig;
+            } else {
+                sid_to_neighbor[sid] = (unsigned int)ghost_ids[(uint64_t)orig - n_hydro];
             }
         });
-    }
-
-    // cell k came from input point gather_perm[k]
-    static void compute_gather_perm(VMesh* mesh) {
-        const uint64_t      n        = mesh->n_hydro;
-        const unsigned int* perm     = mesh->knn->d_permutation;
-        const unsigned int* sorted   = mesh->real_sorted_ids;
-        unsigned int*       gathered = mesh->gather_perm;
-
-        parallel_for<_MESH_BLOCK_SIZE_>("GATHER_PERM", n, [=] HD(size_t k) { gathered[k] = perm[sorted[k]]; });
     }
 
     // writes live[perm[k]] into the scratch and swaps the pointers
@@ -215,22 +165,44 @@ namespace voronoi {
 #endif
     }
 
-    // fast tier for all cells, slow tier for what failed
-    static void compute_cells(VMesh* mesh) {
-        allocate_cell_scratch(mesh->n_hydro);
+    // fast tier for all cells or the reopened ones, slow tier for what failed; a cell that is finished keeps its
+    // faces, the faces of the others come after them
+    static void compute_cells(VMesh* mesh, bool only_open) {
+        allocate_cell_scratch(mesh->n_hydro, only_open ? mesh->num_faces : 0);
 
-        run_fast_cell_kernel(mesh);
+        const int n_listed = only_open ? reopen_cells(mesh) : -1;
+        run_fast_cell_kernel(mesh, n_listed);
 
         const int n_failed = collect_failed_cells(mesh);
-        print_cell_build_summary(mesh->n_hydro, n_failed);
+        if (!only_open) print_cell_build_summary(mesh->n_hydro, n_failed);
 
         if (n_failed > 0) run_slow_cell_kernel(mesh, n_failed);
 
         read_face_count_from_gpu(mesh);
     }
 
-    // scratch of the cell kernels, kept between builds
-    static void allocate_cell_scratch(uint64_t n_hydro) {
+    // the cells not finished yet into the list, their old faces out of the way
+    static int reopen_cells(VMesh* mesh) {
+        const int  n_open = collect_failed_cells(mesh);
+        const int* list   = d_failed_indices;
+        Status*    stat   = mesh->cell_status;
+        parallel_for<_MESH_BLOCK_SIZE_>("REOPEN", n_open, [=] HD(int i) {
+            const int      k     = list[i];
+            const uint64_t first = mesh->face_ptr[k];
+            for (uint64_t f = first; f < first + mesh->face_counts[k]; f++) {
+                mesh->neighbor_cell[f] = -1;
+                mesh->face_area[f]     = 0.0;
+                for (int c = 0; c < DIMENSION - 1; c++)
+                    mesh->f_mid_local[f * (DIMENSION - 1) + c] = 0.0;
+            }
+            mesh->face_counts[k] = 0;
+            stat[k]              = security_radius_not_reached;
+        });
+        return n_open;
+    }
+
+    // scratch of the cell kernels, kept between builds; new faces start at first_face
+    static void allocate_cell_scratch(uint64_t n_hydro, uint64_t first_face) {
         if (d_failed_indices_capacity < (int)n_hydro) {
             if (d_failed_indices) gpu_free(d_failed_indices);
             d_failed_indices          = gpu_alloc<int>((int)n_hydro);
@@ -241,10 +213,10 @@ namespace voronoi {
             d_face_offset   = gpu_calloc<uint64_t>(1);
             d_overflow_flag = gpu_calloc<int>(1);
         }
-        gpu_memset(d_face_offset, 0, sizeof(uint64_t));
+        *d_face_offset = first_face;
         gpu_memset(d_overflow_flag, 0, sizeof(int));
 #else
-        s_cpu_face_offset   = 0;
+        s_cpu_face_offset   = first_face;
         s_cpu_overflow_flag = 0;
 #endif
     }
@@ -265,15 +237,18 @@ namespace voronoi {
 #endif
     }
 
-    // all cells, small capacities
-    static void run_fast_cell_kernel(VMesh* mesh) {
+    // all cells, or the first n_listed of the list, small capacities
+    static void run_fast_cell_kernel(VMesh* mesh, int n_listed) {
         double*             pts   = (double*)mesh->knn->d_stored_points;
         const knn_problem*  knn   = mesh->knn;
         Status*             stat  = mesh->cell_status;
         unsigned long long* foff  = cell_face_offset();
         int*                oflag = cell_overflow_flag();
+        const int*          list  = d_failed_indices;
+        const int           n     = (n_listed < 0) ? (int)mesh->n_hydro : n_listed;
 
-        parallel_for<_VORO_BLOCK_SIZE_, 16, Sched::Dynamic>("FAST", mesh->n_hydro, [=] HD(int k) {
+        parallel_for<_VORO_BLOCK_SIZE_, 16, Sched::Dynamic>("FAST", n, [=] HD(int i) {
+            const int k       = (n_listed < 0) ? i : list[i];
             const int seed_id = (int)mesh->real_sorted_ids[k];
             compute_single_voronoi_cell<_FAST_K_, _FAST_MAX_P_, _FAST_MAX_T_, uchar, VERT_TYPE>(
                 k, seed_id, pts, knn, stat, mesh, foff, oflag);

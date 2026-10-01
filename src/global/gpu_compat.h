@@ -234,6 +234,24 @@ template <typename T> HD inline T portable_atomicAdd(T* addr, T val) {
 #endif
 }
 
+// same for a bitwise or
+HD inline unsigned int portable_atomicOr(unsigned int* addr, unsigned int val) {
+#if defined(__CUDA_ARCH__)
+    return atomicOr(addr, val);
+#else
+    return __atomic_fetch_or(addr, val, __ATOMIC_RELAXED);
+#endif
+}
+
+// set bits of a word
+HD inline int portable_popcount(unsigned int x) {
+#if defined(__CUDA_ARCH__)
+    return __popc(x);
+#else
+    return __builtin_popcount(x);
+#endif
+}
+
 // same for an atomic exchange
 template <typename T> HD inline T portable_atomicExch(T* addr, T val) {
 #if defined(__CUDA_ARCH__)

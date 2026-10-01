@@ -152,7 +152,6 @@ extern InputHandler  input;
 extern ICData        ic_data;
 extern OutputHandler output;
 extern SimState      sim;
-extern double        buff;
 
 // run-wide constants from the values above
 constexpr double gamma_eos         = (double)_GAMMA_EOS_;

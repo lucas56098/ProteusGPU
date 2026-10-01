@@ -3,17 +3,19 @@
 
 namespace voronoi {
 
+    // a first guess of the ghosts: a few cell layers around the part of the box this rank holds; it grows
+    static uint64_t ghost_guess(uint64_t n_cells) {
+        const double n       = (double)std::max<uint64_t>(n_cells, 1);
+        const double surface = (DIMENSION == 3) ? 6.0 * std::pow(n, 2.0 / 3.0) : 4.0 * std::sqrt(n);
+        return std::max<uint64_t>(1024, (uint64_t)(8.0 * surface));
+    }
+
     // allocates all mesh arrays, once at startup
     VMesh* allocate_mesh(uint64_t n_hydro) {
-        // cells with growth headroom + periodic ghosts + MPI ghosts
-        const double   ghost_frac     = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-        const uint64_t n_grow         = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
-        const uint64_t max_pgh        = (uint64_t)(2.0 * ghost_frac * n_grow) + 1;
-        const uint64_t max_mpi_ghosts = (uint64_t)proteus_mpi::n_mpi_capacity;
-        const uint64_t max_ghosts     = max_pgh + max_mpi_ghosts;
-        const uint64_t total          = n_grow + max_ghosts;
-        const uint64_t max_faces      = n_grow * _FACE_CAPACITY_MULT_;
-        const uint64_t ext            = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
+        const uint64_t ext        = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
+        const uint64_t max_ghosts = ghost_guess(ext);
+        const uint64_t total      = ext + max_ghosts;
+        const uint64_t max_faces  = ext * _FACE_CAPACITY_MULT_;
 
         VMesh* mesh          = gpu_alloc<VMesh>(1);
         mesh->n_seeds        = 0;
@@ -22,7 +24,6 @@ namespace voronoi {
         mesh->face_capacity  = max_faces;
         mesh->ghost_capacity = max_ghosts;
         mesh->total_capacity = total;
-        mesh->buff           = buff;
 
         // per cell
         mesh->seeds        = gpu_calloc<double3>(ext);
@@ -50,17 +51,11 @@ namespace voronoi {
         mesh->Ri_ref = portable_cbrt(3.0 * V_ref / (4.0 * PI));
 #endif
 
-        mesh->cell_status = gpu_alloc<Status>(ext);
-#ifdef USE_MPI
-        mesh->security_d2 = gpu_calloc<double>(ext);
-#else
-        mesh->security_d2 = nullptr;
-#endif
+        mesh->cell_status  = gpu_alloc<Status>(ext);
+        mesh->security_d2  = gpu_calloc<double>(ext);
+        mesh->est_r        = gpu_calloc<double>(ext);
+        mesh->req_r2       = gpu_calloc<double>(ext);
         mesh->n_mpi_ghosts = 0;
-        for (int a = 0; a < 3; a++) {
-            mesh->data_lo[a] = 0.0;
-            mesh->data_hi[a] = 0.0;
-        }
 #ifdef MOVING_MESH
         mesh->v_mesh = gpu_calloc<POINT_TYPE>(ext);
 #endif
@@ -103,18 +98,16 @@ namespace voronoi {
         mesh->real_sorted_ids = gpu_alloc<unsigned int>(ext);
         mesh->sid_to_neighbor = gpu_alloc<unsigned int>(total);
         mesh->gather_perm     = gpu_alloc<unsigned int>(ext);
-        mesh->orig_to_k_save  = gpu_alloc<unsigned int>(ext);
-        mesh->scan_flags      = gpu_alloc<unsigned int>(total);
-        mesh->scan_scratch    = gpu_alloc<unsigned int>(scan_scratch_size((size_t)total, _MESH_BLOCK_SIZE_));
+        mesh->scan_flags      = gpu_alloc<unsigned int>(ext);
+        mesh->scan_scratch    = gpu_alloc<unsigned int>(scan_scratch_size((size_t)ext, _MESH_BLOCK_SIZE_));
 
-        mesh->scratch_uint   = gpu_alloc<unsigned int>(ext);
         mesh->scratch_double = gpu_alloc<double>(ext);
         mesh->scratch_point  = gpu_alloc<POINT_TYPE>(ext);
 
         mesh->scratch_pts  = gpu_alloc<POINT_TYPE>(total);
         mesh->scratch_move = gpu_alloc<POINT_TYPE>(ext);
 
-        mesh->knn = knn::init_once((int)n_hydro);
+        mesh->knn = knn::init_once((int)total);
 
         // keep the hot arrays on the device
         gpu_advise_gpu_preferred(mesh->seeds, ext * sizeof(double3));
@@ -123,9 +116,7 @@ namespace voronoi {
         gpu_advise_gpu_preferred(mesh->face_counts, n_hydro * sizeof(uint64_t));
         gpu_advise_gpu_preferred(mesh->face_ptr, n_hydro * sizeof(uint64_t));
         gpu_advise_gpu_preferred(mesh->cell_status, n_hydro * sizeof(Status));
-#ifdef USE_MPI
         gpu_advise_gpu_preferred(mesh->security_d2, n_hydro * sizeof(double));
-#endif
         gpu_advise_gpu_preferred(mesh->neighbor_cell, max_faces * sizeof(int));
         gpu_advise_gpu_preferred(mesh->face_area, max_faces * sizeof(double));
         gpu_advise_gpu_preferred(mesh->real_sorted_ids, n_hydro * sizeof(unsigned int));
@@ -144,9 +135,9 @@ namespace voronoi {
         gpu_free(mesh->face_counts);
         gpu_free(mesh->face_ptr);
         gpu_free(mesh->cell_status);
-#ifdef USE_MPI
         gpu_free(mesh->security_d2);
-#endif
+        gpu_free(mesh->est_r);
+        gpu_free(mesh->req_r2);
 #ifdef MOVING_MESH
         gpu_free(mesh->v_mesh);
 #endif
@@ -157,10 +148,8 @@ namespace voronoi {
         gpu_free(mesh->real_sorted_ids);
         gpu_free(mesh->sid_to_neighbor);
         gpu_free(mesh->gather_perm);
-        gpu_free(mesh->orig_to_k_save);
         gpu_free(mesh->scan_flags);
         gpu_free(mesh->scan_scratch);
-        gpu_free(mesh->scratch_uint);
         gpu_free(mesh->scratch_double);
         gpu_free(mesh->scratch_point);
         gpu_free(mesh->scratch_pts);
@@ -193,15 +182,13 @@ namespace voronoi {
 #endif
     }
 
-    // longer point list and maps, content kept
-    void mesh_grow_build_buffers(VMesh* mesh, int new_mpi_capacity) {
-        const double   ghost_frac     = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-        const uint64_t n_grow         = (uint64_t)proteus_mpi::max_n_local((int)mesh->n_hydro);
-        const uint64_t max_pgh        = (uint64_t)(2.0 * ghost_frac * n_grow) + 1;
-        const uint64_t new_max_ghosts = max_pgh + (uint64_t)new_mpi_capacity;
-        const uint64_t new_total      = n_grow + new_max_ghosts;
+    // room for this many ghosts behind the cells, at least double, content kept
+    void mesh_ensure_ghost_capacity(VMesh* mesh, uint64_t n_ghosts) {
+        if (n_ghosts <= mesh->ghost_capacity) return;
+        const uint64_t ext            = mesh->total_capacity - mesh->ghost_capacity;
+        const uint64_t new_max_ghosts = std::max(n_ghosts, 2 * mesh->ghost_capacity);
+        const uint64_t new_total      = ext + new_max_ghosts;
         const uint64_t old_total      = mesh->total_capacity;
-        if (new_total <= old_total) return;
 
         POINT_TYPE* new_pts = gpu_alloc<POINT_TYPE>(new_total);
         gpu_memcpy(new_pts, mesh->scratch_pts, (size_t)old_total * sizeof(POINT_TYPE));
@@ -218,13 +205,9 @@ namespace voronoi {
         gpu_free(mesh->sid_to_neighbor);
         mesh->sid_to_neighbor = new_s2n;
 
-        gpu_free(mesh->scan_flags);
-        gpu_free(mesh->scan_scratch);
-        mesh->scan_flags   = gpu_alloc<unsigned int>(new_total);
-        mesh->scan_scratch = gpu_alloc<unsigned int>(scan_scratch_size((size_t)new_total, _MESH_BLOCK_SIZE_));
-
         mesh->ghost_capacity = new_max_ghosts;
         mesh->total_capacity = new_total;
+        knn::knn_grow(mesh->knn, (int)new_total);
     }
 
 } // namespace voronoi

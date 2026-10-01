@@ -1,194 +1,179 @@
-// the exchanges themselves (included by halo.cu)
+// the used subset and the state exchanges with the partners of the build (included by halo.cu)
 
-#if !defined(CPU_DEBUG) && defined(USE_MPI)
-GLOBAL static void kernel_pack_seed(int                  total_send,
-                                    const POINT_TYPE*    pts,
-                                    const int*           export_indices,
-                                    const unsigned char* dir_of_slot,
-                                    const double*        neighbor_shift_flat,
-                                    POINT_TYPE*          sendbuf) {
-    int s = blockIdx.x * blockDim.x + threadIdx.x;
-    if (s >= total_send) return;
-    pack::pack_seed_body(s, pts, export_indices, dir_of_slot, neighbor_shift_flat, sendbuf);
+static unsigned char* s_used_bitmap     = nullptr; // per ghost slot, whether a local cell has it as a face neighbour
+static int            s_used_bitmap_cap = 0;
+
+static size_t index_of_partner(const std::vector<int>& list, int r) {
+    return std::lower_bound(list.begin(), list.end(), r) - list.begin();
 }
 
-#endif
+// marks the slots behind a face, then tells every owner which of its cells are used here
+void halo_build_used_subset(VMesh* mesh) {
+    halo.used_subset_ready = 1;
+    halo.n_used_send       = 0;
+    halo.n_used_recv       = 0;
+    halo.used_send_count.assign(halo.askers.size(), 0);
+    halo.used_recv_count.assign(halo.asked.size(), 0);
+    if (halo.asked.empty() && halo.askers.empty()) return;
 
-// sends the export seeds and writes the ones that come back into the point list
-void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base) {
-#ifndef USE_MPI
-    (void)mesh;
-    (void)pts;
-    (void)pts_mpi_base;
-    return;
-#else
-    if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
+    PROFILE("HALO_USED_BUILD");
+    const int n_hydro = (int)mesh->n_hydro;
+    const int n_mpi   = halo.n_mpi_ghosts;
 
-    PROFILE("HALO_SEED");
-    const int total_send = halo.send_offset[halo.n_neighbors];
-    const int n_mpi      = halo.n_mpi_ghosts;
-
-    {
-#ifndef CPU_DEBUG
-        const int tpb    = _MPI_PACK_BLOCK_SIZE_;
-        const int blocks = (total_send + tpb - 1) / tpb;
-        {
-            PROFILE_KERNEL("PACK");
-            kernel_pack_seed<<<blocks, tpb>>>(
-                total_send, pts, halo.export_indices, halo.dir_of_slot, halo.neighbor_shift_flat, halo.sendbuf_seed);
-        }
+    if (n_mpi > s_used_bitmap_cap) {
+        if (s_used_bitmap) gpu_free(s_used_bitmap);
+        s_used_bitmap_cap = std::max(n_mpi, 2 * s_used_bitmap_cap);
+        s_used_bitmap     = gpu_alloc<unsigned char>(s_used_bitmap_cap);
+    }
+    if (n_mpi > 0) {
+        gpu_memset(s_used_bitmap, 0, (size_t)n_mpi);
+        unsigned char* used = s_used_bitmap;
+        const int*     nc   = mesh->neighbor_cell;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("BITMAP_MARK", mesh->num_faces, [=] HD(int f) {
+            pack::mark_used_bitmap_body(f, nc, n_hydro, n_hydro + n_mpi, used);
+        });
         GPU_SYNC();
-#else
-        PROFILE("PACK");
-#ifdef USE_OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (int s = 0; s < total_send; s++) {
-            pack::pack_seed_body(s,
-                                 pts,
-                                 halo.export_indices,
-                                 halo.dir_of_slot,
-                                 (const double*)&halo.neighbor_shift[0][0],
-                                 halo.sendbuf_seed);
-        }
-#endif
     }
 
-    {
-        PROFILE_MPI("WAIT");
-        mpi_sync_before_send(halo.sendbuf_seed, sizeof(POINT_TYPE) * (size_t)total_send);
-        exchange_full_halo(halo.sendbuf_seed, halo.recvbuf_seed, halo.mpi_point_t, MSG_SEED);
-        mpi_sync_after_recv(halo.recvbuf_seed, sizeof(POINT_TYPE) * (size_t)n_mpi);
+    // per owner the used slots in slot order, and the cells behind them
+    std::vector<std::vector<int>> slots(halo.asked.size()), cells(halo.asked.size());
+    for (size_t g = 0; g < halo.g_owner.size(); g++) {
+        const int slot = halo.g_slot[g];
+        if (slot < 0 || !s_used_bitmap[slot]) continue;
+        const size_t i = index_of_partner(halo.asked, halo.g_owner[g]);
+        slots[i].push_back(slot);
+        cells[i].push_back(halo.g_k[g]);
+    }
+    Messages out;
+    for (size_t i = 0; i < halo.asked.size(); i++) {
+        std::vector<char>& msg = out.to(halo.asked[i]);
+        for (int k : cells[i])
+            append(msg, k);
+        for (int slot : slots[i])
+            halo.used_to_full_slot[halo.n_used_recv++] = slot;
+        halo.used_recv_count[i] = (int)slots[i].size();
     }
 
-    {
-        auto* recvbuf = halo.recvbuf_seed;
-        auto* seeds_g = mesh->seeds_g;
+    Messages in;
+    partner_exchange(out, halo.askers, &in);
 
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-            "UNPACK", n_mpi, [=] HD(int slot) { pack::unpack_seed_body(slot, pts_mpi_base, recvbuf, pts, seeds_g); });
+    int total = 0;
+    for (size_t m = 0; m < in.ranks.size(); m++)
+        total += (int)count_of<int>(in.data[m]);
+    ensure_send_capacity(total);
+    for (size_t m = 0; m < in.ranks.size(); m++) {
+        const size_t i  = index_of_partner(halo.askers, in.ranks[m]);
+        const size_t n  = count_of<int>(in.data[m]);
+        const int*   ks = items_of<int>(in.data[m]);
+        for (size_t j = 0; j < n; j++)
+            halo.used_export_indices[halo.n_used_send++] = ks[j];
+        halo.used_send_count[i] = (int)n;
     }
-#endif
 }
+
+#ifdef USE_MPI
+// the used cells to the askers, the used ghosts from the asked; both sides know the counts
+static void exchange_used(const void* sendbuf, void* recvbuf, size_t item_bytes, int tag) {
+    mpi_sync_before_send(sendbuf, item_bytes * (size_t)halo.n_used_send);
+    std::vector<MPI_Request> reqs;
+    const char*              s   = (const char*)sendbuf;
+    char*                    r   = (char*)recvbuf;
+    size_t                   off = 0;
+    for (size_t i = 0; i < halo.askers.size(); i++) {
+        const int n = halo.used_send_count[i];
+        if (n > 0) {
+            reqs.emplace_back();
+            MPI_Isend(
+                s + off * item_bytes, (int)(n * item_bytes), MPI_BYTE, halo.askers[i], tag, decomp.comm, &reqs.back());
+        }
+        off += (size_t)n;
+    }
+    off = 0;
+    for (size_t j = 0; j < halo.asked.size(); j++) {
+        const int n = halo.used_recv_count[j];
+        if (n > 0) {
+            reqs.emplace_back();
+            MPI_Irecv(
+                r + off * item_bytes, (int)(n * item_bytes), MPI_BYTE, halo.asked[j], tag, decomp.comm, &reqs.back());
+        }
+        off += (size_t)n;
+    }
+    if (!reqs.empty()) MPI_Waitall((int)reqs.size(), reqs.data(), MPI_STATUSES_IGNORE);
+    mpi_sync_after_recv(recvbuf, item_bytes * (size_t)halo.n_used_recv);
+}
+
+static bool have_partners() {
+    return halo.used_subset_ready && !(halo.asked.empty() && halo.askers.empty());
+}
+
+enum HaloTag { TAG_PRIM = 6001, TAG_GRAD, TAG_V_MESH, TAG_COM_OFF, TAG_VOL };
+#endif
 
 // state of the used ghosts
 void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar) {
+    (void)mesh;
 #ifndef USE_MPI
-    (void)mesh;
     (void)primvar;
-    return;
 #else
-    if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
-    // the mesh build tells us which ghosts matter; before that there is nothing to send
-    if (!halo.used_subset_ready) return;
-    (void)mesh;
-
+    if (!have_partners()) return;
     PROFILE("HALO_PRIM");
-    const int total_send = halo.n_used_send;
-    const int n_recv     = halo.n_used_recv;
-
-    {
-        auto* sendbuf_prim        = halo.sendbuf_prim;
-        auto* used_export_indices = halo.used_export_indices;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-            "PACK", total_send, [=] HD(int s) { pack::pack_prim_body(s, used_export_indices, primvar, sendbuf_prim); });
-    }
-
+    auto* sendbuf = halo.sendbuf_prim;
+    auto* exports = halo.used_export_indices;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "PACK", halo.n_used_send, [=] HD(int s) { pack::pack_prim_body(s, exports, primvar, sendbuf); });
     {
         PROFILE_MPI("WAIT");
-        mpi_sync_before_send(halo.sendbuf_prim, sizeof(HaloPrimCell) * (size_t)total_send);
-        exchange_used_subset(halo.sendbuf_prim, halo.recvbuf_prim, halo.mpi_prim_t, MSG_PRIM);
-        mpi_sync_after_recv(halo.recvbuf_prim, sizeof(HaloPrimCell) * (size_t)n_recv);
+        exchange_used(halo.sendbuf_prim, halo.recvbuf_prim, sizeof(HaloPrimCell), TAG_PRIM);
     }
-
-    {
-        auto* recvbuf_prim      = halo.recvbuf_prim;
-        auto* used_to_full_slot = halo.used_to_full_slot;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-            "UNPACK", n_recv, [=] HD(int s) { pack::unpack_prim_body(s, used_to_full_slot, recvbuf_prim, primvar); });
-    }
+    auto* recvbuf = halo.recvbuf_prim;
+    auto* slots   = halo.used_to_full_slot;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_prim_body(s, slots, recvbuf, primvar); });
 #endif
 }
 
 // their gradients, all components in one message
 void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
+    (void)mesh;
 #ifndef USE_MPI
-    (void)mesh;
     (void)grads;
-    return;
 #else
-    if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
-    if (!halo.used_subset_ready) return;
-    (void)mesh;
-
+    if (!have_partners()) return;
     PROFILE("HALO_GRAD");
-    const int total_send = halo.n_used_send;
-    const int n_recv     = halo.n_used_recv;
-
-    {
-        auto* sendbuf_grad        = halo.sendbuf_grad;
-        auto* used_export_indices = halo.used_export_indices;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", total_send, [=] HD(int slot) {
-            pack::pack_grad_body(slot, used_export_indices, grads, sendbuf_grad);
-        });
-    }
-
+    auto* sendbuf = halo.sendbuf_grad;
+    auto* exports = halo.used_export_indices;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "PACK", halo.n_used_send, [=] HD(int s) { pack::pack_grad_body(s, exports, grads, sendbuf); });
     {
         PROFILE_MPI("WAIT");
-        mpi_sync_before_send(halo.sendbuf_grad, sizeof(POINT_TYPE) * (size_t)total_send * HALO_GRAD_COMPONENTS);
-        exchange_used_subset(halo.sendbuf_grad, halo.recvbuf_grad, halo.mpi_grad_cell_t, MSG_GRAD);
-        mpi_sync_after_recv(halo.recvbuf_grad, sizeof(POINT_TYPE) * (size_t)n_recv * HALO_GRAD_COMPONENTS);
+        exchange_used(halo.sendbuf_grad, halo.recvbuf_grad, sizeof(POINT_TYPE) * HALO_GRAD_COMPONENTS, TAG_GRAD);
     }
-
-    {
-        auto* recvbuf_grad      = halo.recvbuf_grad;
-        auto* used_to_full_slot = halo.used_to_full_slot;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("UNPACK", n_recv, [=] HD(int slot) {
-            pack::unpack_grad_body(slot, used_to_full_slot, recvbuf_grad, grads);
-        });
-    }
+    auto* recvbuf = halo.recvbuf_grad;
+    auto* slots   = halo.used_to_full_slot;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_grad_body(s, slots, recvbuf, grads); });
 #endif
 }
 
 // and their mesh velocity
 void halo_exchange_v_mesh(VMesh* mesh) {
-#ifndef USE_MPI
+#if !defined(USE_MPI) || !defined(MOVING_MESH)
     (void)mesh;
-    return;
 #else
-#ifdef MOVING_MESH
-    if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
-    if (!halo.used_subset_ready) return;
-
+    if (!have_partners()) return;
     PROFILE("HALO_VMESH");
-    const int total_send = halo.n_used_send;
-    const int n_recv     = halo.n_used_recv;
-
-    {
-        auto* sendbuf_v_mesh      = halo.sendbuf_v_mesh;
-        auto* used_export_indices = halo.used_export_indices;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", total_send, [=] HD(int s) {
-            pack::pack_v_mesh_body(s, used_export_indices, mesh->v_mesh, sendbuf_v_mesh);
-        });
-    }
-
+    auto* sendbuf = halo.sendbuf_point;
+    auto* exports = halo.used_export_indices;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "PACK", halo.n_used_send, [=] HD(int s) { pack::pack_v_mesh_body(s, exports, mesh->v_mesh, sendbuf); });
     {
         PROFILE_MPI("WAIT");
-        mpi_sync_before_send(halo.sendbuf_v_mesh, sizeof(POINT_TYPE) * (size_t)total_send);
-        exchange_used_subset(halo.sendbuf_v_mesh, halo.recvbuf_v_mesh, halo.mpi_point_t, MSG_V_MESH);
-        mpi_sync_after_recv(halo.recvbuf_v_mesh, sizeof(POINT_TYPE) * (size_t)n_recv);
+        exchange_used(halo.sendbuf_point, halo.recvbuf_point, sizeof(POINT_TYPE), TAG_V_MESH);
     }
-
-    {
-        auto* recvbuf_v_mesh    = halo.recvbuf_v_mesh;
-        auto* used_to_full_slot = halo.used_to_full_slot;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("UNPACK", n_recv, [=] HD(int slot) {
-            pack::unpack_v_mesh_body(slot, used_to_full_slot, recvbuf_v_mesh, mesh->v_mesh_g);
-        });
-    }
-#else
-    (void)mesh;
-#endif
+    auto* recvbuf = halo.recvbuf_point;
+    auto* slots   = halo.used_to_full_slot;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_v_mesh_body(s, slots, recvbuf, mesh->v_mesh_g); });
 #endif
 }
 
@@ -196,188 +181,22 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 void halo_exchange_centroids(VMesh* mesh) {
 #ifndef USE_MPI
     (void)mesh;
-    return;
 #else
-    if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
-    if (!halo.used_subset_ready) return;
-
+    if (!have_partners()) return;
     PROFILE("HALO_COM");
-    const int total_send = halo.n_used_send;
-    const int n_recv     = halo.n_used_recv;
-
-    {
-        auto* sendbuf_com_off     = halo.sendbuf_com_off;
-        auto* used_export_indices = halo.used_export_indices;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", total_send, [=] HD(int s) {
-            pack::pack_com_off_body(s, used_export_indices, mesh->com, mesh->seeds, sendbuf_com_off);
-        });
-    }
-
+    auto* sendbuf = halo.sendbuf_point;
+    auto* exports = halo.used_export_indices;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", halo.n_used_send, [=] HD(int s) {
+        pack::pack_com_off_body(s, exports, mesh->com, mesh->seeds, sendbuf);
+    });
     {
         PROFILE_MPI("WAIT");
-        mpi_sync_before_send(halo.sendbuf_com_off, sizeof(POINT_TYPE) * (size_t)total_send);
-        exchange_used_subset(halo.sendbuf_com_off, halo.recvbuf_com_off, halo.mpi_point_t, MSG_COM_OFF);
-        mpi_sync_after_recv(halo.recvbuf_com_off, sizeof(POINT_TYPE) * (size_t)n_recv);
+        exchange_used(halo.sendbuf_point, halo.recvbuf_point, sizeof(POINT_TYPE), TAG_COM_OFF);
     }
-
-    {
-        auto* recvbuf_com_off   = halo.recvbuf_com_off;
-        auto* used_to_full_slot = halo.used_to_full_slot;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("UNPACK", n_recv, [=] HD(int slot) {
-            pack::unpack_com_off_body(slot, used_to_full_slot, recvbuf_com_off, mesh->com_off_g);
-        });
-    }
-#endif
-}
-
-// the smallest timestep of all ranks
-void halo_dt_allreduce(double* dt) {
-#ifdef USE_MPI
-    PROFILE_MPI("DT_ALLREDUCE");
-    double local = *dt;
-    MPI_Allreduce(&local, dt, 1, MPI_DOUBLE, MPI_MIN, decomp.cart_comm);
-#else
-    (void)dt;
-#endif
-}
-
-// exported cells whose seed the fallback moved, sorted by neighbour
-int halo_collect_moved_exports(const VMesh* mesh, const std::vector<int>& moved_ks, MovedExportLists* lists) {
-    for (int n = 0; n < HALO_MAX_NEIGHBORS; n++) {
-        lists->js[n].clear();
-        lists->pos[n].clear();
-    }
-    if (halo.n_neighbors == 0 || moved_ks.empty()) return 0;
-
-#ifdef USE_MPI
-    const std::unordered_set<int> moved(moved_ks.begin(), moved_ks.end());
-    std::unordered_set<int>       exported;
-
-    const int total_send = halo.send_offset[halo.n_neighbors];
-    for (int s = 0; s < total_send; s++) {
-        const int k = halo.export_indices[s];
-        if (!moved.count(k)) continue;
-        const int n = (int)halo.dir_of_slot[s];
-
-        POINT_TYPE p;
-        p.x = mesh->seeds[k].x + halo.neighbor_shift[n][0];
-        p.y = mesh->seeds[k].y + halo.neighbor_shift[n][1];
-#ifdef dim_3D
-        p.z = mesh->seeds[k].z + halo.neighbor_shift[n][2];
-#endif
-        lists->js[n].push_back(s - halo.send_offset[n]);
-        lists->pos[n].push_back(p);
-        exported.insert(k);
-    }
-    return (int)exported.size();
-#else
-    (void)mesh;
-    return 0;
-#endif
-}
-
-// tells every neighbour which of its ghosts moved, and where to
-void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedSeed>* received) {
-    received->clear();
-    if (halo.n_neighbors == 0) return;
-
-#ifdef USE_MPI
-    const int nn = halo.n_neighbors;
-
-    int sendcnt[HALO_MAX_NEIGHBORS] = {0};
-    int recvcnt[HALO_MAX_NEIGHBORS] = {0};
-    for (int n = 0; n < nn; n++)
-        sendcnt[n] = (int)lists.js[n].size();
-
-    if (halo.use_neighbor_coll) {
-        MPI_Neighbor_alltoall(sendcnt, 1, MPI_INT, recvcnt, 1, MPI_INT, halo.graph_comm);
-    } else {
-        MPI_Request reqs[2 * HALO_MAX_NEIGHBORS];
-        int         n_reqs = 0;
-        for (int n = 0; n < nn; n++) {
-            const int dx   = halo.neighbor_dirs[n][0];
-            const int dy   = halo.neighbor_dirs[n][1];
-            const int dz   = halo.neighbor_dirs[n][2];
-            const int peer = halo.neighbor_ranks[n];
-            MPI_Isend(
-                &sendcnt[n], 1, MPI_INT, peer, msg_tag(dx, dy, dz, MSG_MOVED_COUNT), decomp.cart_comm, &reqs[n_reqs++]);
-            MPI_Irecv(&recvcnt[n],
-                      1,
-                      MPI_INT,
-                      peer,
-                      msg_tag(-dx, -dy, -dz, MSG_MOVED_COUNT),
-                      decomp.cart_comm,
-                      &reqs[n_reqs++]);
-        }
-        MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
-    }
-
-    std::vector<int>        recv_js[HALO_MAX_NEIGHBORS];
-    std::vector<POINT_TYPE> recv_pos[HALO_MAX_NEIGHBORS];
-    {
-        PROFILE_MPI("WAIT");
-        MPI_Request reqs[4 * HALO_MAX_NEIGHBORS];
-        int         n_reqs = 0;
-        for (int n = 0; n < nn; n++) {
-            const int dx   = halo.neighbor_dirs[n][0];
-            const int dy   = halo.neighbor_dirs[n][1];
-            const int dz   = halo.neighbor_dirs[n][2];
-            const int peer = halo.neighbor_ranks[n];
-            if (sendcnt[n] > 0) {
-                MPI_Isend(lists.js[n].data(),
-                          sendcnt[n],
-                          MPI_INT,
-                          peer,
-                          msg_tag(dx, dy, dz, MSG_MOVED_SLOT),
-                          decomp.cart_comm,
-                          &reqs[n_reqs++]);
-                MPI_Isend(lists.pos[n].data(),
-                          sendcnt[n],
-                          halo.mpi_point_t,
-                          peer,
-                          msg_tag(dx, dy, dz, MSG_MOVED_POS),
-                          decomp.cart_comm,
-                          &reqs[n_reqs++]);
-            }
-            if (recvcnt[n] > 0) {
-                recv_js[n].resize(recvcnt[n]);
-                recv_pos[n].resize(recvcnt[n]);
-                MPI_Irecv(recv_js[n].data(),
-                          recvcnt[n],
-                          MPI_INT,
-                          peer,
-                          msg_tag(-dx, -dy, -dz, MSG_MOVED_SLOT),
-                          decomp.cart_comm,
-                          &reqs[n_reqs++]);
-                MPI_Irecv(recv_pos[n].data(),
-                          recvcnt[n],
-                          halo.mpi_point_t,
-                          peer,
-                          msg_tag(-dx, -dy, -dz, MSG_MOVED_POS),
-                          decomp.cart_comm,
-                          &reqs[n_reqs++]);
-            }
-        }
-        if (n_reqs > 0) MPI_Waitall(n_reqs, reqs, MPI_STATUSES_IGNORE);
-    }
-
-    for (int n = 0; n < nn; n++) {
-        for (int i = 0; i < recvcnt[n]; i++) {
-            const int j = recv_js[n][i];
-            if (j < 0 || j >= halo.recv_count[n]) {
-                exit_failure("HALO: moved-seed slot offset %d out of range [0, %d) for neighbour %d\n",
-                             j,
-                             halo.recv_count[n],
-                             n);
-            }
-            MovedSeed ms;
-            ms.pos        = recv_pos[n][i];
-            ms.ghost_slot = halo.ghost_offset[n] + j;
-            received->push_back(ms);
-        }
-    }
-#else
-    (void)lists;
+    auto* recvbuf = halo.recvbuf_point;
+    auto* slots   = halo.used_to_full_slot;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_com_off_body(s, slots, recvbuf, mesh->com_off_g); });
 #endif
 }
 
@@ -386,47 +205,103 @@ void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedS
 void halo_exchange_volumes(VMesh* mesh) {
 #ifndef USE_MPI
     (void)mesh;
-    return;
 #else
-    if (halo.n_neighbors == 0 || halo.n_mpi_ghosts == 0) return;
-    if (!halo.used_subset_ready) return;
-
+    if (!have_partners()) return;
     PROFILE("HALO_VOL");
-    const int total_send = halo.n_used_send;
-    const int n_recv     = halo.n_used_recv;
-
-    {
-        auto* sendbuf_vol         = halo.sendbuf_vol;
-        auto* used_export_indices = halo.used_export_indices;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", total_send, [=] HD(int s) {
-            pack::pack_vol_body(s, used_export_indices, mesh->volumes, sendbuf_vol);
-        });
-    }
-
+    auto* sendbuf = halo.sendbuf_double;
+    auto* exports = halo.used_export_indices;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "PACK", halo.n_used_send, [=] HD(int s) { pack::pack_vol_body(s, exports, mesh->volumes, sendbuf); });
     {
         PROFILE_MPI("WAIT");
-        mpi_sync_before_send(halo.sendbuf_vol, sizeof(double) * (size_t)total_send);
-        exchange_used_subset(halo.sendbuf_vol, halo.recvbuf_vol, MPI_DOUBLE, MSG_VOL);
-        mpi_sync_after_recv(halo.recvbuf_vol, sizeof(double) * (size_t)n_recv);
+        exchange_used(halo.sendbuf_double, halo.recvbuf_double, sizeof(double), TAG_VOL);
     }
-
-    {
-        auto* recvbuf_vol       = halo.recvbuf_vol;
-        auto* used_to_full_slot = halo.used_to_full_slot;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("UNPACK", n_recv, [=] HD(int slot) {
-            pack::unpack_vol_body(slot, used_to_full_slot, recvbuf_vol, mesh->volumes_g);
-        });
-    }
+    auto* recvbuf = halo.recvbuf_double;
+    auto* slots   = halo.used_to_full_slot;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_vol_body(s, slots, recvbuf, mesh->volumes_g); });
 #endif
 }
 #endif
+
+// cells another rank holds as a ghost, counted once per ghost
+int halo_count_moved_exports(const std::vector<int>& moved_ks) {
+    if (moved_ks.empty() || halo.askers.empty()) return 0;
+    const std::unordered_set<int> moved(moved_ks.begin(), moved_ks.end());
+    int                           n = 0;
+    for (const auto& sent : halo.sent) {
+        for (uint64_t key : sent)
+            if (moved.count((int)(key >> 5))) n++;
+    }
+    return n;
+}
+
+// every asker gets the new position of the cells it holds, every owner sends ours
+void halo_exchange_moved_seeds(const VMesh* mesh, const std::vector<int>& moved_ks, std::vector<MovedSeed>* received) {
+    received->clear();
+    const std::unordered_set<int> moved(moved_ks.begin(), moved_ks.end());
+
+    Messages out;
+    for (size_t i = 0; i < halo.askers.size(); i++) {
+        std::vector<char>& msg = out.to(halo.askers[i]);
+        for (uint64_t key : halo.sent[i]) {
+            const int k = (int)(key >> 5);
+            if (!moved.count(k)) continue;
+            GhostAnswer ans;
+            ans.k     = k;
+            ans.shift = (int)(key & 31u);
+            double s[3];
+            shift_of_code(ans.shift, s);
+            ans.p.x = mesh->seeds[k].x + s[0];
+            ans.p.y = mesh->seeds[k].y + s[1];
+#ifdef dim_3D
+            ans.p.z = mesh->seeds[k].z + s[2];
+#endif
+            append(msg, ans);
+        }
+    }
+
+    Messages in;
+    partner_exchange(out, halo.asked, &in);
+
+    for (size_t m = 0; m < in.ranks.size(); m++) {
+        const int          owner = in.ranks[m];
+        const size_t       n     = count_of<GhostAnswer>(in.data[m]);
+        const GhostAnswer* as    = items_of<GhostAnswer>(in.data[m]);
+        for (size_t i = 0; i < n; i++) {
+            const auto it = halo.g_index.find(ghost_key(owner, as[i].k, as[i].shift));
+            if (it == halo.g_index.end() || halo.g_slot[it->second] < 0) {
+                exit_failure("HALO: rank %d moved cell %d, which rank %d does not hold as a ghost\n",
+                             owner,
+                             as[i].k,
+                             decomp.rank);
+            }
+            halo.g_pos[it->second] = as[i].p;
+            MovedSeed ms;
+            ms.pos        = as[i].p;
+            ms.ghost_slot = halo.g_slot[it->second];
+            received->push_back(ms);
+        }
+    }
+}
+
+// the smallest timestep of all ranks
+void halo_dt_allreduce(double* dt) {
+#ifdef USE_MPI
+    PROFILE_MPI("DT_ALLREDUCE");
+    double local = *dt;
+    MPI_Allreduce(&local, dt, 1, MPI_DOUBLE, MPI_MIN, decomp.comm);
+#else
+    (void)dt;
+#endif
+}
 
 // one number summed over all ranks
 void halo_sum_allreduce(double* v) {
 #ifdef USE_MPI
     PROFILE_MPI("SUM_ALLREDUCE");
     double local = *v;
-    MPI_Allreduce(&local, v, 1, MPI_DOUBLE, MPI_SUM, decomp.cart_comm);
+    MPI_Allreduce(&local, v, 1, MPI_DOUBLE, MPI_SUM, decomp.comm);
 #else
     (void)v;
 #endif

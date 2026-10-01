@@ -16,17 +16,11 @@ namespace knn {
     static void free_point_arrays(knn_problem* knn);
     static void sort_points(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
 
-    // allocates everything for the whole run
-    knn_problem* init_once(int n_hydro) {
-
-        // room for the local cells after growth, their periodic ghosts and the MPI ghosts
-        double ghost_frac  = pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-        int    n_grow      = proteus_mpi::max_n_local(n_hydro);
-        int    max_n_total = (int)(n_grow + 2.0 * ghost_frac * n_grow) + 1 + proteus_mpi::n_mpi_capacity;
-
+    // allocates everything for this many points; knn_grow makes room for more
+    knn_problem* init_once(int capacity) {
         knn_problem* knn = gpu_alloc<knn_problem>(1);
         std::memset(knn, 0, sizeof(knn_problem));
-        allocate_point_arrays(knn, max_n_total);
+        allocate_point_arrays(knn, capacity);
         return knn;
     }
 

@@ -29,7 +29,7 @@ namespace begrun {
     static void init_hydro_and_mesh();
     static void free_initial_conditions();
 #ifdef USE_MPI
-    static void restore_decomp_splits();
+    static void restore_decomp_cuts();
 #endif
 
     // sets up everything the main loop needs
@@ -89,13 +89,11 @@ namespace begrun {
         const std::string profile_path = input.get_parameter("output_directory") + "/profile.hdf5";
         Profiler::open_profile_log(profile_path, ic_data.header.restart_flag ? sim.step : -1);
 
-        // ghost band width: 4 mean cell spacings
-        buff = (1. / pow((double)ic_data.header.n_global, 1. / ((double)DIMENSION))) * 4;
-        proteus_mpi::decomp_init(ic_data.header.n_global, buff);
+        proteus_mpi::decomp_init();
 
 #ifdef USE_MPI
-        // bricks of the snapshot, before any cell is placed
-        if (ic_data.header.restart_flag) { restore_decomp_splits(); }
+        // cuts of the snapshot, before any cell is placed
+        if (ic_data.header.restart_flag) { restore_decomp_cuts(); }
 #endif
 
         // a restart already got its cells out of the snapshot
@@ -204,23 +202,16 @@ namespace begrun {
     }
 
 #ifdef USE_MPI
-    // puts back the split tables the snapshot ran with
-    static void restore_decomp_splits() {
-        const auto& dc = proteus_mpi::decomp;
-        for (int a = 0; a < 3; a++) {
-            const size_t want = (size_t)dc.dims[a] + 1;
-            // the tables only fit if this run has the same brick layout
-            if (ic_data.header.decomp_splits[a].size() != want) {
-                proteus_mpi::exit_failure("RESTART: Error! snapshot split table for axis %d has %zu entries, "
-                                          "this run's decomposition needs %zu.\n",
-                                          a,
-                                          ic_data.header.decomp_splits[a].size(),
-                                          want);
-            }
+    // puts back the cuts the snapshot ran with
+    static void restore_decomp_cuts() {
+        const std::vector<int64_t>& c    = ic_data.header.decomp_cuts;
+        const size_t                want = (size_t)proteus_mpi::decomp.nranks + 1;
+        if (c.size() != want) {
+            proteus_mpi::exit_failure(
+                "RESTART: Error! snapshot cut table has %zu entries, this run needs %zu.\n", c.size(), want);
         }
-        proteus_mpi::decomp_apply_splits(ic_data.header.decomp_splits[0].data(),
-                                         ic_data.header.decomp_splits[1].data(),
-                                         ic_data.header.decomp_splits[2].data());
+        const std::vector<uint64_t> cuts(c.begin(), c.end());
+        proteus_mpi::decomp_set_cuts(cuts.data());
     }
 #endif
 
@@ -301,8 +292,8 @@ namespace begrun {
             proteus_mpi::exit_failure("BEGRUN: parallel IC read failed for %s\n", ic_data.header.ic_filename.c_str());
         }
 
-        // send every cell to the rank whose brick holds it
-        proteus_mpi::distribute_ic_parallel(ic_data, buff);
+        // cut the curve evenly and send every cell to its owner
+        proteus_mpi::distribute_ic_parallel(ic_data);
 #else
         if (!input.read_ic_file(ic_data.header.ic_filename, ic_data)) {
             proteus_mpi::exit_failure("BEGRUN: IC read failed for %s\n", ic_data.header.ic_filename.c_str());
@@ -322,7 +313,7 @@ namespace begrun {
                                       proteus_mpi::alloc_growth);
         }
 
-        proteus_mpi::halo_init((int)sim.n_hydro, buff);
+        proteus_mpi::halo_init((int)sim.n_hydro);
         proteus_mpi::migrate_init((int)sim.n_hydro);
     }
 

@@ -29,8 +29,7 @@ Each case runs in every launch configuration, on the CPU and on the GPU:
   serial       built without USE_MPI
   mpi2         mpirun -np 2
   mpi4         mpirun -np 4
-  mpi9         mpirun -np 9, 2D cases only, CPU only: the first rank count where the halo
-               takes the neighbour collective path
+  mpi9         mpirun -np 9, 2D cases only, CPU only: small domains with ghosts from many ranks
 
 Options:
   --only NAME      run just one case (the directory name)

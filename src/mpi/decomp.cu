@@ -15,80 +15,99 @@ namespace proteus_mpi {
 
     MpiDecomp decomp = {};
 
-    static int  compute_global_N_grid(int64_t n_total, double buff);
-    static void even_split(int N, int P, int i, int* lo, int* hi);
-    static void create_cart_topology();
-    static void allocate_split_tables();
-    static void allocate_coord_to_rank();
-    static void fill_coord_to_rank();
-    static void init_splits_even(int N);
-    static void apply_splits_for_this_rank();
-    static void check_bricks_nonempty(int N);
+#ifdef USE_MPI
+    static void print_cuts(const char* what);
+#endif
 
-    // bucket grid, Cartesian rank grid, and an even brick per rank
-    void decomp_init(int64_t n_total, double buff) {
-        decomp.rank          = rank();
-        decomp.nranks        = nranks();
-        decomp.N_grid_global = compute_global_N_grid(n_total, buff);
-
-        create_cart_topology();
-        allocate_split_tables();
-        allocate_coord_to_rank();
-        init_splits_even(decomp.N_grid_global);
-        apply_splits_for_this_rank();
-        fill_coord_to_rank();
-        check_bricks_nonempty(decomp.N_grid_global);
-
-        if (decomp.rank == 0) {
-            printf("DECOMP: dims=[%d,%d,%d] N_grid_global=%d\n",
-                   decomp.dims[0],
-                   decomp.dims[1],
-                   decomp.dims[2],
-                   decomp.N_grid_global);
+    // the communicator of the run and an even split of the keys
+    void decomp_init() {
+        decomp.rank   = rank();
+        decomp.nranks = nranks();
+#ifdef USE_MPI
+        MPI_Comm_dup(MPI_COMM_WORLD, &decomp.comm);
+#endif
+        decomp.cuts = gpu_alloc<uint64_t>((size_t)decomp.nranks + 1);
+        for (int r = 0; r < decomp.nranks; r++) {
+            int64_t lo, hi;
+            decomp_even_split((int64_t)knn::DOMAIN_KEY_END, decomp.nranks, r, &lo, &hi);
+            decomp.cuts[r] = (uint64_t)lo;
         }
-        printf("DECOMP: rank %d/%d coords=[%d,%d,%d] brick=[%d,%d) x [%d,%d) x [%d,%d)\n",
-               decomp.rank,
-               decomp.nranks,
-               decomp.coords[0],
-               decomp.coords[1],
-               decomp.coords[2],
-               decomp.b0[0],
-               decomp.b1[0],
-               decomp.b0[1],
-               decomp.b1[1],
-               decomp.b0[2],
-               decomp.b1[2]);
-        fflush(stdout);
+        decomp.cuts[decomp.nranks] = knn::DOMAIN_KEY_END;
     }
 
-    // new split tables for every rank; all ranks pass the same ones
-    void decomp_apply_splits(const int* sx, const int* sy, const int* sz) {
-        const int dx = decomp.dims[0];
-        const int dy = decomp.dims[1];
-        const int dz = decomp.dims[2];
-        for (int i = 0; i <= dx; i++)
-            decomp.splits[0][i] = sx[i];
-        for (int i = 0; i <= dy; i++)
-            decomp.splits[1][i] = sy[i];
-        for (int i = 0; i <= dz; i++)
-            decomp.splits[2][i] = sz[i];
-        apply_splits_for_this_rank();
-        fill_coord_to_rank();
-        check_bricks_nonempty(decomp.N_grid_global);
+    // a new table for every rank; all ranks pass the same one
+    void decomp_set_cuts(const uint64_t* cuts) {
+        for (int r = 0; r <= decomp.nranks; r++)
+            decomp.cuts[r] = cuts[r];
+        if (decomp.cuts[0] != 0 || decomp.cuts[decomp.nranks] != knn::DOMAIN_KEY_END) {
+            exit_failure("DECOMP: cut table does not cover the box (%llu .. %llu)\n",
+                         (unsigned long long)decomp.cuts[0],
+                         (unsigned long long)decomp.cuts[decomp.nranks]);
+        }
+        for (int r = 0; r < decomp.nranks; r++) {
+            if (decomp.cuts[r] > decomp.cuts[r + 1]) exit_failure("DECOMP: cut table not sorted at %d\n", r);
+        }
     }
 
-    int decomp_owner_of_bucket(int bx, int by, int bz) {
-        return decomp_owner_of_bucket_dev(bx,
-                                          by,
-                                          bz,
-                                          decomp.N_grid_global,
-                                          decomp.dims[0],
-                                          decomp.dims[1],
-                                          decomp.dims[2],
-                                          decomp.splits[0],
-                                          decomp.splits[1],
-                                          decomp.splits[2],
-                                          decomp.coord_to_rank);
+    // for every inner cut the smallest key with the wanted number of keys of all ranks below it
+    void decomp_balanced_cuts(std::vector<uint64_t>& local_keys, std::vector<uint64_t>* cuts_out) {
+        const int P = decomp.nranks;
+        std::sort(local_keys.begin(), local_keys.end());
+
+        long long n_total = (long long)local_keys.size();
+#ifdef USE_MPI
+        {
+            PROFILE_MPI("CUTS_ALLREDUCE");
+            const long long n_local = n_total;
+            MPI_Allreduce(&n_local, &n_total, 1, MPI_LONG_LONG, MPI_SUM, decomp.comm);
+        }
+#endif
+        cuts_out->assign((size_t)P + 1, 0);
+        (*cuts_out)[P] = knn::DOMAIN_KEY_END;
+        if (P == 1) return;
+
+        // cut r has floor-even shares below it; lo stays below the target, hi reaches it
+        std::vector<long long> target(P);
+        std::vector<uint64_t>  lo(P, 0), hi(P, knn::DOMAIN_KEY_END);
+        for (int r = 1; r < P; r++) {
+            int64_t a, b;
+            decomp_even_split(n_total, P, r, &a, &b);
+            target[r] = a;
+        }
+
+        std::vector<long long> local_count(P), global_count(P);
+        while (true) {
+            bool open = false;
+            for (int r = 1; r < P; r++) {
+                if (target[r] > 0 && hi[r] - lo[r] > 1) open = true;
+            }
+            if (!open) break;
+
+            // all cuts move in one step, one Allreduce each step
+            for (int r = 1; r < P; r++) {
+                const uint64_t mid = lo[r] + (hi[r] - lo[r]) / 2;
+                local_count[r] =
+                    (long long)(std::lower_bound(local_keys.begin(), local_keys.end(), mid) - local_keys.begin());
+            }
+            global_count = local_count;
+#ifdef USE_MPI
+            {
+                PROFILE_MPI("CUTS_ALLREDUCE");
+                MPI_Allreduce(
+                    local_count.data() + 1, global_count.data() + 1, P - 1, MPI_LONG_LONG, MPI_SUM, decomp.comm);
+            }
+#endif
+            for (int r = 1; r < P; r++) {
+                if (target[r] <= 0 || hi[r] - lo[r] <= 1) continue;
+                const uint64_t mid = lo[r] + (hi[r] - lo[r]) / 2;
+                if (global_count[r] >= target[r])
+                    hi[r] = mid;
+                else
+                    lo[r] = mid;
+            }
+        }
+        for (int r = 1; r < P; r++)
+            (*cuts_out)[r] = (target[r] > 0) ? hi[r] : 0;
     }
 
     void decomp_even_split(int64_t N, int P, int i, int64_t* lo, int64_t* hi) {
@@ -108,43 +127,42 @@ namespace proteus_mpi {
         double energy;
     };
 
-    // every rank read its own rows of the IC file, this sends each cell to its owner
-    void distribute_ic_parallel(ICData& ic, double buff) {
+    static POINT_TYPE ic_point(const ICData& ic, int k) {
+        POINT_TYPE p;
+        p.x = ic.pos[DIMENSION * k + 0];
+        p.y = ic.pos[DIMENSION * k + 1];
+#ifdef dim_3D
+        p.z = ic.pos[DIMENSION * k + 2];
+#endif
+        return p;
+    }
+
+    // every rank read its own rows of the IC file; cut the curve evenly, then send each cell to its owner
+    void distribute_ic_parallel(ICData& ic) {
         const int n_local_in = (int)ic.header.n_seeds;
         const int my_rank    = decomp.rank;
         const int nr         = decomp.nranks;
-        const int N_grid     = decomp.N_grid_global;
 
         if (nr <= 1) {
             if (my_rank == 0) printf("DECOMP: single-rank, n_local=%d (no routing)\n", n_local_in);
             return;
         }
 
+        // the same number of cells on every rank
+        {
+            std::vector<uint64_t> keys((size_t)n_local_in);
+            for (int k = 0; k < n_local_in; k++)
+                keys[k] = knn::hilbert_key(ic_point(ic, k));
+            std::vector<uint64_t> cuts;
+            decomp_balanced_cuts(keys, &cuts);
+            decomp_set_cuts(cuts.data());
+        }
+
         // owner of every cell we read, and how many go to each rank
         std::vector<int> send_counts(nr, 0);
         std::vector<int> per_cell_dest(n_local_in, -1);
         for (int k = 0; k < n_local_in; k++) {
-            const double px = ic.pos[DIMENSION * k + 0];
-            const double py = ic.pos[DIMENSION * k + 1];
-#ifdef dim_3D
-            const double pz = ic.pos[DIMENSION * k + 2];
-#else
-            const double pz = 0.0;
-#endif
-            int bx, by, bz;
-            decomp_bucket_of_point(px, py, pz, N_grid, buff, &bx, &by, &bz);
-            const int owner = decomp_owner_of_bucket(bx, by, bz);
-            if (owner < 0) {
-                exit_failure("[rank %d] DECOMP: invalid owner for IC cell %d at (%g,%g,%g) → bucket (%d,%d,%d).\n",
-                             my_rank,
-                             k,
-                             px,
-                             py,
-                             pz,
-                             bx,
-                             by,
-                             bz);
-            }
+            const int owner  = owner_of_point(ic_point(ic, k), decomp.cuts, nr);
             per_cell_dest[k] = owner;
             send_counts[owner]++;
         }
@@ -153,7 +171,7 @@ namespace proteus_mpi {
         std::vector<int> recv_counts(nr, 0);
         {
             PROFILE_MPI("ICDIST_COUNTS_WAIT");
-            MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, decomp.cart_comm);
+            MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, decomp.comm);
         }
 
         std::vector<int> send_displs(nr, 0);
@@ -196,7 +214,7 @@ namespace proteus_mpi {
                           recv_counts.data(),
                           recv_displs.data(),
                           ic_migrant_t,
-                          decomp.cart_comm);
+                          decomp.comm);
         }
         MPI_Type_free(&ic_migrant_t);
 
@@ -225,20 +243,17 @@ namespace proteus_mpi {
                n_local_out - send_counts[my_rank],
                total_send - send_counts[my_rank]);
         fflush(stdout);
+        print_cuts("IC");
 
         // no cell may be lost on the way
         const long long n_local_out_ll = (long long)n_local_out;
         const long long n_local_in_ll  = (long long)n_local_in;
         long long       n_global_kept  = 0;
+        long long       n_total_in_ll  = 0;
         {
             PROFILE_MPI("ICDIST_CONS_ALLREDUCE");
-            MPI_Allreduce(&n_local_out_ll, &n_global_kept, 1, MPI_LONG_LONG, MPI_SUM, decomp.cart_comm);
-        }
-
-        long long n_total_in_ll = 0;
-        {
-            PROFILE_MPI("ICDIST_CONS_ALLREDUCE");
-            MPI_Allreduce(&n_local_in_ll, &n_total_in_ll, 1, MPI_LONG_LONG, MPI_SUM, decomp.cart_comm);
+            MPI_Allreduce(&n_local_out_ll, &n_global_kept, 1, MPI_LONG_LONG, MPI_SUM, decomp.comm);
+            MPI_Allreduce(&n_local_in_ll, &n_total_in_ll, 1, MPI_LONG_LONG, MPI_SUM, decomp.comm);
         }
         if (n_global_kept != n_total_in_ll) {
             exit_failure("DECOMP: FATAL parallel-IC cell-count mismatch — received-sum=%lld, sent-sum=%lld.\n",
@@ -253,138 +268,22 @@ namespace proteus_mpi {
 
 #else
 
-    void distribute_ic_parallel(ICData& ic, double buff) {
+    void distribute_ic_parallel(ICData& ic) {
         (void)ic;
-        (void)buff;
     }
 
 #endif
 
-    // buckets per axis, at about 3 cells per bucket
-    static int compute_global_N_grid(int64_t n_total, double buff) {
-        double ghost_frac  = std::pow(1.0 + 2.0 * buff, (double)DIMENSION) - 1.0;
-        double max_n_total = (double)n_total + 2.0 * ghost_frac * (double)n_total + 1.0;
-        int    N           = (int)std::round(std::pow(max_n_total / 3.1, 1.0 / (double)DIMENSION));
-        if (N < 1) N = 1;
-        return N;
-    }
-
-    static void even_split(int N, int P, int i, int* lo, int* hi) {
-        int base = N / P;
-        int rem  = N % P;
-        *lo      = i * base + std::min(i, rem);
-        *hi      = *lo + base + (i < rem ? 1 : 0);
-    }
-
-    // rank grid from MPI, periodic on every axis
-    static void create_cart_topology() {
 #ifdef USE_MPI
-        int dims[3] = {0, 0, 0};
-#ifdef dim_2D
-        dims[2]    = 1;
-        int active = 2;
-#else
-        int active = 3;
+    // where the curve is cut, as a share of it
+    static void print_cuts(const char* what) {
+        if (decomp.rank != 0) return;
+        printf("DECOMP: %s cuts along the Hilbert curve:", what);
+        for (int r = 0; r <= decomp.nranks && r <= 16; r++)
+            printf(" %.4f", (double)decomp.cuts[r] / (double)knn::DOMAIN_KEY_END);
+        printf("%s\n", decomp.nranks > 16 ? " ..." : "");
+        fflush(stdout);
+    }
 #endif
-        MPI_Dims_create(decomp.nranks, active, dims);
-        if (active == 2) dims[2] = 1;
-
-        int periods[3] = {1, 1, 1};
-        MPI_Cart_create(MPI_COMM_WORLD, 3, dims, periods, 0, &decomp.cart_comm);
-
-        int coords[3] = {0, 0, 0};
-        MPI_Cart_coords(decomp.cart_comm, decomp.rank, 3, coords);
-
-        for (int a = 0; a < 3; a++) {
-            decomp.dims[a]   = dims[a];
-            decomp.coords[a] = coords[a];
-        }
-#else
-        for (int a = 0; a < 3; a++) {
-            decomp.dims[a]   = 1;
-            decomp.coords[a] = 0;
-        }
-#endif
-    }
-
-    static void allocate_split_tables() {
-        for (int a = 0; a < 3; a++) {
-            const int n      = decomp.dims[a] + 1;
-            decomp.splits[a] = gpu_alloc<int>((size_t)n);
-            for (int i = 0; i < n; i++)
-                decomp.splits[a][i] = 0;
-        }
-    }
-
-    static void allocate_coord_to_rank() {
-        const size_t n       = (size_t)decomp.dims[0] * (size_t)decomp.dims[1] * (size_t)decomp.dims[2];
-        decomp.coord_to_rank = gpu_alloc<int>(n);
-        for (size_t i = 0; i < n; i++)
-            decomp.coord_to_rank[i] = 0;
-    }
-
-    // coords -> rank, so a device kernel can look the owner up
-    static void fill_coord_to_rank() {
-        const int dx = decomp.dims[0];
-        const int dy = decomp.dims[1];
-        const int dz = decomp.dims[2];
-        for (int cx = 0; cx < dx; cx++) {
-            for (int cy = 0; cy < dy; cy++) {
-                for (int cz = 0; cz < dz; cz++) {
-                    const int idx = (cx * dy + cy) * dz + cz;
-#ifdef USE_MPI
-                    int coords[3] = {cx, cy, cz};
-                    int owner     = 0;
-                    MPI_Cart_rank(decomp.cart_comm, coords, &owner);
-                    decomp.coord_to_rank[idx] = owner;
-#else
-                    decomp.coord_to_rank[idx] = 0;
-#endif
-                }
-            }
-        }
-    }
-
-    // same number of buckets for every rank
-    static void init_splits_even(int N) {
-        for (int a = 0; a < 3; a++) {
-            const int P         = decomp.dims[a];
-            decomp.splits[a][0] = 0;
-            for (int c = 0; c < P; c++) {
-                int lo, hi;
-                even_split(N, P, c, &lo, &hi);
-                decomp.splits[a][c + 1] = hi;
-            }
-        }
-#ifndef dim_3D
-        decomp.splits[2][0] = 0;
-        decomp.splits[2][1] = 1;
-#endif
-    }
-
-    // the brick this rank owns
-    static void apply_splits_for_this_rank() {
-        for (int a = 0; a < 3; a++) {
-            const int c  = decomp.coords[a];
-            decomp.b0[a] = decomp.splits[a][c];
-            decomp.b1[a] = decomp.splits[a][c + 1];
-        }
-    }
-
-    // with too many ranks a brick can end up without a single bucket
-    static void check_bricks_nonempty(int N) {
-        for (int a = 0; a < 3; a++) {
-            if (decomp.b1[a] <= decomp.b0[a]) {
-                exit_failure("[rank %d] DECOMP: axis %d brick is empty (b0=%d b1=%d, N_grid=%d, dims=%d). "
-                             "Reduce nranks or use a larger IC.\n",
-                             decomp.rank,
-                             a,
-                             decomp.b0[a],
-                             decomp.b1[a],
-                             N,
-                             decomp.dims[a]);
-            }
-        }
-    }
 
 } // namespace proteus_mpi

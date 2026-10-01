@@ -84,14 +84,11 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
 
 #ifdef USE_MPI
     {
-        // split tables of this run, a restart has to start from the same bricks
-        const auto& dc = proteus_mpi::decomp;
-        h5::Group   decomp_group(H5Gcreate(file, "decomp", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
-        if (!h5::write_dataset_1d(decomp_group, "splits_x", dc.splits[0], (hsize_t)(dc.dims[0] + 1)) ||
-            !h5::write_dataset_1d(decomp_group, "splits_y", dc.splits[1], (hsize_t)(dc.dims[1] + 1)) ||
-            !h5::write_dataset_1d(decomp_group, "splits_z", dc.splits[2], (hsize_t)(dc.dims[2] + 1))) {
-            return false;
-        }
+        // where this run cut the curve, a restart has to start from the same cuts
+        const auto&          dc = proteus_mpi::decomp;
+        std::vector<int64_t> cuts(dc.cuts, dc.cuts + dc.nranks + 1);
+        h5::Group            decomp_group(H5Gcreate(file, "decomp", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
+        if (!h5::write_dataset_1d(decomp_group, "hilbert_cuts", cuts.data(), (hsize_t)cuts.size())) { return false; }
     }
 #endif
 

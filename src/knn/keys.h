@@ -59,6 +59,63 @@ namespace knn {
 #endif
     }
 
+    // the unit box is the middle half of the key grid; its own grid has one bit less per axis
+    constexpr int      DOMAIN_BITS     = KEY_BITS - 1;
+    constexpr int      DOMAIN_KEY_BITS = DIMENSION * DOMAIN_BITS;
+    constexpr uint64_t DOMAIN_KEY_END  = 1ull << DOMAIN_KEY_BITS; // one past the last Hilbert key
+
+    // coordinate of x on the grid of the unit box, clamped to it
+    HD inline unsigned int domain_coord(double x) {
+        const unsigned int c  = key_coord(x);
+        const unsigned int lo = (unsigned int)KEY_OFFSET;
+        const unsigned int n  = 1u << DOMAIN_BITS;
+        if (c < lo) return 0;
+        return (c - lo >= n) ? n - 1 : c - lo;
+    }
+
+    // Hilbert index of grid cell X with bits per axis (Skilling 2004); X is overwritten.
+    // The first DIMENSION * L bits of it are the index of the cube of side 2^-L that holds the cell.
+    HD inline uint64_t hilbert_index(unsigned int* X, int bits) {
+        for (unsigned int Q = (bits > 0) ? (1u << (bits - 1)) : 0u; Q > 1; Q >>= 1) {
+            const unsigned int P = Q - 1;
+            for (int i = 0; i < DIMENSION; i++) {
+                if (X[i] & Q) {
+                    X[0] ^= P;
+                } else {
+                    const unsigned int t = (X[0] ^ X[i]) & P;
+                    X[0] ^= t;
+                    X[i] ^= t;
+                }
+            }
+        }
+        for (int i = 1; i < DIMENSION; i++)
+            X[i] ^= X[i - 1];
+        unsigned int t = 0;
+        for (unsigned int Q = (bits > 0) ? (1u << (bits - 1)) : 0u; Q > 1; Q >>= 1) {
+            if (X[DIMENSION - 1] & Q) t ^= Q - 1;
+        }
+        for (int i = 0; i < DIMENSION; i++)
+            X[i] ^= t;
+
+        uint64_t h = 0;
+        for (int b = bits - 1; b >= 0; b--) {
+            for (int i = 0; i < DIMENSION; i++)
+                h = (h << 1) | ((X[i] >> b) & 1u);
+        }
+        return h;
+    }
+
+    // Hilbert key of a point of the unit box, the domain decomposition orders cells by it
+    HD inline uint64_t hilbert_key(const POINT_TYPE& p) {
+        unsigned int X[DIMENSION];
+        X[0] = domain_coord(p.x);
+        X[1] = domain_coord(p.y);
+#ifdef dim_3D
+        X[2] = domain_coord(p.z);
+#endif
+        return hilbert_index(X, DOMAIN_BITS);
+    }
+
 } // namespace knn
 
 #endif

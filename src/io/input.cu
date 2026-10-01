@@ -414,17 +414,15 @@ bool InputHandler::read_snapshot_file(const std::string& filename, ICData& ic_da
 #endif
 
 #ifdef USE_MPI
-        // load prev decomp; otherwise decomp_init starts with even split (needed for bitwise reproducible restart)
-        if (H5Lexists(file, "decomp", H5P_DEFAULT) <= 0) {
+        // the cuts the run had; others would move cells and change the bits
+        const bool has_group = H5Lexists(file, "decomp", H5P_DEFAULT) > 0;
+        h5::Group  decomp_group(has_group ? H5Gopen(file, "decomp", H5P_DEFAULT) : H5I_INVALID_HID);
+        if (!has_group || H5Lexists(decomp_group, "hilbert_cuts", H5P_DEFAULT) <= 0) {
             std::cerr << "INPUT: Error! Snapshot " << filename
-                      << " has no /decomp group, so the split tables it ran with are unknown." << std::endl;
+                      << " has no /decomp/hilbert_cuts, so it predates the Hilbert decomposition." << std::endl;
             return false;
         }
-        h5::Group   decomp_group(H5Gopen(file, "decomp", H5P_DEFAULT));
-        const char* axis_name[3] = {"splits_x", "splits_y", "splits_z"};
-        for (int a = 0; a < 3; a++) {
-            if (!h5::read_dataset_1d(decomp_group, axis_name[a], ic_data.header.decomp_splits[a])) { return false; }
-        }
+        if (!h5::read_dataset_1d(decomp_group, "hilbert_cuts", ic_data.header.decomp_cuts)) { return false; }
 #endif
     }
 

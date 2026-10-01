@@ -39,8 +39,8 @@ namespace knn {
 
     constexpr int TREE_STACK = 96; // a path has at most 63 + 31 internal nodes, one per common prefix length
 
-    // allocates the arrays once per run
-    knn_problem* init_once(int n_hydro);
+    // allocates the arrays once per run, for this many points
+    knn_problem* init_once(int capacity);
 
     // sorts the points and builds the tree, once per mesh build
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);

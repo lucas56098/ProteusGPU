@@ -16,7 +16,7 @@ namespace voronoi {
         security_radius_not_reached = 3, // neighbour list ran out before the cell was final
         success                     = 4,
         needs_exact_predicates      = 5, // a determinant was too small to decide
-        security_radius_beyond_data = 6  // cell may reach past this rank's data, a wider halo can fix it
+        security_radius_beyond_data = 6  // the cell may reach points this rank has not asked for yet
     };
 
 } // namespace voronoi

@@ -4,67 +4,11 @@
 
 // Bodies of the migration loops, the same code on CPU and GPU.
 
-#include "decomp.h"
 #include "global/gpu_compat.h"
 #include "global/structs.h"
 
 namespace proteus_mpi {
     namespace pack {
-
-        template <typename M_PerCellSlot, typename M_SendCounts>
-        // slot a cell has to go to, or -1 when it stays here
-        HD inline void assign_destination_body(int               k,
-                                               const POINT_TYPE* pts,
-                                               int               my_rank,
-                                               int               N_grid_global,
-                                               double            buff,
-                                               int               dims_x,
-                                               int               dims_y,
-                                               int               dims_z,
-                                               const int*        splits_x,
-                                               const int*        splits_y,
-                                               const int*        splits_z,
-                                               const int*        coord_to_rank,
-                                               const int*        neighbor_rank_to_slot,
-                                               int               variant,
-                                               M_PerCellSlot*    per_cell_slot,
-                                               M_SendCounts*     send_counts,
-                                               int*              error_flag) {
-            const double px = pts[k].x;
-            const double py = pts[k].y;
-#ifdef dim_3D
-            const double pz = pts[k].z;
-#else
-            const double pz = 0.0;
-#endif
-            int bx, by, bz;
-            decomp_bucket_of_point(px, py, pz, N_grid_global, buff, &bx, &by, &bz);
-            const int owner = decomp_owner_of_bucket_dev(
-                bx, by, bz, N_grid_global, dims_x, dims_y, dims_z, splits_x, splits_y, splits_z, coord_to_rank);
-            if (owner == my_rank) {
-                per_cell_slot[k] = -1;
-                return;
-            }
-            if (owner < 0) {
-                per_cell_slot[k] = -1;
-                portable_atomicExch(error_flag, 1);
-                return;
-            }
-            int slot;
-            if (variant == 1) {
-                slot = owner;
-            } else {
-                // per step a cell may only reach a Cartesian neighbour, more than that breaks the CFL
-                slot = neighbor_rank_to_slot[owner];
-                if (slot < 0) {
-                    per_cell_slot[k] = -1;
-                    portable_atomicExch(error_flag, 2);
-                    return;
-                }
-            }
-            per_cell_slot[k] = slot;
-            portable_atomicAdd(&send_counts[slot], 1);
-        }
 
         template <typename MigrantCell>
         // one leaving cell into its place in the send buffer

@@ -22,16 +22,13 @@ namespace voronoi {
                                      double4_t        seed,
                                      double4_t        neighbor);
 
-#ifdef USE_MPI
-    // (2 x farthest vertex)^2, capped at the size of the box
+    // (2 x farthest vertex)^2, capped well past any cell that fits the box
     HD inline void store_security_d2(VMesh* mesh, uint64_t k, double r2_num, double r2_denom) {
-        const double s      = 1.0 + 2.0 * mesh->buff;
-        const double d2_cap = 12.0 * s * s;
-        double       d2     = (r2_denom > 0.0) ? 4.0 * r2_num / r2_denom : d2_cap;
+        constexpr double d2_cap = 1e30;
+        double           d2     = (r2_denom > 0.0) ? 4.0 * r2_num / r2_denom : d2_cap;
         if (!(d2 <= d2_cap)) d2 = d2_cap;
         mesh->security_d2[k] = d2;
     }
-#endif
 
     // builds cell k: start from the box, cut with one neighbour after the other
     template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT, bool WALK>
@@ -48,7 +45,7 @@ namespace voronoi {
         unsigned int local_knn[K];
         knn::knn_for_point<K>(seed_id, knn, local_knn);
 
-        BasicConvexCell<MAX_P, MAX_T, IDX, VERT> cell(seed_id, d_stored_points, &(stat[k]), mesh->buff);
+        BasicConvexCell<MAX_P, MAX_T, IDX, VERT> cell(seed_id, d_stored_points, &(stat[k]));
 
         int __attribute__((unused))  v_terminate = K - 1;
         bool __attribute__((unused)) early_break = false;
@@ -78,22 +75,12 @@ namespace voronoi {
             }
         }
 
+        // whether this rank has every point inside it is checked after the build
         if (stat[k] == success) {
             double r2_num, r2_denom;
             cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
-#ifdef USE_MPI
             store_security_d2(mesh, (uint64_t)k, r2_num, r2_denom);
-#endif
-            // cell may reach into data this rank does not have
-            if (!cell_certified_within_data(
-                    cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi, mesh->buff)) {
-                stat[k] = security_radius_beyond_data;
-            }
         }
-#ifdef USE_MPI
-        (void)early_break;
-        (void)v_terminate;
-#endif
 
         if (stat[k] == success) {
             // take a block of face slots and write the cell
@@ -370,29 +357,6 @@ namespace voronoi {
 #endif
     }
 
-    // ball of 2 x the farthest vertex inside the extent
-    HD bool cell_certified_within_data(
-        double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi, double buff) {
-        // no extent: one rank, it has the box and the ghost band around it
-        double lo[3] = {-buff, -buff, -buff};
-        double hi[3] = {1.0 + buff, 1.0 + buff, 1.0 + buff};
-        if (data_hi[0] > data_lo[0]) {
-            for (int a = 0; a < 3; a++) {
-                lo[a] = data_lo[a];
-                hi[a] = data_hi[a];
-            }
-        }
-
-        double safe = fmin(seed.x - lo[0], hi[0] - seed.x);
-        safe        = fmin(safe, fmin(seed.y - lo[1], hi[1] - seed.y));
-#ifdef dim_3D
-        safe = fmin(safe, fmin(seed.z - lo[2], hi[2] - seed.z));
-#endif
-        if (safe <= 0.0) return false;
-
-        return (4.0 * r2_num <= safe * safe * r2_denom);
-    }
-
     // the face arrays do not grow
     void ensure_face_capacity(VMesh* mesh, uint64_t needed) {
         if (needed <= mesh->face_capacity) return;
@@ -402,14 +366,10 @@ namespace voronoi {
                                   (unsigned long long)mesh->face_capacity);
     }
 
-    // starts as the box plus band: the wall planes and their corners
+    // starts as the box plus margin: the wall planes and their corners
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
-    HD BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::BasicConvexCell(int     p_seed,
-                                                                 double* p_pts,
-                                                                 Status* p_status,
-                                                                 double  p_buff) {
+    HD BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::BasicConvexCell(int p_seed, double* p_pts, Status* p_status) {
         pts       = p_pts;
-        buff      = p_buff;
         status    = p_status;
         *status   = success;
         voro_seed = point_from_ptr(pts + DIMENSION * p_seed);
@@ -540,11 +500,11 @@ namespace voronoi {
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD double4_t BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::plane_for(int p) const {
 
-        // box walls, from -buff to 1 + buff
+        // box walls, from -margin to 1 + margin
         if (p < 2 * DIMENSION) {
             constexpr double eps   = 1e-14;
-            const double     w_min = buff + eps;
-            const double     w_max = 1.0 + buff + eps;
+            constexpr double w_min = CELL_BOX_MARGIN + eps;
+            constexpr double w_max = 1.0 + CELL_BOX_MARGIN + eps;
             switch (p) {
             case 0:
                 return make_double4_t(1.0, 0.0, 0.0, w_min);

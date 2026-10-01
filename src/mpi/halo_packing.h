@@ -12,37 +12,6 @@
 namespace proteus_mpi {
     namespace pack {
 
-        // an exported seed, shifted if its neighbour is across the box border
-        HD inline void pack_seed_body(int                  s,
-                                      const POINT_TYPE*    pts,
-                                      const int*           export_indices,
-                                      const unsigned char* dir_of_slot,
-                                      const double*        neighbor_shift_flat,
-                                      POINT_TYPE*          sendbuf) {
-            const int  n = (int)dir_of_slot[s];
-            const int  k = export_indices[s];
-            POINT_TYPE p = pts[k];
-            p.x += neighbor_shift_flat[n * 3 + 0];
-            p.y += neighbor_shift_flat[n * 3 + 1];
-#ifdef dim_3D
-            p.z += neighbor_shift_flat[n * 3 + 2];
-#endif
-            sendbuf[s] = p;
-        }
-
-        // a received seed becomes a ghost: one point for the build, one seed for the mesh
-        HD inline void
-        unpack_seed_body(int slot, int pts_mpi_base, const POINT_TYPE* recvbuf, POINT_TYPE* pts, double3* seeds_g) {
-            const POINT_TYPE p     = recvbuf[slot];
-            const int        pts_k = pts_mpi_base + slot;
-            pts[pts_k]             = p;
-#ifdef dim_3D
-            seeds_g[slot] = double3{p.x, p.y, p.z};
-#else
-            seeds_g[slot] = double3{p.x, p.y, 0.0};
-#endif
-        }
-
         HD inline void
         pack_prim_body(int s, const int* used_export_indices, const hydro::primvars* primvar, HaloPrimCell* sendbuf) {
             const int    k = used_export_indices[s];

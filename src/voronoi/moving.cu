@@ -48,13 +48,10 @@ namespace voronoi {
 
         advance_seeds_by_dt(mesh, dt, mesh->scratch_move);
 
-        // a rebalance moves the brick borders, so more cells change rank
-        if (proteus_mpi::rebalance_decide(sim.step, mesh, mesh->scratch_move)) {
-            proteus_mpi::migrate_for_rebalance(mesh, primvar, cons, grads);
-            proteus_mpi::rebalance_log_after_migration(mesh);
-        } else {
-            proteus_mpi::migrate_seeds(mesh, primvar, cons, grads);
-        }
+        // a rebalance moves the cuts, so more cells change rank
+        const bool rebalanced = proteus_mpi::rebalance_decide(sim.step, mesh, mesh->scratch_move);
+        proteus_mpi::migrate_cells(mesh, primvar, cons, grads);
+        if (rebalanced) proteus_mpi::rebalance_log_after_migration(mesh);
 
         compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, cons, grads, dt);
     }

@@ -2,12 +2,17 @@
 #define MPI_HALO_H
 #pragma once
 
-// Ghost cells from the neighbour ranks: which cells to send, and the state that goes with them.
-// order in one mesh build: build_exports, exchange_seeds, build_used_subset,
-// then the state exchanges for as long as that mesh stands
+// Ghost cells by request: a cell asks for the cells inside a ball, every rank whose part of the curve the
+// ball touches answers. One rank asks itself for the periodic copies. Then the state that goes with them.
+// Order in one mesh build: halo_begin_build, halo_request_balls (once per round), halo_build_used_subset,
+// then the state exchanges for as long as that mesh stands.
 
+#include "exchange.h"
 #include "global/gpu_compat.h"
 #include "mpi_compat.h"
+
+#include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 struct VMesh;
@@ -20,12 +25,6 @@ namespace gradients {
 
 namespace proteus_mpi {
 
-#ifdef dim_3D
-    constexpr int HALO_MAX_NEIGHBORS = 26;
-#else
-    constexpr int HALO_MAX_NEIGHBORS = 8;
-#endif
-
     // one cell's state on the wire
     struct HaloPrimCell {
         double     rho;
@@ -36,100 +35,85 @@ namespace proteus_mpi {
     // POINT_TYPEs per cell in the gradient message: rho, one per velocity axis, E, anchor
     constexpr int HALO_GRAD_COMPONENTS = 4 + DIMENSION;
 
-    // the halo of this rank, set up once and refilled by every build
+    // a periodic shift s of the box, one of 3^DIMENSION, as a small code
+    HD inline int shift_code(int sx, int sy, int sz) {
+        return (sx + 1) + 3 * (sy + 1) + 9 * (sz + 1);
+    }
+    HD inline void shift_of_code(int code, double* s) {
+        s[0] = (double)(code % 3 - 1);
+        s[1] = (double)((code / 3) % 3 - 1);
+        s[2] = (double)(code / 9 - 1);
+    }
+    constexpr int SHIFT_NONE = 13;
+
+    // a ball a rank asks another one (or itself) for, in the frame of the owner
+    struct GhostQuery {
+        POINT_TYPE c;
+        double     r;
+        int        shift; // the answer comes back moved by this shift
+    };
+
+    // one cell an owner sends back
+    struct GhostAnswer {
+        POINT_TYPE p; // its seed, moved by the shift
+        int        k; // its index on the owner
+        int        shift;
+    };
+
+    // the ghosts of this build and who they came from
     struct MpiHalo {
-        int    n_neighbors; // Cartesian neighbours that are not this rank itself
-        int    neighbor_ranks[HALO_MAX_NEIGHBORS];
-        int    neighbor_dirs[HALO_MAX_NEIGHBORS][3];  // -1, 0 or +1 per axis
-        double neighbor_shift[HALO_MAX_NEIGHBORS][3]; // one box further on, where the seed crosses the border
+        // ghost g: owner rank, cell on the owner, shift; it sits after the cells in the point list
+        std::vector<int>                  g_owner;
+        std::vector<int>                  g_k;
+        std::vector<int>                  g_shift;
+        std::vector<POINT_TYPE>           g_pos;
+        std::vector<int>                  g_slot;       // MPI ghost slot, -1 for a copy of an own cell
+        std::unordered_map<uint64_t, int> g_index;      // (owner, k, shift) -> ghost
+        int                               n_mpi_ghosts; // ghosts with a slot
 
-        double* neighbor_shift_flat; // the same shifts, readable on the device
-
-        int n_mpi_capacity;    // slots in every buffer
-        int use_neighbor_coll; // neighbour collective, or Isend and Irecv per direction
-
-        // exports and ghosts of the current build
-        int n_mpi_ghosts;
-        int send_count[HALO_MAX_NEIGHBORS];
-        int recv_count[HALO_MAX_NEIGHBORS];
-        int send_offset[HALO_MAX_NEIGHBORS + 1];
-        int ghost_offset[HALO_MAX_NEIGHBORS + 1];
-
-        int*           export_indices; // cell behind every send slot
-        unsigned char* dir_of_slot;    // and the neighbour it goes to
+        // partners of this build: ranks this one asked, ranks that asked this one
+        std::vector<int> asked;
+        std::vector<int> askers;
+        // per asker, what it got: (k, shift) packed, sorted
+        std::vector<std::vector<uint64_t>> sent;
 
         // the used subset: only ghosts that a local cell has as a face neighbour get state
-        int used_send_count[HALO_MAX_NEIGHBORS];
-        int used_recv_count[HALO_MAX_NEIGHBORS];
-        int used_send_offset[HALO_MAX_NEIGHBORS + 1];
-        int used_recv_offset[HALO_MAX_NEIGHBORS + 1];
-        int n_used_send;
-        int n_used_recv;
-        int used_subset_ready;
-
-        int* used_export_indices;
-        int* used_to_full_slot; // place in the used subset -> ghost slot
-
-        unsigned char* send_used_bitmap; // per send slot, whether the other side uses it
-        unsigned char* recv_used_bitmap;
+        int              used_subset_ready;
+        int              n_used_send;
+        int              n_used_recv;
+        std::vector<int> used_send_count;     // per asker
+        std::vector<int> used_recv_count;     // per asked rank
+        int*             used_export_indices; // cell behind every send entry
+        int*             used_to_full_slot;   // slot behind every receive entry
+        int              send_capacity;
 
         // one pair of buffers per kind of data
-        POINT_TYPE*   sendbuf_seed;
-        POINT_TYPE*   recvbuf_seed;
         HaloPrimCell* sendbuf_prim;
         HaloPrimCell* recvbuf_prim;
-        POINT_TYPE*   sendbuf_v_mesh;
-        POINT_TYPE*   recvbuf_v_mesh;
+        POINT_TYPE*   sendbuf_point;
+        POINT_TYPE*   recvbuf_point;
         POINT_TYPE*   sendbuf_grad;
         POINT_TYPE*   recvbuf_grad;
-        POINT_TYPE*   sendbuf_com_off;
-        POINT_TYPE*   recvbuf_com_off;
-#ifdef VOL_REGULARIZE
-        double* sendbuf_vol;
-        double* recvbuf_vol;
-#endif
-
-#ifdef USE_MPI
-        MPI_Comm     graph_comm;
-        MPI_Datatype mpi_prim_t;
-        MPI_Datatype mpi_point_t;
-        MPI_Datatype mpi_grad_cell_t;
-#endif
+        double*       sendbuf_double;
+        double*       recvbuf_double;
     };
 
     extern MpiHalo halo;
 
-    // neighbour table, transport mode and the buffers
-    void halo_init(int n_local, double buff);
+    // buffers sized from an estimate; they grow when a build needs more
+    void halo_init(int n_local);
     void halo_free();
 
-    // which cells go to which neighbour, for the seed positions of this build
-    void halo_build_exports(const POINT_TYPE* local_seeds, int n_local, double buff, int W = 0);
-    // bucket layers the ghost band needs
-    int halo_default_width(double buff);
-    // the build sorted the cells, so the export list has to follow
-    void halo_remap_export_indices(const unsigned int* inv_gather, int n_local);
+    // forgets the ghosts and partners of the last build
+    void halo_begin_build();
 
-    // sends the export seeds and takes the neighbours' ones as ghosts
-    void halo_exchange_seeds(VMesh* mesh, POINT_TYPE* pts, int pts_mpi_base);
-#ifdef VOL_REGULARIZE
-    void halo_exchange_volumes(VMesh* mesh);
-#endif
+    // asks for the cells in a ball of radius radii[i] around cell cells[i], i < nb, and appends the new ghosts;
+    // collective, also on one rank. All arrays in managed memory; cell_pos holds the seeds in cell order, the
+    // owners answer from theirs
+    void halo_request_balls(VMesh* mesh, const POINT_TYPE* cell_pos, const int* cells, const double* radii, int nb);
 
-    // a ghost seed a neighbour rank moved after the exchange
-    struct MovedSeed {
-        POINT_TYPE pos;
-        int        ghost_slot;
-    };
-
-    struct MovedExportLists {
-        std::vector<int>        js[HALO_MAX_NEIGHBORS];
-        std::vector<POINT_TYPE> pos[HALO_MAX_NEIGHBORS];
-    };
-
-    int halo_collect_moved_exports(const VMesh* mesh, const std::vector<int>& moved_ks, MovedExportLists* lists);
-
-    void halo_exchange_moved_seeds(const MovedExportLists& lists, std::vector<MovedSeed>* received);
+    // the build sorted the ghosts into the point list; this writes their seeds and neighbour indices
+    void halo_write_ghosts(VMesh* mesh, POINT_TYPE* pts, uint64_t* ghost_ids, int n_hydro);
 
     // finds the ghosts the local cells really touch, so the state exchanges stay small
     void halo_build_used_subset(VMesh* mesh);
@@ -139,6 +123,22 @@ namespace proteus_mpi {
     void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads);
     void halo_exchange_v_mesh(VMesh* mesh);
     void halo_exchange_centroids(VMesh* mesh);
+#ifdef VOL_REGULARIZE
+    void halo_exchange_volumes(VMesh* mesh);
+#endif
+
+    // a ghost seed its owner moved after it was sent
+    struct MovedSeed {
+        POINT_TYPE pos;
+        int        ghost_slot;
+    };
+
+    // how many of these cells another rank holds as a ghost
+    int halo_count_moved_exports(const std::vector<int>& moved_ks);
+
+    // tells those ranks where the cells are now and takes what the others moved; collective
+    void
+    halo_exchange_moved_seeds(const VMesh* mesh, const std::vector<int>& moved_ks, std::vector<MovedSeed>* received);
 
     void halo_dt_allreduce(double* dt);
     void halo_sum_allreduce(double* v);

@@ -20,7 +20,7 @@ struct ICHeader {
     int64_t  n_global = 0; // cells on all ranks
 
 #ifdef USE_MPI
-    std::vector<int> decomp_splits[3]; // old domain decomp split table per axis (only loaded from snap)
+    std::vector<int64_t> decomp_cuts; // cuts of the curve the snapshot ran with (only loaded from snap)
 #endif
 };
 

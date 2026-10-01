@@ -266,13 +266,14 @@ template <int BLOCK, typename T, typename F> inline T parallel_reduce_sum(const 
 // stable radix sort of (key, value) pairs
 // ============================================================================
 
-constexpr int    SORT_RADIX_BITS  = 8;
-constexpr int    SORT_RADIX       = 1 << SORT_RADIX_BITS; // also the CUDA block size
-constexpr int    SORT_ITEMS       = 8;                    // keys per thread and tile on CUDA
-constexpr size_t SORT_TILE        = (size_t)SORT_RADIX * SORT_ITEMS;
-constexpr size_t SORT_CPU_CHUNKS  = 1024;
-constexpr int    SORT_CUDA_WARPS  = SORT_RADIX / 32;
-constexpr size_t SORT_CPU_SCRATCH = (size_t)SORT_RADIX * SORT_CPU_CHUNKS;
+constexpr int    SORT_RADIX_BITS    = 8;
+constexpr int    SORT_RADIX         = 1 << SORT_RADIX_BITS; // also the CUDA block size
+constexpr int    SORT_ITEMS         = 8;                    // keys per thread and tile on CUDA
+constexpr size_t SORT_TILE          = (size_t)SORT_RADIX * SORT_ITEMS;
+constexpr size_t SORT_CPU_CHUNKS    = 1024; // CPU: chunks of SORT_CPU_MIN_CHUNK keys, at most this many
+constexpr size_t SORT_CPU_MIN_CHUNK = 4096;
+constexpr int    SORT_CUDA_WARPS    = SORT_RADIX / 32;
+constexpr size_t SORT_CPU_SCRATCH   = (size_t)SORT_RADIX * SORT_CPU_CHUNKS;
 
 // scratch elements a sort of n pairs needs
 inline size_t sort_scratch_size(size_t n) {
@@ -388,7 +389,11 @@ inline void parallel_sort_pairs(const char*    name,
     }
 #else
     PROFILE(name);
-    const size_t chunk = (n + SORT_CPU_CHUNKS - 1) / SORT_CPU_CHUNKS;
+    // a chunk costs a table of SORT_RADIX counts per pass, so few keys get few chunks; stable, so the
+    // result is the same for every chunk count
+    const size_t want   = (n + SORT_CPU_MIN_CHUNK - 1) / SORT_CPU_MIN_CHUNK;
+    const size_t chunks = (want < SORT_CPU_CHUNKS) ? want : SORT_CPU_CHUNKS;
+    const size_t chunk  = (n + chunks - 1) / chunks;
     for (int p = 0; p < passes; p++) {
         const int           shift = p * SORT_RADIX_BITS;
         const uint64_t*     k_in  = keys;
@@ -400,18 +405,18 @@ inline void parallel_sort_pairs(const char*    name,
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-        for (size_t c = 0; c < SORT_CPU_CHUNKS; c++) {
+        for (size_t c = 0; c < chunks; c++) {
             unsigned int count[SORT_RADIX] = {0};
             const size_t lo                = c * chunk;
             const size_t hi                = (lo + chunk < n) ? lo + chunk : n;
             for (size_t i = lo; i < hi; i++)
                 count[(k_in[i] >> shift) & (SORT_RADIX - 1)]++;
             for (int d = 0; d < SORT_RADIX; d++)
-                scratch[(size_t)d * SORT_CPU_CHUNKS + c] = count[d];
+                scratch[(size_t)d * chunks + c] = count[d];
         }
 
         unsigned int running = 0;
-        for (size_t e = 0; e < SORT_CPU_SCRATCH; e++) {
+        for (size_t e = 0; e < (size_t)SORT_RADIX * chunks; e++) {
             const unsigned int v = scratch[e];
             scratch[e]           = running;
             running += v;
@@ -421,10 +426,10 @@ inline void parallel_sort_pairs(const char*    name,
 #ifdef USE_OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-        for (size_t c = 0; c < SORT_CPU_CHUNKS; c++) {
+        for (size_t c = 0; c < chunks; c++) {
             unsigned int next[SORT_RADIX];
             for (int d = 0; d < SORT_RADIX; d++)
-                next[d] = scratch[(size_t)d * SORT_CPU_CHUNKS + c];
+                next[d] = scratch[(size_t)d * chunks + c];
             const size_t lo = c * chunk;
             const size_t hi = (lo + chunk < n) ? lo + chunk : n;
             for (size_t i = lo; i < hi; i++) {

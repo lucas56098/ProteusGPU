@@ -39,11 +39,11 @@ namespace logging {
 #ifdef USE_MPI
     namespace {
 
-        // one Allreduce over cart_comm
+        // one Allreduce over the run communicator
         template <typename T> T reduce_global(T local, MPI_Datatype dtype, MPI_Op op) {
             PROFILE_MPI("ALLREDUCE");
             T g = local;
-            MPI_Allreduce(&local, &g, 1, dtype, op, proteus_mpi::decomp.cart_comm);
+            MPI_Allreduce(&local, &g, 1, dtype, op, proteus_mpi::decomp.comm);
             return g;
         }
 

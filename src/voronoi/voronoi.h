@@ -35,6 +35,8 @@ struct VMesh {
 #endif
 
     double* security_d2; // (2 x farthest vertex)^2, a seed outside of that cannot cut the cell
+    double* est_r;       // first guess of how far the cell reaches
+    double* req_r2;      // squared radius of the ball the cell asked for in this build, 0 if none
 
 #ifdef VOL_REGULARIZE
     double* volumes_g;
@@ -52,36 +54,28 @@ struct VMesh {
     double* face_area;
     double* f_mid_local; // face centre - middle of the two seeds, tangential
 
-    uint64_t* ghost_ids; // periodic ghost -> its cell, MPI ghost -> n_hydro + slot
+    uint64_t* ghost_ids; // copy of an own cell -> that cell, ghost of another rank -> n_hydro + slot
 
     // index maps of the current build
     unsigned int* real_sorted_ids; // cell k -> sorted point
     unsigned int* sid_to_neighbor; // sorted point -> neighbour index
     unsigned int* gather_perm;     // cell k -> input point
 
-    unsigned int* orig_to_k_save; // input point -> cell k, reused by the later rounds
     unsigned int* scan_flags;
     unsigned int* scan_scratch;
 
     // scratch
-    unsigned int* scratch_uint;
-    double*       scratch_double;
-    POINT_TYPE*   scratch_point;
+    double*     scratch_double;
+    POINT_TYPE* scratch_point;
 
     POINT_TYPE* scratch_pts;  // point list of the build
-    POINT_TYPE* scratch_move; // seeds after the move
+    POINT_TYPE* scratch_move; // seeds after the move, in k-order during the build
 
     double min_egy_spec;
 
     double Ri_ref; // radius of a cell of the reference volume
 
-    double buff; // ghost band width
-
     int n_mpi_ghosts;
-
-    // box this rank has points for, all zero without MPI
-    double data_lo[3];
-    double data_hi[3];
 
     knn_problem* knn;
 };
@@ -94,7 +88,8 @@ namespace voronoi {
 
     void mesh_grow_ghosts(VMesh* mesh, int new_cap);
 
-    void mesh_grow_build_buffers(VMesh* mesh, int new_mpi_capacity);
+    // room for this many ghosts behind the cells of a build
+    void mesh_ensure_ghost_capacity(VMesh* mesh, uint64_t n_ghosts);
 
     // build the mesh for the current seed positions
     void compute_periodic_mesh(VMesh*                    mesh,

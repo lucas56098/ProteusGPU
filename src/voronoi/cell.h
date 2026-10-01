@@ -26,10 +26,13 @@ namespace voronoi {
         return v;
     }
 
+    // the starting cell is the box plus this margin on every side; no cell reaches half a box from its seed
+    constexpr double CELL_BOX_MARGIN = 0.5;
+
     // a cell is a list of planes, a vertex is where DIMENSION planes meet
     // the first 2 x DIMENSION planes are the box walls, every later one is a bisector to a point
     template <int MAX_P, int MAX_T, typename IDX, typename VERT> struct BasicConvexCell {
-        HD BasicConvexCell(int p_seed, double* p_pts, Status* p_status, double p_buff);
+        HD BasicConvexCell(int p_seed, double* p_pts, Status* p_status);
 
         static_assert(sizeof(decltype(VERT::x)) == sizeof(IDX), "VERT component width must equal IDX");
         static_assert((long long)MAX_P <= (long long)idx_max<IDX>(), "MAX_P does not fit in IDX");
@@ -40,7 +43,6 @@ namespace voronoi {
         double*   pts; // sorted point list, a plane is named by its point
         double4_t voro_seed;
         Status*   status;
-        double    buff;
 
         IDX nb_v; // planes
         IDX nb_t; // vertices
@@ -101,10 +103,6 @@ namespace voronoi {
     HD uint64_t extract_cell_all(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
                                  VMesh*                                          mesh,
                                  uint64_t                                        cell_index);
-
-    // true if no point outside the rank data can still cut the cell
-    HD bool cell_certified_within_data(
-        double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi, double buff);
 
     // adds every point that can still cut the cell, found on the tree; the cell is exact afterwards
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>

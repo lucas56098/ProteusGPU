@@ -28,7 +28,7 @@ namespace voronoi {
         template <typename CellT> struct KeptCell {
             Status status = success;
             CellT  cell;
-            KeptCell(int seed_id, double* pts, double buff) : cell(seed_id, pts, &status, buff) {}
+            KeptCell(int seed_id, double* pts) : cell(seed_id, pts, &status) {}
         };
 
         // what the build without a moved seed gave for one cell; no cell means the kick ladder
@@ -61,6 +61,8 @@ namespace voronoi {
                                                                   const knn_problem*                         knn,
                                                                   Status&                                    last_status_out);
     template <typename CellT> static void           commit_cell(VMesh* mesh, int k, const CellT& cell);
+    static bool                                     cell_is_covered(const VMesh* mesh, int k, double4_t seed);
+    static void                                     count_if_uncovered(const VMesh* mesh, int k, double4_t seed);
     static std::unique_ptr<KeptCell<BigConvexCell>> build_kept(const VMesh* mesh,
                                                                int          seed_id,
                                                                double*      d_stored_points,
@@ -118,12 +120,11 @@ namespace voronoi {
     static int     s_uncertified_rebuilds = 0;
     static double3 s_first_uncertified    = {0.0, 0.0, 0.0}; // its seed, for the message
 
-    // a cell reaching past the points this rank has may miss a neighbour, so the run stops
+    // a cell whose sphere holds points this rank did not ask for may miss a neighbour, so the run stops
     static void stop_if_uncertified(const char* who) {
         if (s_uncertified_rebuilds == 0) return;
-        proteus_mpi::exit_failure("[rank %d] VORONOI: %d cell(s) built by the %s reach past the points this rank "
-                                  "has (ghost band on one rank, halo under MPI), the first at (%g, %g, %g). They may "
-                                  "miss a neighbour. Aborting.\n",
+        proteus_mpi::exit_failure("[rank %d] VORONOI: %d cell(s) built by the %s reach past the ball they asked "
+                                  "for, the first at (%g, %g, %g). They may miss a neighbour. Aborting.\n",
                                   proteus_mpi::rank(),
                                   s_uncertified_rebuilds,
                                   who,
@@ -305,6 +306,69 @@ namespace voronoi {
         r.start.shrink_to_fit();
     }
 
+    // a failed cell built the way the fallback will build it, to see how far it reaches; one that only a kick
+    // can build gets twice its first guess
+    void fallback_needs(VMesh* mesh, std::vector<int>* cells, std::vector<double>* need_d2) {
+        cells->clear();
+        need_d2->clear();
+        const int     n_hydro  = (int)mesh->n_hydro;
+        const Status* stat     = mesh->cell_status;
+        auto          failed   = [=] HD(int k) { return stat[k] != success && stat[k] != security_radius_beyond_data; };
+        const int     n_failed = parallel_reduce_sum<_MESH_BLOCK_SIZE_, int>(
+            "FAILED", n_hydro, [=] HD(size_t k) { return failed((int)k) ? 1 : 0; });
+        if (n_failed == 0) return;
+
+        // the list of them, picked on the device
+        unsigned int* flags = mesh->scan_flags;
+        parallel_for<_MESH_BLOCK_SIZE_>("FAILED_FLAG", n_hydro, [=] HD(int k) { flags[k] = failed(k) ? 1u : 0u; });
+        parallel_exclusive_scan<_MESH_BLOCK_SIZE_>("FAILED_SCAN", (size_t)n_hydro, flags, flags, mesh->scan_scratch);
+        static int* s_failed     = nullptr;
+        static int  s_failed_cap = 0;
+        if (n_failed > s_failed_cap) {
+            if (s_failed) gpu_free(s_failed);
+            s_failed_cap = std::max(n_failed, 2 * s_failed_cap);
+            s_failed     = gpu_alloc<int>(s_failed_cap);
+        }
+        int* list = s_failed;
+        parallel_for<_MESH_BLOCK_SIZE_>("FAILED_SCATTER", n_hydro, [=] HD(int k) {
+            if (failed(k)) list[flags[k]] = k;
+        });
+        cells->assign(s_failed, s_failed + n_failed);
+
+        PROFILE("FALLBACK_NEEDS");
+        double*             d_stored_points = (double*)mesh->knn->d_stored_points;
+        std::vector<double> need(cells->size(), -1.0);
+        cpu_for_dynamic(cells->size(), [&](size_t i) {
+            const int k = (*cells)[i];
+            FirstPass r;
+            first_pass(mesh, k, d_stored_points, r);
+            double d2 = 4.0 * mesh->est_r[k] * mesh->est_r[k];
+            if (r.cell) {
+                double r2_num, r2_denom;
+                r.cell->cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
+                d2 = (r2_denom > 0.0) ? 4.0 * r2_num / r2_denom : 1e30;
+            }
+            const POINT_TYPE& c = mesh->scratch_move[k];
+            if (sphere_is_covered(c,
+                                  c,
+                                  d2,
+                                  mesh->req_r2[k],
+                                  proteus_mpi::decomp.cuts,
+                                  proteus_mpi::decomp.nranks,
+                                  proteus_mpi::decomp.rank))
+                return;
+            need[i] = d2;
+        });
+
+        std::vector<int> open;
+        for (size_t i = 0; i < cells->size(); i++) {
+            if (need[i] < 0.0) continue;
+            open.push_back((*cells)[i]);
+            need_d2->push_back(need[i]);
+        }
+        cells->swap(open);
+    }
+
     // writes what the first pass built, or moves the seed until the cell builds
     static FallbackOutcome finish_cell(VMesh*     mesh,
                                        int        k,
@@ -366,17 +430,35 @@ namespace voronoi {
     template <typename CellT> static void commit_cell(VMesh* mesh, int k, const CellT& cell) {
         double r2_num, r2_denom;
         cell.max_vertex_r2_ratio(&r2_num, &r2_denom);
-#ifdef USE_MPI
         store_security_d2(mesh, (uint64_t)k, r2_num, r2_denom);
-#endif
-        if (!cell_certified_within_data(cell.voro_seed, r2_num, r2_denom, mesh->data_lo, mesh->data_hi, mesh->buff)) {
-            if (s_uncertified_rebuilds == 0)
-                s_first_uncertified = {cell.voro_seed.x, cell.voro_seed.y, cell.voro_seed.z};
-            s_uncertified_rebuilds++;
-        }
+        count_if_uncovered(mesh, k, cell.voro_seed);
 
         write_cell_to_mesh(mesh, k, cell);
         mesh->cell_status[k] = success;
+    }
+
+    // a cell is covered if this rank asked for a ball that holds its sphere, or has all of it anyway; the seed
+    // may have been moved by a kick since the ball went out
+    static bool cell_is_covered(const VMesh* mesh, int k, double4_t seed) {
+        POINT_TYPE s;
+        s.x = seed.x;
+        s.y = seed.y;
+#ifdef dim_3D
+        s.z = seed.z;
+#endif
+        return sphere_is_covered(s,
+                                 mesh->scratch_move[k],
+                                 mesh->security_d2[k],
+                                 mesh->req_r2[k],
+                                 proteus_mpi::decomp.cuts,
+                                 proteus_mpi::decomp.nranks,
+                                 proteus_mpi::decomp.rank);
+    }
+
+    static void count_if_uncovered(const VMesh* mesh, int k, double4_t seed) {
+        if (cell_is_covered(mesh, k, seed)) return;
+        if (s_uncertified_rebuilds == 0) s_first_uncertified = {seed.x, seed.y, seed.z};
+        s_uncertified_rebuilds++;
     }
 
     // builds a cell that outlives the call, or nothing
@@ -385,8 +467,7 @@ namespace voronoi {
                                                                double*      d_stored_points,
                                                                const std::vector<std::pair<double, int>>& start,
                                                                Status& last_status_out) {
-        std::unique_ptr<KeptCell<BigConvexCell>> kept(
-            new KeptCell<BigConvexCell>(seed_id, d_stored_points, mesh->buff));
+        std::unique_ptr<KeptCell<BigConvexCell>> kept(new KeptCell<BigConvexCell>(seed_id, d_stored_points));
         if (!clip_and_walk(kept->cell, kept->status, d_stored_points, start, seed_id, mesh->knn, last_status_out))
             return nullptr;
         return kept;
@@ -605,6 +686,7 @@ namespace voronoi {
                 }
                 if (mesh->cell_status[kn] == success) {
                     reclaim_appended_slice(mesh, kn, fp_old, fc_old, &face_offset, off_before);
+                    count_if_uncovered(mesh, kn, point_from_ptr(d_stored_points + DIMENSION * seed_id));
                 }
 
                 // the cell code failed here too, so take the CPU ladder
@@ -683,7 +765,7 @@ namespace voronoi {
         }
     }
 
-    // takes the new position of ghost seeds a neighbour rank moved and rebuilds around them
+    // takes the new position of ghost seeds another rank moved and rebuilds around them
     int repair_cells_for_moved_ghosts(VMesh*                                     mesh,
                                       const std::vector<proteus_mpi::MovedSeed>& moved,
                                       double                                     dt,
