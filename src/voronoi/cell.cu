@@ -278,6 +278,9 @@ namespace voronoi {
         status    = p_status;
         *status   = success;
         voro_seed = point_from_ptr(pts + DIMENSION * p_seed);
+        far_num   = 0.0;
+        far_denom = 1.0;
+        far_valid = false;
 
         first_boundary = END_OF_LIST;
         for (int i = 0; i < MAX_P; i++) {
@@ -309,6 +312,8 @@ namespace voronoi {
     // cuts the cell with the plane halfway to point vid
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD void BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::clip_by_plane(int vid) {
+        const bool far_was_valid = far_valid;
+        far_valid                = false;
 
         const int cur_v = new_halfplane(vid);
         if (*status == vertex_overflow) { return; }
@@ -330,9 +335,10 @@ namespace voronoi {
         }
         if (*status == needs_exact_predicates) { return; }
 
-        // plane cut nothing, drop it again
+        // plane cut nothing, drop it again; the vertices did not change
         if (nb_r == 0) {
             nb_v--;
+            far_valid = far_was_valid;
             return;
         }
 
@@ -360,13 +366,15 @@ namespace voronoi {
 
     // a point farther than 2 x the farthest vertex cannot cut the cell
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
-    HD bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::is_security_radius_reached(double4_t last_neig) const {
-        double max_num, max_denom;
-        max_vertex_r2_ratio(&max_num, &max_denom);
+    HD bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::is_security_radius_reached(double4_t last_neig) {
+        if (!far_valid) {
+            max_vertex_r2_ratio(&far_num, &far_denom);
+            far_valid = true;
+        }
 
         const double4_t diff = minus4(last_neig, voro_seed);
         const double    d2   = dot3(diff, diff);
-        return (d2 * max_denom > 4.0 * max_num);
+        return (d2 * far_denom > 4.0 * far_num);
     }
 
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>

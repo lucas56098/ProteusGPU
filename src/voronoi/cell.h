@@ -46,6 +46,11 @@ namespace voronoi {
         IDX nb_t; // vertices
         IDX nb_r; // vertices the current plane cuts away, parked behind nb_t
 
+        // farthest vertex of the last security check, still right while no clip changed the cell
+        double far_num;
+        double far_denom;
+        bool   far_valid;
+
         int plane_vid[MAX_P]; // point of each plane, -1 for a box wall
 
         VERT triangle[MAX_T]; // the planes that meet in each vertex
@@ -66,7 +71,7 @@ namespace voronoi {
         HD void new_vertex(IDX i, IDX j, IDX k = 0);
 
         // true if last_neig is farther than 2 x the farthest vertex
-        HD bool is_security_radius_reached(double4_t last_neig) const;
+        HD bool is_security_radius_reached(double4_t last_neig);
 
         // farthest vertex distance as num / denom
         HD void max_vertex_r2_ratio(double* out_num, double* out_denom) const;
