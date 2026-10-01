@@ -34,7 +34,7 @@ namespace voronoi {
 #endif
 
     // builds cell k: start from the box, cut with one neighbour after the other
-    template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT>
+    template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT, bool WALK>
     HD void compute_single_voronoi_cell(int                 k,
                                         int                 seed_id,
                                         double*             d_stored_points,
@@ -69,9 +69,13 @@ namespace voronoi {
             }
         }
 
-        // K neighbours were not enough
+        // K neighbours were not enough; on the tree the walk finds the rest
         if (!cell.is_security_radius_reached(point_from_ptr(d_stored_points + DIMENSION * local_knn[K - 1]))) {
-            stat[k] = security_radius_not_reached;
+            if (WALK && stat[k] == success) {
+                close_cell_by_tree_walk(cell, seed_id, knn);
+            } else {
+                stat[k] = security_radius_not_reached;
+            }
         }
 
         if (stat[k] == success) {
@@ -101,6 +105,137 @@ namespace voronoi {
             }
             mesh->face_ptr[k]    = my_offset;
             mesh->face_counts[k] = extract_cell_all(cell, mesh, (uint64_t)k);
+        }
+    }
+
+    // a point closer to a corner than the seed is can still cut the cell; margin for rounding
+    constexpr double WALK_SLACK = 1.0 + 1e-6;
+
+    // corners of the cell and their squared distance to the seed; false if a corner is not reliable
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD bool cell_corners(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
+                         POINT_TYPE*                                     corner,
+                         double*                                         corner_r2,
+                         double*                                         r2_max) {
+        *r2_max = 0.0;
+        for (int i = 0; i < cell.nb_t; i++) {
+            const VERT      v = cell.triangle[i];
+            const double4_t h = cell.compute_vertex_point(v, false);
+
+            // nearly parallel planes put the corner far off and inexact
+            const double4_t p1 = cell.plane_for(v.x);
+            const double4_t p2 = cell.plane_for(v.y);
+            double          n2 = dot3(p1, p1) * dot3(p2, p2);
+#ifdef dim_3D
+            const double4_t p3 = cell.plane_for(v.z);
+            n2 *= dot3(p3, p3);
+#endif
+            if (!(h.w * h.w > 1e-16 * n2)) return false;
+
+            corner[i].x     = h.x / h.w;
+            corner[i].y     = h.y / h.w;
+            const double dx = corner[i].x - cell.voro_seed.x;
+            const double dy = corner[i].y - cell.voro_seed.y;
+#ifdef dim_3D
+            corner[i].z     = h.z / h.w;
+            const double dz = corner[i].z - cell.voro_seed.z;
+            corner_r2[i]    = dx * dx + dy * dy + dz * dz;
+#else
+            corner_r2[i] = dx * dx + dy * dy;
+#endif
+            if (!(corner_r2[i] < 1e300)) return false;
+            if (corner_r2[i] > *r2_max) *r2_max = corner_r2[i];
+        }
+        return true;
+    }
+
+    // true if some point of the box may be closer to a corner than the seed is
+    HD inline bool box_may_cut(const POINT_TYPE& lo,
+                               const POINT_TYPE& hi,
+                               const POINT_TYPE& seed,
+                               const POINT_TYPE* corner,
+                               const double*     corner_r2,
+                               int               n_corner,
+                               double            r2_max) {
+        // every corner sphere lies inside the ball of twice the farthest corner
+        if (knn::dist2_box(lo, hi, seed) > 4.0 * r2_max * WALK_SLACK) return false;
+        for (int i = 0; i < n_corner; i++) {
+            if (!(knn::dist2_box(lo, hi, corner[i]) > corner_r2[i] * WALK_SLACK)) return true;
+        }
+        return false;
+    }
+
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD bool cell_has_plane(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell, int q) {
+        for (int p = 2 * DIMENSION; p < cell.nb_v; p++) {
+            if (cell.plane_vid[p] == q) return true;
+        }
+        return false;
+    }
+
+    // walks the tree, nearer child first, and clips with every point a corner sphere may hold;
+    // a cut shrinks the spheres, so a node skipped once stays skipped
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD void
+    close_cell_by_tree_walk(BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell, int seed_id, const knn_problem* knn) {
+        const int n = knn->len_pts;
+        if (n < 2) return;
+        const TreeNode* nodes = knn->d_nodes;
+        const int       leaf0 = n - 1;
+
+        POINT_TYPE seed;
+        seed.x = cell.voro_seed.x;
+        seed.y = cell.voro_seed.y;
+#ifdef dim_3D
+        seed.z = cell.voro_seed.z;
+#endif
+
+        POINT_TYPE corner[MAX_T];
+        double     corner_r2[MAX_T];
+        double     r2_max;
+        if (!cell_corners(cell, corner, corner_r2, &r2_max)) {
+            *cell.status = security_radius_not_reached;
+            return;
+        }
+
+        // a stack entry is 2 x parent + side, the box of a node sits in its parent
+        int stack[knn::TREE_STACK];
+        int sp      = 0;
+        int near    = (knn::dist2_box(nodes[0].lo[1], nodes[0].hi[1], seed) <
+                    knn::dist2_box(nodes[0].lo[0], nodes[0].hi[0], seed))
+                          ? 1
+                          : 0;
+        stack[sp++] = 1 - near;
+        stack[sp++] = near;
+        while (sp > 0) {
+            const int       e      = stack[--sp];
+            const TreeNode& parent = nodes[e >> 1];
+            const int       side   = e & 1;
+            if (!box_may_cut(parent.lo[side], parent.hi[side], seed, corner, corner_r2, cell.nb_t, r2_max)) continue;
+
+            const int c = parent.child[side];
+            if (c >= leaf0) {
+                const int q = c - leaf0;
+                if (q == seed_id || cell_has_plane(cell, q)) continue;
+                const int planes_before = cell.nb_v;
+                cell.clip_by_plane(q);
+                if (*cell.status != success) return;
+                if (cell.nb_v != planes_before && !cell_corners(cell, corner, corner_r2, &r2_max)) {
+                    *cell.status = security_radius_not_reached;
+                    return;
+                }
+                continue;
+            }
+
+            // the nearer child comes off the stack first
+            const TreeNode& nd = nodes[c];
+            near = (knn::dist2_box(nd.lo[1], nd.hi[1], seed) < knn::dist2_box(nd.lo[0], nd.hi[0], seed)) ? 1 : 0;
+            if (sp + 2 > knn::TREE_STACK) {
+                *cell.status = security_radius_not_reached;
+                return;
+            }
+            stack[sp++] = 2 * c + 1 - near;
+            stack[sp++] = 2 * c + near;
         }
     }
 

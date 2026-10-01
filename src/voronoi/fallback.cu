@@ -793,7 +793,7 @@ namespace voronoi {
                 const uint64_t           fp_old     = mesh->face_ptr[kn];
                 const uint64_t           fc_old     = mesh->face_counts[kn];
                 const unsigned long long off_before = face_offset;
-                compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE>(
+                compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE, knn::USE_TREE>(
                     kn, seed_id, d_stored_points, mesh->knn, mesh->cell_status, mesh, &face_offset, &overflow);
                 if (overflow) {
                     proteus_mpi::exit_failure("VORONOI: face overflow during symmetry rebuild — increase "

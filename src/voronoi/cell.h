@@ -106,8 +106,13 @@ namespace voronoi {
     HD bool cell_certified_within_data(
         double4_t seed, double r2_num, double r2_denom, const double* data_lo, const double* data_hi, double buff);
 
-    // build cell k and write it into the mesh
-    template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT>
+    // adds every point that can still cut the cell, found on the tree; the cell is exact afterwards
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD void
+    close_cell_by_tree_walk(BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell, int seed_id, const knn_problem* knn);
+
+    // build cell k and write it into the mesh; WALK finishes a cell its K points did not close on the tree
+    template <int K, int MAX_P, int MAX_T, typename IDX, typename VERT, bool WALK = false>
     HD void compute_single_voronoi_cell(int                 k,
                                         int                 seed_id,
                                         double*             d_stored_points,
