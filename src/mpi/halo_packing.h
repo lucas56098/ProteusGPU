@@ -44,7 +44,7 @@ namespace proteus_mpi {
 #ifdef dim_3D
             sendbuf[s + c++] = grads->vz[k];
 #endif
-            sendbuf[s + c++] = grads->E[k];
+            sendbuf[s + c++] = grads->P[k];
             sendbuf[s + c++] = grads->anchor[k];
         }
 
@@ -61,7 +61,7 @@ namespace proteus_mpi {
 #ifdef dim_3D
             grads->vz_g[g] = recvbuf[s + c++];
 #endif
-            grads->E_g[g]      = recvbuf[s + c++];
+            grads->P_g[g]      = recvbuf[s + c++];
             grads->anchor_g[g] = recvbuf[s + c++];
         }
 

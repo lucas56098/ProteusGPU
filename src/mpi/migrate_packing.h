@@ -81,7 +81,7 @@ namespace proteus_mpi {
 #ifdef dim_3D
             grads->vz[k] = mc.grad.vz;
 #endif
-            grads->E[k]      = mc.grad.E;
+            grads->P[k]      = mc.grad.P;
             grads->anchor[k] = mc.grad.anchor;
 #endif
         }

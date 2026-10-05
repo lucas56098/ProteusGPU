@@ -32,7 +32,7 @@ namespace proteus_mpi {
         double     E;
     };
 
-    // POINT_TYPEs per cell in the gradient message: rho, one per velocity axis, E, anchor
+    // POINT_TYPEs per cell in the gradient message: rho, one per velocity axis, P, anchor
     constexpr int HALO_GRAD_COMPONENTS = 4 + DIMENSION;
 
     // a periodic shift s of the box, one of 3^DIMENSION, as a small code

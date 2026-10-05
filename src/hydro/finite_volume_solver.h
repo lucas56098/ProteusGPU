@@ -26,11 +26,8 @@ namespace hydro {
     double calc_timestep(double CFL, const VMesh* mesh, const primvars* primvar);
 
     // per face, all called from flux_update_for_cell
-    HD void apply_spatial_extrapolation(const prim                    state,
-                                        const gradients::PrimGradient gradient,
-                                        POINT_TYPE                    dx,
-                                        prim*                         st_extrap);
-    HD void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap);
+    HD void extrapolate_to_face(
+        const prim state, const gradients::PrimGradient gradient, POINT_TYPE dx, double dt_extrap, prim* st_extrap);
     HD bool rho_and_P_positive(const prim& state);
     HD void keep_state_physical(prim* state, double min_egy_spec);
     HD void rotate_to_face(prim* state, geom* g);

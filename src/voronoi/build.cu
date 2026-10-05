@@ -153,7 +153,7 @@ namespace voronoi {
 #ifdef dim_3D
             permute_inplace(grads->vz, mesh->scratch_point, n, perm);
 #endif
-            permute_inplace(grads->E, mesh->scratch_point, n, perm);
+            permute_inplace(grads->P, mesh->scratch_point, n, perm);
             permute_inplace(grads->anchor, mesh->scratch_point, n, perm);
         }
 #ifdef MOVING_MESH

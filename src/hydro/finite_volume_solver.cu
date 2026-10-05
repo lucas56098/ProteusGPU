@@ -14,7 +14,7 @@
 namespace hydro {
 
     HD void flux_update_for_cell(
-        uint64_t, double, bool, double, const VMesh*, const primvars*, const gradients::PrimGradients*, ConsVars*);
+        uint64_t, double, double, const VMesh*, const primvars*, const gradients::PrimGradients*, ConsVars*);
     HD void cons_to_prim_for_cell(uint64_t, const VMesh*, const ConsVars*, primvars*);
 #ifdef AGN_ENABLED
     HD double dt_CFL_for_cell(uint64_t, double, const VMesh*, const primvars*, bool, const astro::AgnParams&);
@@ -129,10 +129,8 @@ namespace hydro {
 
         PROFILE("FLUX");
 
-        const bool do_time_extrap = (dt_extrap != 0.0);
-
         parallel_for<_HYDRO_BLOCK_SIZE_, 2>("FLUX_KERNEL", mesh->n_hydro, [=] HD(size_t i) {
-            flux_update_for_cell(i, dt_update, do_time_extrap, dt_extrap, mesh, prim_old, grads, cons);
+            flux_update_for_cell(i, dt_update, dt_extrap, mesh, prim_old, grads, cons);
         });
     }
 
@@ -237,7 +235,6 @@ namespace hydro {
     // sums the fluxes over the faces of cell i and updates its state
     HD void flux_update_for_cell(uint64_t                        i,
                                  double                          dt_update,
-                                 bool                            do_time_extrap,
                                  double                          dt_extrap,
                                  const VMesh*                    mesh,
                                  const primvars*                 prim_old,
@@ -292,21 +289,15 @@ namespace hydro {
 
 #ifdef MOVING_MESH
             // the gradients were taken on the mesh at the start of the step
-            if (do_time_extrap) {
+            if (dt_extrap != 0.0) {
                 r_i = from_start_of_step(r_i, vm_i, state_i.v, dt_extrap);
                 r_j = from_start_of_step(r_j, vm_j, state_j.v, dt_extrap);
             }
 #endif
 
-            // both states, extrapolated to the face centroid
-            apply_spatial_extrapolation(state_i, grad_i, r_i, &state_l);
-            apply_spatial_extrapolation(state_j, grad_j, r_j, &state_r);
-
-            // and to the end of the step
-            if (do_time_extrap) {
-                apply_time_extrapolation(state_i, grad_i, dt_extrap, &state_l);
-                apply_time_extrapolation(state_j, grad_j, dt_extrap, &state_r);
-            }
+            // both states, extrapolated to the face centroid and in the second half step to the end of the step
+            extrapolate_to_face(state_i, grad_i, r_i, dt_extrap, &state_l);
+            extrapolate_to_face(state_j, grad_j, r_j, dt_extrap, &state_r);
 
             // a side whose extrapolation does not keep rho and P positive stays first order
             if (!rho_and_P_positive(state_l)) state_l = state_i;
@@ -526,32 +517,33 @@ namespace hydro {
 #endif
     }
 
-    // state at seed + dx, from the gradient
-    HD void apply_spatial_extrapolation(const prim                    state,
-                                        const gradients::PrimGradient gradient,
-                                        POINT_TYPE                    dx,
-                                        prim*                         st_extrap) {
+    // rho, v and P at dx from where the gradient was taken, dt_extrap later; E from those
+    HD void extrapolate_to_face(
+        const prim state, const gradients::PrimGradient gradient, POINT_TYPE dx, double dt_extrap, prim* st_extrap) {
+        const double P = get_P_ideal_gas(&state);
+
         st_extrap->rho = state.rho + point_dot(gradient.rho, dx);
         st_extrap->v.x = state.v.x + point_dot(gradient.vx, dx);
         st_extrap->v.y = state.v.y + point_dot(gradient.vy, dx);
 #ifdef dim_3D
         st_extrap->v.z = state.v.z + point_dot(gradient.vz, dx);
 #endif
-        st_extrap->E = state.E + point_dot(gradient.E, dx);
-    }
+        double P_extrap = P + point_dot(gradient.P, dx);
 
-    // state dt_extrap later, from the Euler equations
-    HD void apply_time_extrapolation(prim state_i, gradients::PrimGradient grad_i, double dt_extrap, prim* st_extrap) {
-        prim dWdt;
-        gradients::time_gradient(state_i, grad_i, &dWdt);
+        if (dt_extrap != 0.0) {
+            gradients::PrimRates dWdt;
+            gradients::time_gradient(state, P, gradient, &dWdt);
 
-        st_extrap->rho += dt_extrap * dWdt.rho;
-        st_extrap->v.x += dt_extrap * dWdt.v.x;
-        st_extrap->v.y += dt_extrap * dWdt.v.y;
+            st_extrap->rho += dt_extrap * dWdt.rho;
+            st_extrap->v.x += dt_extrap * dWdt.v.x;
+            st_extrap->v.y += dt_extrap * dWdt.v.y;
 #ifdef dim_3D
-        st_extrap->v.z += dt_extrap * dWdt.v.z;
+            st_extrap->v.z += dt_extrap * dWdt.v.z;
 #endif
-        st_extrap->E += dt_extrap * dWdt.E;
+            P_extrap += dt_extrap * dWdt.P;
+        }
+
+        st_extrap->E = P_extrap / (gamma_eos - 1.0) + 0.5 * st_extrap->rho * point_dot(st_extrap->v, st_extrap->v);
     }
 
     HD bool rho_and_P_positive(const prim& state) {

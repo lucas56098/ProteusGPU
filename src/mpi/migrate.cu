@@ -411,7 +411,7 @@ namespace proteus_mpi {
 #ifdef dim_3D
                 grads->vz[k_remove] = grads->vz[k_last];
 #endif
-                grads->E[k_remove]      = grads->E[k_last];
+                grads->P[k_remove]      = grads->P[k_last];
                 grads->anchor[k_remove] = grads->anchor[k_last];
 #endif
             }

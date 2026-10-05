@@ -82,8 +82,15 @@ namespace gradients {
 #ifdef dim_3D
         POINT_TYPE vz;
 #endif
-        POINT_TYPE E;
+        POINT_TYPE P;
         POINT_TYPE anchor; // cell centroid - seed at that time
+    };
+
+    // time derivatives of rho, v and P
+    struct PrimRates {
+        double     rho;
+        POINT_TYPE v;
+        double     P;
     };
 
     // SoA gradients with the same ghost split as primvars
@@ -94,7 +101,7 @@ namespace gradients {
 #ifdef dim_3D
         POINT_TYPE* vz;
 #endif
-        POINT_TYPE* E;
+        POINT_TYPE* P;
         POINT_TYPE* anchor;
         size_t      n;
 
@@ -104,7 +111,7 @@ namespace gradients {
 #ifdef dim_3D
         POINT_TYPE* vz_g;
 #endif
-        POINT_TYPE* E_g;
+        POINT_TYPE* P_g;
         POINT_TYPE* anchor_g;
 
         HD inline PrimGradient load(size_t i) const {
@@ -115,7 +122,7 @@ namespace gradients {
 #ifdef dim_3D
             g.vz = vz[i];
 #endif
-            g.E      = E[i];
+            g.P      = P[i];
             g.anchor = anchor[i];
             return g;
         }
@@ -130,7 +137,7 @@ namespace gradients {
 #ifdef dim_3D
                 g.vz = vz[k];
 #endif
-                g.E      = E[k];
+                g.P      = P[k];
                 g.anchor = anchor[k];
             } else {
                 const int s = k - n_hydro;
@@ -140,7 +147,7 @@ namespace gradients {
 #ifdef dim_3D
                 g.vz = vz_g[s];
 #endif
-                g.E      = E_g[s];
+                g.P      = P_g[s];
                 g.anchor = anchor_g[s];
             }
             return g;

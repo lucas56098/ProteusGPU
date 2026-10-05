@@ -12,10 +12,7 @@ namespace gradients {
                                                   const double      max_value,
                                                   const POINT_TYPE& d,
                                                   const POINT_TYPE& grad);
-    HD static inline double
-    recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s);
-    HD static inline double
-    pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor);
+    HD static inline double pressure(const hydro::prim& state);
     HD static inline POINT_TYPE
     face_point(uint64_t i, uint64_t face_idx, const VMesh* mesh, int n_hydro_int, const POINT_TYPE& com_off_i);
 
@@ -27,64 +24,37 @@ namespace gradients {
             "GRAD_KERNEL", mesh->n_hydro, [=] HD(size_t i) { compute_gradient_for_cell(i, mesh, primvar, grads); });
     }
 
-    // time derivative of rho, v and E from the Euler equations; along the flow with a moving mesh
-    HD void time_gradient(hydro::prim state_i, PrimGradient grad_i, hydro::prim* dWdt) {
+    // time derivative of rho, v and P from the Euler equations; along the flow with a moving mesh
+    HD void time_gradient(hydro::prim state_i, double P_i, PrimGradient grad_i, PrimRates* dWdt) {
 
-        // divergence of v, and v times its gradient
-        double v2   = point_dot(state_i.v, state_i.v);
         double divv = grad_i.vx.x + grad_i.vy.y;
-        double kinx = state_i.v.x * grad_i.vx.x + state_i.v.y * grad_i.vy.x;
-        double kiny = state_i.v.x * grad_i.vx.y + state_i.v.y * grad_i.vy.y;
 #ifdef dim_3D
         divv += grad_i.vz.z;
-        kinx += state_i.v.z * grad_i.vz.x;
-        kiny += state_i.v.z * grad_i.vz.y;
-        const double kinz = state_i.v.x * grad_i.vx.z + state_i.v.y * grad_i.vy.z + state_i.v.z * grad_i.vz.z;
 #endif
-
-        // pressure and its gradient
-        const double P     = (gamma_eos - 1.0) * (state_i.E - 0.5 * state_i.rho * v2);
-        const double dP_dx = (gamma_eos - 1.0) * (grad_i.E.x - 0.5 * (v2 * grad_i.rho.x + 2.0 * state_i.rho * kinx));
-        const double dP_dy = (gamma_eos - 1.0) * (grad_i.E.y - 0.5 * (v2 * grad_i.rho.y + 2.0 * state_i.rho * kiny));
-#ifdef dim_3D
-        const double dP_dz = (gamma_eos - 1.0) * (grad_i.E.z - 0.5 * (v2 * grad_i.rho.z + 2.0 * state_i.rho * kinz));
-#endif
+        const double inv_rho = 1.0 / state_i.rho;
 
 #ifdef MOVING_MESH
         // along the flow: the extrapolation vector carries the motion of the gas instead
-        const double inv_rho = 1.0 / state_i.rho;
-        dWdt->rho            = -state_i.rho * divv;
-        dWdt->v.x            = -dP_dx * inv_rho;
-        dWdt->v.y            = -dP_dy * inv_rho;
+        dWdt->rho = -state_i.rho * divv;
+        dWdt->v.x = -grad_i.P.x * inv_rho;
+        dWdt->v.y = -grad_i.P.y * inv_rho;
 #ifdef dim_3D
-        dWdt->v.z = -dP_dz * inv_rho;
-        dWdt->E   = -(state_i.v.x * dP_dx + state_i.v.y * dP_dy + state_i.v.z * dP_dz + (state_i.E + P) * divv);
-#else
-        dWdt->E = -(state_i.v.x * dP_dx + state_i.v.y * dP_dy + (state_i.E + P) * divv);
+        dWdt->v.z = -grad_i.P.z * inv_rho;
 #endif
+        dWdt->P = -gamma_eos * P_i * divv;
 #else
         // continuity
-        dWdt->rho = -(state_i.v.x * grad_i.rho.x + state_i.v.y * grad_i.rho.y + state_i.rho * divv);
-#ifdef dim_3D
-        dWdt->rho -= state_i.v.z * grad_i.rho.z;
-#endif
+        dWdt->rho = -(point_dot(state_i.v, grad_i.rho) + state_i.rho * divv);
 
         // momentum
-        double inv_rho = 1.0 / state_i.rho;
-        dWdt->v.x      = -(state_i.v.x * grad_i.vx.x + state_i.v.y * grad_i.vx.y) - dP_dx * inv_rho;
-        dWdt->v.y      = -(state_i.v.x * grad_i.vy.x + state_i.v.y * grad_i.vy.y) - dP_dy * inv_rho;
+        dWdt->v.x = -point_dot(state_i.v, grad_i.vx) - grad_i.P.x * inv_rho;
+        dWdt->v.y = -point_dot(state_i.v, grad_i.vy) - grad_i.P.y * inv_rho;
 #ifdef dim_3D
-        dWdt->v.x -= state_i.v.z * grad_i.vx.z;
-        dWdt->v.y -= state_i.v.z * grad_i.vy.z;
-        dWdt->v.z =
-            -(state_i.v.x * grad_i.vz.x + state_i.v.y * grad_i.vz.y + state_i.v.z * grad_i.vz.z) - dP_dz * inv_rho;
+        dWdt->v.z = -point_dot(state_i.v, grad_i.vz) - grad_i.P.z * inv_rho;
 #endif
 
-        // energy
-        dWdt->E = -(state_i.v.x * (grad_i.E.x + dP_dx) + state_i.v.y * (grad_i.E.y + dP_dy) + (state_i.E + P) * divv);
-#ifdef dim_3D
-        dWdt->E -= state_i.v.z * (grad_i.E.z + dP_dz);
-#endif
+        // pressure
+        dWdt->P = -(point_dot(state_i.v, grad_i.P) + gamma_eos * P_i * divv);
 #endif
     }
 
@@ -92,7 +62,8 @@ namespace gradients {
     HD void
     compute_gradient_for_cell(uint64_t i, const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads) {
 
-        hydro::prim state_i = get_state(i, primvar);
+        hydro::prim  state_i = get_state(i, primvar);
+        const double P_i     = pressure(state_i);
 
 // normal equations: one matrix for all variables, one right side each
 #ifdef dim_2D
@@ -100,14 +71,14 @@ namespace gradients {
         double b_rho_0 = 0.0, b_rho_1 = 0.0;
         double b_vx_0 = 0.0, b_vx_1 = 0.0;
         double b_vy_0 = 0.0, b_vy_1 = 0.0;
-        double b_E_0 = 0.0, b_E_1 = 0.0;
+        double b_P_0 = 0.0, b_P_1 = 0.0;
 #else
         double m00 = 0.0, m01 = 0.0, m02 = 0.0, m11 = 0.0, m12 = 0.0, m22 = 0.0;
         double b_rho_0 = 0.0, b_rho_1 = 0.0, b_rho_2 = 0.0;
         double b_vx_0 = 0.0, b_vx_1 = 0.0, b_vx_2 = 0.0;
         double b_vy_0 = 0.0, b_vy_1 = 0.0, b_vy_2 = 0.0;
         double b_vz_0 = 0.0, b_vz_1 = 0.0, b_vz_2 = 0.0;
-        double b_E_0 = 0.0, b_E_1 = 0.0, b_E_2 = 0.0;
+        double b_P_0 = 0.0, b_P_1 = 0.0, b_P_2 = 0.0;
 #endif
 
         // range of the cell and its neighbours, for the limiter
@@ -117,7 +88,7 @@ namespace gradients {
 #ifdef dim_3D
         double min_vz = state_i.v.z, max_vz = state_i.v.z;
 #endif
-        double min_E = state_i.E, max_E = state_i.E;
+        double min_P = P_i, max_P = P_i;
 
         uint64_t  face_count  = mesh->face_counts[i];
         uint64_t  face_start  = mesh->face_ptr[i];
@@ -160,7 +131,8 @@ namespace gradients {
 #ifdef dim_3D
             d_state.v.z = state_j.v.z - state_i.v.z;
 #endif
-            d_state.E = state_j.E - state_i.E;
+            const double P_j = pressure(state_j);
+            const double d_P = P_j - P_i;
 
             b_rho_0 += weight * dx.x * d_state.rho;
             b_rho_1 += weight * dx.y * d_state.rho;
@@ -168,8 +140,8 @@ namespace gradients {
             b_vx_1 += weight * dx.y * d_state.v.x;
             b_vy_0 += weight * dx.x * d_state.v.y;
             b_vy_1 += weight * dx.y * d_state.v.y;
-            b_E_0 += weight * dx.x * d_state.E;
-            b_E_1 += weight * dx.y * d_state.E;
+            b_P_0 += weight * dx.x * d_P;
+            b_P_1 += weight * dx.y * d_P;
 #ifdef dim_3D
             b_rho_2 += weight * dx.z * d_state.rho;
             b_vx_2 += weight * dx.z * d_state.v.x;
@@ -177,7 +149,7 @@ namespace gradients {
             b_vz_0 += weight * dx.x * d_state.v.z;
             b_vz_1 += weight * dx.y * d_state.v.z;
             b_vz_2 += weight * dx.z * d_state.v.z;
-            b_E_2 += weight * dx.z * d_state.E;
+            b_P_2 += weight * dx.z * d_P;
 #endif
 
             min_rho = fmin(min_rho, state_j.rho);
@@ -190,8 +162,8 @@ namespace gradients {
             min_vz = fmin(min_vz, state_j.v.z);
             max_vz = fmax(max_vz, state_j.v.z);
 #endif
-            min_E = fmin(min_E, state_j.E);
-            max_E = fmax(max_E, state_j.E);
+            min_P = fmin(min_P, P_j);
+            max_P = fmax(max_P, P_j);
         }
 
 #ifdef dim_2D
@@ -199,17 +171,17 @@ namespace gradients {
         solve_weighted_lsq_2d(m00, m01, m11, b_rho_0, b_rho_1, &grads->rho[i]);
         solve_weighted_lsq_2d(m00, m01, m11, b_vx_0, b_vx_1, &grads->vx[i]);
         solve_weighted_lsq_2d(m00, m01, m11, b_vy_0, b_vy_1, &grads->vy[i]);
-        solve_weighted_lsq_2d(m00, m01, m11, b_E_0, b_E_1, &grads->E[i]);
+        solve_weighted_lsq_2d(m00, m01, m11, b_P_0, b_P_1, &grads->P[i]);
 #else
         solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_rho_0, b_rho_1, b_rho_2, &grads->rho[i]);
         solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vx_0, b_vx_1, b_vx_2, &grads->vx[i]);
         solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vy_0, b_vy_1, b_vy_2, &grads->vy[i]);
         solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_vz_0, b_vz_1, b_vz_2, &grads->vz[i]);
-        solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_E_0, b_E_1, b_E_2, &grads->E[i]);
+        solve_weighted_lsq_3d(m00, m01, m02, m11, m12, m22, b_P_0, b_P_1, b_P_2, &grads->P[i]);
 #endif
 
         // limiter: scale the gradient down until no face value leaves the neighbour range
-        double alpha_rho = 1.0, alpha_vx = 1.0, alpha_vy = 1.0, alpha_E = 1.0;
+        double alpha_rho = 1.0, alpha_vx = 1.0, alpha_vy = 1.0, alpha_P = 1.0;
 #ifdef dim_3D
         double alpha_vz = 1.0;
 #endif
@@ -222,7 +194,7 @@ namespace gradients {
 #ifdef dim_3D
             alpha_vz = fmin(alpha_vz, limit_single_gradient(state_i.v.z, min_vz, max_vz, d, grads->vz[i]));
 #endif
-            alpha_E = fmin(alpha_E, limit_single_gradient(state_i.E, min_E, max_E, d, grads->E[i]));
+            alpha_P = fmin(alpha_P, limit_single_gradient(P_i, min_P, max_P, d, grads->P[i]));
         }
 
         grads->rho[i] = point_mul(alpha_rho, grads->rho[i]);
@@ -231,25 +203,7 @@ namespace gradients {
 #ifdef dim_3D
         grads->vz[i] = point_mul(alpha_vz, grads->vz[i]);
 #endif
-        grads->E[i] = point_mul(alpha_E, grads->E[i]);
-
-        // second limiter: keep the reconstructed pressure above the floor
-        const double p_floor       = 1e-12;
-        PrimGradient grad_i_scaled = grads->load(i);
-        double       alpha_p       = 1.0;
-        for (uint64_t fj = 0; fj < face_count; fj++) {
-            const POINT_TYPE d = face_point(i, face_start + fj, mesh, n_hydro_int, com_off_i);
-            alpha_p            = fmin(alpha_p, pressure_safe_scale(state_i, grad_i_scaled, d, p_floor));
-        }
-        if (alpha_p < 1.0) {
-            grads->rho[i] = point_mul(alpha_p, grads->rho[i]);
-            grads->vx[i]  = point_mul(alpha_p, grads->vx[i]);
-            grads->vy[i]  = point_mul(alpha_p, grads->vy[i]);
-#ifdef dim_3D
-            grads->vz[i] = point_mul(alpha_p, grads->vz[i]);
-#endif
-            grads->E[i] = point_mul(alpha_p, grads->E[i]);
-        }
+        grads->P[i] = point_mul(alpha_P, grads->P[i]);
     }
 
     // factor that keeps value + grad . d between min_value and max_value
@@ -285,37 +239,9 @@ namespace gradients {
         return fac;
     }
 
-    // pressure at d with the gradient scaled by s
-    HD static inline double
-    recon_pressure(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double s) {
-        double rho = state_i.rho + s * point_dot(grad_i.rho, d);
-        double vx  = state_i.v.x + s * point_dot(grad_i.vx, d);
-        double vy  = state_i.v.y + s * point_dot(grad_i.vy, d);
-#ifdef dim_3D
-        double vz = state_i.v.z + s * point_dot(grad_i.vz, d);
-        double v2 = vx * vx + vy * vy + vz * vz;
-#else
-        double v2 = vx * vx + vy * vy;
-#endif
-        double E = state_i.E + s * point_dot(grad_i.E, d);
-        return (gamma_eos - 1.0) * (E - 0.5 * rho * v2);
-    }
-
-    // largest scale that holds the pressure at the floor, by bisection
-    HD static inline double
-    pressure_safe_scale(const hydro::prim& state_i, const PrimGradient& grad_i, const POINT_TYPE& d, double p_floor) {
-        if (recon_pressure(state_i, grad_i, d, 1.0) >= p_floor) return 1.0;
-
-        double s_lo = 0.0;
-        double s_hi = 1.0;
-        for (int it = 0; it < 16; ++it) {
-            double s_mid = 0.5 * (s_lo + s_hi);
-            if (recon_pressure(state_i, grad_i, d, s_mid) >= p_floor)
-                s_lo = s_mid;
-            else
-                s_hi = s_mid;
-        }
-        return s_lo;
+    // pressure of an ideal gas with total energy E
+    HD static inline double pressure(const hydro::prim& state) {
+        return (gamma_eos - 1.0) * (state.E - 0.5 * state.rho * point_dot(state.v, state.v));
     }
 
     // face centroid seen from the centroid of cell i, the same point the first flux extrapolates to
