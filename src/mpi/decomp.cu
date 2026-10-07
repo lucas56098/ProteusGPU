@@ -14,7 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 
-namespace proteus_mpi {
+namespace mpi {
 
     MpiDecomp decomp = {};
 
@@ -328,6 +328,7 @@ namespace proteus_mpi {
 
 #ifdef USE_MPI
     static double s_pre_imbalance = 1.0;
+    static bool   s_new_cuts      = false; // set by a rebalance, the migration after it logs the result
 
     // largest cell count over all ranks, divided by the mean
     static void compute_imbalance_probe(VMesh* mesh, int* n_max, long long* n_avg, double* imbalance) {
@@ -368,11 +369,11 @@ namespace proteus_mpi {
 #ifdef USE_MPI
 
     // new cuts from the cells at their new position, if the imbalance is worth it
-    bool rebalance_decide(int step, VMesh* mesh, POINT_TYPE* pts) {
-        if (sim.rebalance_interval <= 0) return false;
-        if (step <= 0) return false;
-        if (step % sim.rebalance_interval != 0) return false;
-        if (decomp.nranks <= 1) return false;
+    void rebalance(int step, VMesh* mesh) {
+        if (sim.rebalance_interval <= 0) return;
+        if (step <= 0) return;
+        if (step % sim.rebalance_interval != 0) return;
+        if (decomp.nranks <= 1) return;
 
         PROFILE("BALANCE");
 
@@ -386,7 +387,7 @@ namespace proteus_mpi {
                 printf("DECOMP: Skipped rebalancing (below threshold, imbalance=%.2f)\n", pre_imbalance);
                 fflush(stdout);
             }
-            return false;
+            return;
         }
 
         // the kNN sort arrays are free here: the next build sorts its points again before any search
@@ -405,7 +406,7 @@ namespace proteus_mpi {
         std::vector<uint64_t> cuts;
         {
             PROFILE("CUTS");
-            decomp_balanced_cuts(pts, n_hydro, sort, &cuts);
+            decomp_balanced_cuts(mesh->scratch_move, n_hydro, sort, &cuts);
         }
 
         // nothing to gain if the cuts come out where they already are
@@ -417,16 +418,17 @@ namespace proteus_mpi {
                 printf("DECOMP: Skipped rebalancing (cuts unchanged, imbalance=%.2f)\n", pre_imbalance);
                 fflush(stdout);
             }
-            return false;
+            return;
         }
 
         s_pre_imbalance = pre_imbalance;
+        s_new_cuts      = true;
         decomp_set_cuts(cuts.data());
-        return true;
     }
 
     void rebalance_log_after_migration(VMesh* mesh) {
-        if (decomp.nranks <= 1) return;
+        if (!s_new_cuts) return;
+        s_new_cuts = false;
         int       n_max;
         long long n_avg;
         double    post_imbalance;
@@ -439,11 +441,9 @@ namespace proteus_mpi {
 
 #else
 
-    bool rebalance_decide(int, VMesh*, POINT_TYPE*) {
-        return false;
-    }
+    void rebalance(int, VMesh*) {}
     void rebalance_log_after_migration(VMesh*) {}
 
 #endif
 
-} // namespace proteus_mpi
+} // namespace mpi

@@ -12,7 +12,7 @@ namespace voronoi {
 
     // allocates all mesh arrays, once at startup
     VMesh* allocate_mesh(uint64_t n_hydro) {
-        const uint64_t ext        = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
+        const uint64_t ext        = (uint64_t)mpi::max_n_local((int)n_hydro);
         const uint64_t max_ghosts = ghost_guess(ext);
         const uint64_t total      = ext + max_ghosts;
         const uint64_t max_faces  = ext * _FACE_CAPACITY_MULT_;
@@ -67,7 +67,7 @@ namespace voronoi {
 #endif
 
         // ghost arrays, none without MPI
-        const int gc = proteus_mpi::n_mpi_capacity;
+        const int gc = mpi::n_mpi_capacity;
         if (gc > 0) {
             mesh->seeds_g   = gpu_alloc<double3>(gc);
             mesh->com_off_g = gpu_alloc<POINT_TYPE>(gc);

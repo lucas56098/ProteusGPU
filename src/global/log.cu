@@ -33,7 +33,7 @@ namespace logging {
 
     // rank 0 gets std::cout, every other rank the sink
     std::ostream& root() {
-        return proteus_mpi::is_root() ? std::cout : null_stream();
+        return mpi::is_root() ? std::cout : null_stream();
     }
 
 #ifdef USE_MPI
@@ -43,7 +43,7 @@ namespace logging {
         template <typename T> T reduce_global(T local, MPI_Datatype dtype, MPI_Op op) {
             PROFILE_MPI("ALLREDUCE");
             T g = local;
-            MPI_Allreduce(&local, &g, 1, dtype, op, proteus_mpi::decomp.comm);
+            MPI_Allreduce(&local, &g, 1, dtype, op, mpi::decomp.comm);
             return g;
         }
 

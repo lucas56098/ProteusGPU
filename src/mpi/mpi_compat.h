@@ -10,7 +10,7 @@
 #include <mpi.h>
 #endif
 
-namespace proteus_mpi {
+namespace mpi {
 
     // starts MPI and picks the GPU of this rank
     void init(int* argc, char*** argv);
@@ -34,6 +34,6 @@ namespace proteus_mpi {
     double min_over_ranks(double v);
     double sum_over_ranks(double v);
 
-} // namespace proteus_mpi
+} // namespace mpi
 
 #endif

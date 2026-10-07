@@ -74,8 +74,7 @@ std::string InputHandler::get_parameter(const std::string& key) const {
         return it->second;     // return parameter
     }
 
-    proteus_mpi::exit_failure(
-        "INPUT: Error! Required parameter '%s' not found in %s\n", key.c_str(), param_file_path.c_str());
+    mpi::exit_failure("INPUT: Error! Required parameter '%s' not found in %s\n", key.c_str(), param_file_path.c_str());
 }
 
 // checks if a parameter(key) exists
@@ -95,10 +94,10 @@ double InputHandler::get_parameter_double(const std::string& key) const {
     errno             = 0;
     const double v    = std::strtod(begin, &end);
     if (end == begin || *end != '\0' || errno == ERANGE || !std::isfinite(v)) {
-        proteus_mpi::exit_failure("INPUT: Error! Parameter '%s' in %s has value '%s', which is not a finite number\n",
-                                  key.c_str(),
-                                  param_file_path.c_str(),
-                                  value.c_str());
+        mpi::exit_failure("INPUT: Error! Parameter '%s' in %s has value '%s', which is not a finite number\n",
+                          key.c_str(),
+                          param_file_path.c_str(),
+                          value.c_str());
     }
     return v;
 }
@@ -109,10 +108,10 @@ int InputHandler::get_parameter_int(const std::string& key) const {
 
     // ensure 1e1 passes but 10.7 does not
     if (v != std::floor(v) || v < (double)INT_MIN || v > (double)INT_MAX) {
-        proteus_mpi::exit_failure("INPUT: Error! Parameter '%s' in %s has value '%s', which is not an integer\n",
-                                  key.c_str(),
-                                  param_file_path.c_str(),
-                                  parameters.at(key).c_str());
+        mpi::exit_failure("INPUT: Error! Parameter '%s' in %s has value '%s', which is not an integer\n",
+                          key.c_str(),
+                          param_file_path.c_str(),
+                          parameters.at(key).c_str());
     }
     return (int)v;
 }
@@ -402,7 +401,7 @@ bool InputHandler::read_snapshot_file(const std::string& filename, ICData& ic_da
         }
 
 #ifdef MOVING_MESH
-        // load v_mesh as its only written in hydro_step; else first dt after restart would use zeros
+        // load v_mesh as its only written in the time step; else first dt after restart would use zeros
         if (H5Lexists(mesh_group, "v_mesh", H5P_DEFAULT) <= 0) {
             std::cerr << "INPUT: Error! Snapshot " << filename
                       << " has no mesh/v_mesh, so it predates moving-mesh restart support. "

@@ -14,12 +14,12 @@ namespace voronoi {
     sphere_is_covered(const POINT_TYPE& seed, double sec_d2, double req_r2, const uint64_t* cuts, int nranks, int me) {
         const double sec_r = sqrt(sec_d2);
         if (req_r2 > 0.0 && sec_r <= sqrt(req_r2)) return true;
-        return proteus_mpi::ball_is_local(seed, sec_r, cuts, nranks, me);
+        return mpi::ball_is_local(seed, sec_r, cuts, nranks, me);
     }
 
     // the mean cell spacing on this rank, from the share of the curve it holds
     static double mean_spacing_of_rank(int n) {
-        const auto&  dc    = proteus_mpi::decomp;
+        const auto&  dc    = mpi::decomp;
         const double share = (double)(dc.cuts[dc.rank + 1] - dc.cuts[dc.rank]) / (double)knn::DOMAIN_KEY_END;
         return std::pow(share / (double)std::max(n, 1), 1.0 / (double)DIMENSION);
     }
@@ -54,16 +54,16 @@ namespace voronoi {
         const knn_problem* knn     = mesh->knn;
         double*            est_r   = mesh->est_r;
         double*            req_r2  = mesh->req_r2;
-        const uint64_t*    cuts    = proteus_mpi::decomp.cuts;
-        const int          nranks  = proteus_mpi::decomp.nranks;
-        const int          me      = proteus_mpi::decomp.rank;
+        const uint64_t*    cuts    = mpi::decomp.cuts;
+        const int          nranks  = mpi::decomp.nranks;
+        const int          me      = mpi::decomp.rank;
         const int*         sorted  = (const int*)mesh->real_sorted_ids;
         const double       r_local = std::fmin(LOCAL_SPACINGS * mean_spacing_of_rank(n), MAX_BALL_RADIUS);
         double*            ball_r  = mesh->ball_r;
 
         parallel_for<_VORO_BLOCK_SIZE_>("GUESS", n, [=] HD(int k) {
             // deep inside: the guess starts from that distance, nothing to ask
-            if (proteus_mpi::ball_is_local(cell_pos[k], r_local, cuts, nranks, me)) {
+            if (mpi::ball_is_local(cell_pos[k], r_local, cuts, nranks, me)) {
                 est_r[k]  = r_local;
                 req_r2[k] = 0.0;
                 ball_r[k] = 0.0;
@@ -80,12 +80,12 @@ namespace voronoi {
             double r = FIRST_GUESS_FACTOR * sqrt(d2);
             if (!(r > 0.0) || r > MAX_BALL_RADIUS) r = MAX_BALL_RADIUS;
             est_r[k]  = r;
-            req_r2[k] = proteus_mpi::ball_is_local(cell_pos[k], r, cuts, nranks, me) ? 0.0 : r * r;
+            req_r2[k] = mpi::ball_is_local(cell_pos[k], r, cuts, nranks, me) ? 0.0 : r * r;
             ball_r[k] = (req_r2[k] > 0.0) ? r : 0.0;
         });
 
         const int nb = compact_balls(mesh);
-        proteus_mpi::halo_request_balls(mesh, cell_pos, mesh->ball_cell, mesh->ball_rad, nb);
+        mpi::halo_request_balls(mesh, cell_pos, mesh->ball_cell, mesh->ball_rad, nb);
     }
 
     // a finished cell whose sphere is not covered is left open, its sphere is what it needs next
@@ -95,9 +95,9 @@ namespace voronoi {
         Status*         stat   = mesh->cell_status;
         const double*   sec_d2 = mesh->security_d2;
         const double*   req_r2 = mesh->req_r2;
-        const uint64_t* cuts   = proteus_mpi::decomp.cuts;
-        const int       nranks = proteus_mpi::decomp.nranks;
-        const int       me     = proteus_mpi::decomp.rank;
+        const uint64_t* cuts   = mpi::decomp.cuts;
+        const int       nranks = mpi::decomp.nranks;
+        const int       me     = mpi::decomp.rank;
 
         parallel_for<_MESH_BLOCK_SIZE_>("CERTIFY", n, [=] HD(int k) {
             if (stat[k] != success) return;
@@ -162,7 +162,7 @@ namespace voronoi {
 
     // asks for the balls the last request_open_balls collected
     void send_open_balls(VMesh* mesh, const POINT_TYPE* cell_pos, int nb) {
-        proteus_mpi::halo_request_balls(mesh, cell_pos, mesh->ball_cell, mesh->ball_rad, nb);
+        mpi::halo_request_balls(mesh, cell_pos, mesh->ball_cell, mesh->ball_rad, nb);
     }
 
 } // namespace voronoi

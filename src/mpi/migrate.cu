@@ -10,7 +10,7 @@
 
 #include <vector>
 
-namespace proteus_mpi {
+namespace mpi {
 
     static int s_last_n_migrated = 0;
 
@@ -187,6 +187,7 @@ namespace proteus_mpi {
         mesh->n_hydro = (uint64_t)n_new;
 
         check_conservation(n_new);
+        rebalance_log_after_migration(mesh);
 #endif
     }
 
@@ -305,4 +306,4 @@ namespace proteus_mpi {
 
 #endif
 
-} // namespace proteus_mpi
+} // namespace mpi

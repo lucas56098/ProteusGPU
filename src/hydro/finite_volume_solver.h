@@ -14,14 +14,20 @@ namespace hydro {
     void init_hydro();
     void free_hydro();
 
-    // one full step
-    void hydro_step(double dt, VMesh* mesh, primvars* primvar);
+    // mass, momentum and energy of every cell from its state and volume, and back
+    void prim_to_cons(const VMesh* mesh, const primvars* primvar, ConsVars* cons);
+    void cons_to_prim(const VMesh* mesh, const ConsVars* cons, primvars* primvar);
+
+    // the fluxes over all faces for dt_update; dt_extrap > 0 also extrapolates the states in time
     void apply_flux_update(double                          dt_update,
                            double                          dt_extrap,
                            const VMesh*                    mesh,
                            const primvars*                 prim_old,
                            const gradients::PrimGradients* grads,
                            ConsVars*                       cons);
+
+    // stops the run if any cell has rho <= 0, E <= 0 or a NaN
+    void check_unphysical_state(const VMesh* mesh, const primvars* primvar);
     // smallest CFL step over all cells and ranks
     double calc_timestep(double CFL, const VMesh* mesh, const primvars* primvar);
 
@@ -49,7 +55,7 @@ namespace hydro {
 
     // the primvars: cells with growth headroom, plus the MPI ghosts
     inline void allocate_prim_buffer(uint64_t n_hydro, primvars* primvar) {
-        const uint64_t ext = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
+        const uint64_t ext = (uint64_t)mpi::max_n_local((int)n_hydro);
         primvar->rho       = gpu_alloc<double>(ext);
         primvar->v         = gpu_alloc<POINT_TYPE>(ext);
         primvar->E         = gpu_alloc<double>(ext);
@@ -58,7 +64,7 @@ namespace hydro {
         gpu_advise_gpu_preferred(primvar->v, ext * sizeof(POINT_TYPE));
         gpu_advise_gpu_preferred(primvar->E, ext * sizeof(double));
 
-        const int gc = proteus_mpi::n_mpi_capacity;
+        const int gc = mpi::n_mpi_capacity;
         if (gc > 0) {
             primvar->rho_g = gpu_alloc<double>(gc);
             primvar->v_g   = gpu_alloc<POINT_TYPE>(gc);
@@ -87,7 +93,7 @@ namespace hydro {
 
     // the conserved variables: cells with growth headroom, no ghosts
     inline void allocate_cons_buffer(uint64_t n_hydro, ConsVars* cons) {
-        const uint64_t ext = (uint64_t)proteus_mpi::max_n_local((int)n_hydro);
+        const uint64_t ext = (uint64_t)mpi::max_n_local((int)n_hydro);
         cons->mass         = gpu_alloc<double>(ext);
         cons->momentum     = gpu_alloc<POINT_TYPE>(ext);
         cons->energy       = gpu_alloc<double>(ext);

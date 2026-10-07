@@ -109,11 +109,19 @@ namespace voronoi {
                                hydro::ConsVars*          cons,
                                gradients::PrimGradients* grads);
 
+    // the same for the moved seeds in mesh->scratch_move
+    inline void compute_periodic_mesh(VMesh*                    mesh,
+                                      hydro::primvars*          primvar,
+                                      hydro::ConsVars*          cons,
+                                      gradients::PrimGradients* grads) {
+        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, cons, grads);
+    }
+
     // move it
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);
 
-    void
-    move_mesh(VMesh* mesh, double dt, hydro::primvars* primvar, hydro::ConsVars* cons, gradients::PrimGradients* grads);
+    // the seeds moved by v_mesh dt into mesh->scratch_move, mesh->seeds stays until the next build
+    void move_seeds(VMesh* mesh, double dt);
 
 } // namespace voronoi
 

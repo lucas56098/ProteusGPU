@@ -20,7 +20,7 @@
 #endif
 #endif
 
-namespace proteus_mpi {
+namespace mpi {
 
 #ifdef USE_MPI
     static int  s_rank            = 0;
@@ -188,4 +188,4 @@ namespace proteus_mpi {
 #endif
     }
 
-} // namespace proteus_mpi
+} // namespace mpi

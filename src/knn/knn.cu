@@ -62,7 +62,7 @@ namespace knn {
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
 
         if (len_pts > knn->pts_capacity) {
-            proteus_mpi::exit_failure(
+            mpi::exit_failure(
                 "KNN: Error! point count %d exceeds pre-allocated capacity %d. Increase ghost headroom.\n",
                 len_pts,
                 knn->pts_capacity);

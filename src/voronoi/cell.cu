@@ -382,10 +382,10 @@ namespace voronoi {
     // the face arrays do not grow
     void ensure_face_capacity(VMesh* mesh, uint64_t needed) {
         if (needed <= mesh->face_capacity) return;
-        proteus_mpi::exit_failure("VORONOI: Error! face count %llu exceeds pre-allocated face capacity %llu. "
-                                  "Increase _FACE_CAPACITY_MULT_ in Config.sh.\n",
-                                  (unsigned long long)needed,
-                                  (unsigned long long)mesh->face_capacity);
+        mpi::exit_failure("VORONOI: Error! face count %llu exceeds pre-allocated face capacity %llu. "
+                          "Increase _FACE_CAPACITY_MULT_ in Config.sh.\n",
+                          (unsigned long long)needed,
+                          (unsigned long long)mesh->face_capacity);
     }
 
     // starts as the box plus margin: the wall planes and their corners

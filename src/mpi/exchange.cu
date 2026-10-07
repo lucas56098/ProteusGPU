@@ -11,7 +11,7 @@
 #include <climits>
 #include <utility>
 
-namespace proteus_mpi {
+namespace mpi {
 
     // a run of equal keys is one block; only the first index of every run goes to the host
     Blocks blocks_of_sorted_ranks(const uint64_t* keys, size_t n, GpuArray<unsigned int>* scratch) {
@@ -238,4 +238,4 @@ namespace proteus_mpi {
 #endif
     }
 
-} // namespace proteus_mpi
+} // namespace mpi

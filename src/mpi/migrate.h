@@ -16,7 +16,7 @@ namespace gradients {
     struct PrimGradients;
 }
 
-namespace proteus_mpi {
+namespace mpi {
 
     void migrate_free();
 
@@ -25,6 +25,6 @@ namespace proteus_mpi {
 
     int last_n_migrated();
 
-} // namespace proteus_mpi
+} // namespace mpi
 
 #endif

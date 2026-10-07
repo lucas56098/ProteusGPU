@@ -80,7 +80,7 @@ namespace voronoi {
         const int  n_hydro = (int)mesh->n_hydro;
         BuildStats stats{};
 
-        proteus_mpi::halo_begin_build();
+        mpi::halo_begin_build();
         take_cpu_built();
         {
             PROFILE("ORDER");
@@ -98,11 +98,11 @@ namespace voronoi {
             stats.rounds = round;
 
             // a round that brought this rank no new ghost would build the same cells again
-            const int n_ghosts = proteus_mpi::halo.n_ghosts;
+            const int n_ghosts = mpi::halo.n_ghosts;
             if (n_ghosts != n_ghosts_built) {
                 mesh_ensure_ghost_capacity(mesh, (uint64_t)n_ghosts);
                 POINT_TYPE* pts = mesh->scratch_pts;
-                proteus_mpi::halo_write_ghosts(mesh, pts);
+                mpi::halo_write_ghosts(mesh, pts);
 
                 compute_mesh(mesh, pts, n_hydro + n_ghosts, round > 0);
                 n_ghosts_built = n_ghosts;
@@ -119,14 +119,14 @@ namespace voronoi {
             const int nb   = local[0];
             const int open = global[0];
             if (global[1] > 0) {
-                proteus_mpi::exit_failure("[rank %d] VORONOI: %d cell(s) reach more than half the box. Too few "
-                                          "cells for this box.\n",
-                                          proteus_mpi::rank(),
-                                          local[1]);
+                mpi::exit_failure("[rank %d] VORONOI: %d cell(s) reach more than half the box. Too few "
+                                  "cells for this box.\n",
+                                  mpi::rank(),
+                                  local[1]);
             }
             if (open == 0) break;
             if (round + 1 >= MAX_REQUEST_ROUNDS) {
-                proteus_mpi::exit_failure(
+                mpi::exit_failure(
                     "VORONOI: %d cell(s) still open after %d request rounds.\n", open, MAX_REQUEST_ROUNDS);
             }
             logging::root() << "VORONOI: " << open << " cell(s) ask for a larger ball, round " << (round + 1)
@@ -138,19 +138,18 @@ namespace voronoi {
         stats.cpu_cells     = take_cpu_built();
         const int n_unbuilt = count_failed_cells(mesh);
         if (n_unbuilt > 0) {
-            proteus_mpi::exit_failure("[rank %d] VORONOI: %d cell(s) left unbuilt after the request rounds.\n",
-                                      proteus_mpi::rank(),
-                                      n_unbuilt);
+            mpi::exit_failure(
+                "[rank %d] VORONOI: %d cell(s) left unbuilt after the request rounds.\n", mpi::rank(), n_unbuilt);
         }
         return stats;
     }
 
     // finds the ghosts a cell really uses and sends their geometry; their state is up to the caller
     static void exchange_ghost_geometry(VMesh* mesh) {
-        proteus_mpi::halo_build_used_subset(mesh);
-        proteus_mpi::halo_exchange_centroids(mesh);
+        mpi::halo_build_used_subset(mesh);
+        mpi::exchange_centroids(mesh);
 #ifdef VOL_REGULARIZE
-        proteus_mpi::halo_exchange_volumes(mesh);
+        mpi::exchange_volumes(mesh);
 #endif
     }
 
@@ -163,10 +162,10 @@ namespace voronoi {
                             << std::endl;
         }
 
-        const long long ghosts_g   = logging::sum_global((long long)proteus_mpi::halo.n_ghosts);
-        const long long mpi_g      = logging::sum_global((long long)proteus_mpi::halo.n_mpi_ghosts);
-        const long long used_g     = logging::sum_global((long long)proteus_mpi::halo.state_recv.total);
-        const long long migrated_g = logging::sum_global((long long)proteus_mpi::last_n_migrated());
+        const long long ghosts_g   = logging::sum_global((long long)mpi::halo.n_ghosts);
+        const long long mpi_g      = logging::sum_global((long long)mpi::halo.n_mpi_ghosts);
+        const long long used_g     = logging::sum_global((long long)mpi::halo.state_recv.total);
+        const long long migrated_g = logging::sum_global((long long)mpi::last_n_migrated());
         if (mpi_g > 0 || migrated_g > 0) {
             logging::root() << "MPI: ghosts=" << ghosts_g << " from other ranks=" << mpi_g << " used=" << used_g
                             << "  migrated=" << migrated_g << std::endl;
@@ -176,7 +175,7 @@ namespace voronoi {
     static void sum_ints_across_ranks(const int* local, int* global, int n) {
 #ifdef USE_MPI
         PROFILE_MPI("ALLREDUCE");
-        MPI_Allreduce(local, global, n, MPI_INT, MPI_SUM, proteus_mpi::decomp.comm);
+        MPI_Allreduce(local, global, n, MPI_INT, MPI_SUM, mpi::decomp.comm);
 #else
         for (int i = 0; i < n; i++)
             global[i] = local[i];

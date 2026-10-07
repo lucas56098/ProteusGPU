@@ -52,20 +52,20 @@ namespace voronoi {
     static void stop_for_failed_cell(int k, const ExactCell& c) {
         const double4_t s = c.cell.voro_seed;
         if (c.status == coincident_points) {
-            proteus_mpi::exit_failure("VORONOI: cell %d at (%g, %g, %g) shares its position with another point. "
-                                      "Two seeds may not sit at the same place.\n",
-                                      k,
-                                      s.x,
-                                      s.y,
-                                      s.z);
+            mpi::exit_failure("VORONOI: cell %d at (%g, %g, %g) shares its position with another point. "
+                              "Two seeds may not sit at the same place.\n",
+                              k,
+                              s.x,
+                              s.y,
+                              s.z);
         }
-        proteus_mpi::exit_failure("VORONOI: cell %d at (%g, %g, %g) failed on the CPU too, status %d. Raise "
-                                  "_BIG_MAX_P_ / _BIG_MAX_T_ in Config.sh if it ran out of slots.\n",
-                                  k,
-                                  s.x,
-                                  s.y,
-                                  s.z,
-                                  (int)c.status);
+        mpi::exit_failure("VORONOI: cell %d at (%g, %g, %g) failed on the CPU too, status %d. Raise "
+                          "_BIG_MAX_P_ / _BIG_MAX_T_ in Config.sh if it ran out of slots.\n",
+                          k,
+                          s.x,
+                          s.y,
+                          s.z,
+                          (int)c.status);
     }
 
     // builds the cells of a chunk side by side. A cell whose sphere this rank covers is final, no later point
@@ -84,9 +84,9 @@ namespace voronoi {
             if (sphere_is_covered(mesh->scratch_move[k],
                                   d2,
                                   mesh->req_r2[k],
-                                  proteus_mpi::decomp.cuts,
-                                  proteus_mpi::decomp.nranks,
-                                  proteus_mpi::decomp.rank)) {
+                                  mpi::decomp.cuts,
+                                  mpi::decomp.nranks,
+                                  mpi::decomp.rank)) {
                 need_d2[i] = -1.0;
                 n_faces[i] = (uint64_t)count_cell_faces(built[i]->cell);
             } else {

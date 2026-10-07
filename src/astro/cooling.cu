@@ -114,7 +114,7 @@ namespace astro {
     // reads rows of temperature and cooling rate, ignoring comments and empty lines
     static void load_table(const std::string& path, CoolingTable& t) {
         std::ifstream f(path);
-        if (!f) { proteus_mpi::exit_failure("COOLING: cannot open cooling_table '%s'\n", path.c_str()); }
+        if (!f) { mpi::exit_failure("COOLING: cannot open cooling_table '%s'\n", path.c_str()); }
 
         std::vector<double> Tv, Lv;
         std::string         line;
@@ -128,7 +128,7 @@ namespace astro {
                 Lv.push_back(Li);
             }
         }
-        if (Tv.size() < 2) { proteus_mpi::exit_failure("COOLING: table '%s' needs >= 2 rows\n", path.c_str()); }
+        if (Tv.size() < 2) { mpi::exit_failure("COOLING: table '%s' needs >= 2 rows\n", path.c_str()); }
 
         t.N     = (int)Tv.size();
         t.T     = gpu_alloc<double>(t.N);

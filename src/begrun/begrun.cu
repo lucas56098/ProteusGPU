@@ -41,17 +41,16 @@ namespace begrun {
 
         // argv[1] is the parameter file
         if (!input.load_parameters(argc > 1 ? argv[1] : "./ics/param.txt")) {
-            proteus_mpi::exit_failure("BEGRUN: could not load the parameter file.\n");
+            mpi::exit_failure("BEGRUN: could not load the parameter file.\n");
         }
 
         // output directory, created if it is not there yet
         std::string out_dir = input.get_parameter("output_directory");
         output              = OutputHandler(out_dir);
-        if (!output.initialize()) { proteus_mpi::exit_failure("BEGRUN: output directory setup failed.\n"); }
+        if (!output.initialize()) { mpi::exit_failure("BEGRUN: output directory setup failed.\n"); }
 
         // highest snapshot number already in that directory, -1 if there is none
-        const int latest_snap_n =
-            InputHandler::find_latest_snapshot(out_dir, proteus_mpi::nranks(), proteus_mpi::rank());
+        const int latest_snap_n = InputHandler::find_latest_snapshot(out_dir, mpi::nranks(), mpi::rank());
 
         // argv[2] == 1 continues from the latest snapshot
         ic_data.header.restart_flag = (argc > 2) && (std::atoi(argv[2]) == 1);
@@ -68,14 +67,13 @@ namespace begrun {
 
             uint64_t n_total = 0;
             if (!input.read_ic_header(ic_data.header.ic_filename, ic_data.header, n_total)) {
-                proteus_mpi::exit_failure("BEGRUN: could not read IC header from %s\n",
-                                          ic_data.header.ic_filename.c_str());
+                mpi::exit_failure("BEGRUN: could not read IC header from %s\n", ic_data.header.ic_filename.c_str());
             }
             ic_data.header.n_global = n_total;
 
             // never write into a snapshot series that already exists
             if (latest_snap_n > 0) {
-                proteus_mpi::exit_failure("RESTART: Stopping! Found existing snapshots but no restart-flag.\n");
+                mpi::exit_failure("RESTART: Stopping! Found existing snapshots but no restart-flag.\n");
             }
         }
 
@@ -88,7 +86,7 @@ namespace begrun {
         const std::string profile_path = input.get_parameter("output_directory") + "/profile.hdf5";
         Profiler::open_profile_log(profile_path, ic_data.header.restart_flag ? sim.step : -1);
 
-        proteus_mpi::decomp_init();
+        mpi::decomp_init();
 
 #ifdef USE_MPI
         // cuts of the snapshot, before any cell is placed
@@ -104,6 +102,9 @@ namespace begrun {
 
         // every parameter this build reads has been read by now
         input.warn_unread_parameters();
+
+        // snapshot at t = 0
+        if (sim.snap_num == 0) { output.write_snapshot(); }
     }
 
     // tears the run down and prints the final numbers
@@ -112,9 +113,9 @@ namespace begrun {
 
         voronoi::free_mesh(sim.mesh);
         hydro::free_hydro();
-        proteus_mpi::halo_free();
-        proteus_mpi::migrate_free();
-        proteus_mpi::decomp_free();
+        mpi::halo_free();
+        mpi::migrate_free();
+        mpi::decomp_free();
         sim.mesh = nullptr;
 
         Profiler::stop_total_timer();
@@ -155,10 +156,9 @@ namespace begrun {
         out << "BEGRUN: Running " << DIMENSION << "D mode on " << RUN_MODE << std::endl;
 
 #ifdef USE_MPI
-        out << "BEGRUN: MPI ranks = " << proteus_mpi::nranks() << " (" << proteus_mpi::node_local_size() << " per node)"
-            << std::endl;
+        out << "BEGRUN: MPI ranks = " << mpi::nranks() << " (" << mpi::node_local_size() << " per node)" << std::endl;
 
-        proteus_mpi::report_gpu_aware_mpi();
+        mpi::report_gpu_aware_mpi();
 #endif
 
 #ifdef USE_OPENMP
@@ -166,8 +166,8 @@ namespace begrun {
 #endif
 
 #ifndef CPU_DEBUG
-        const int n_gpus  = proteus_mpi::gpus_per_node();
-        const int n_local = proteus_mpi::node_local_size();
+        const int n_gpus  = mpi::gpus_per_node();
+        const int n_local = mpi::node_local_size();
         out << "BEGRUN: GPUs per node  = " << n_gpus << " (" << n_local << " ranks/node, "
             << (double)n_local / (n_gpus > 0 ? n_gpus : 1) << " ranks/GPU)" << std::endl;
 #endif
@@ -176,8 +176,8 @@ namespace begrun {
         cudaGetDevice(&dev);
         cudaDeviceProp prop;
         cudaGetDeviceProperties(&prop, dev);
-        std::cout << "CUDA: rank " << proteus_mpi::rank() << " on device " << dev << " (" << prop.name << "), SM "
-                  << prop.major << "." << prop.minor << std::endl;
+        std::cout << "CUDA: rank " << mpi::rank() << " on device " << dev << " (" << prop.name << "), SM " << prop.major
+                  << "." << prop.minor << std::endl;
 #ifdef USE_MPI
         MPI_Barrier(MPI_COMM_WORLD);
 #endif
@@ -206,13 +206,13 @@ namespace begrun {
     // puts back the cuts the snapshot ran with
     static void restore_decomp_cuts() {
         const std::vector<int64_t>& c    = ic_data.header.decomp_cuts;
-        const size_t                want = (size_t)proteus_mpi::decomp.nranks + 1;
+        const size_t                want = (size_t)mpi::decomp.nranks + 1;
         if (c.size() != want) {
-            proteus_mpi::exit_failure(
+            mpi::exit_failure(
                 "RESTART: Error! snapshot cut table has %zu entries, this run needs %zu.\n", c.size(), want);
         }
         const std::vector<uint64_t> cuts(c.begin(), c.end());
-        proteus_mpi::decomp_set_cuts(cuts.data());
+        mpi::decomp_set_cuts(cuts.data());
     }
 #endif
 
@@ -220,35 +220,34 @@ namespace begrun {
     static void restart_from_snapshot(const int latest_snap_n, std::string out_dir) {
 
         if (latest_snap_n < 0) {
-            proteus_mpi::exit_failure("RESTART: Error! No snapshots found in %s (matching this run's rank "
-                                      "count = %d)\n",
-                                      out_dir.c_str(),
-                                      proteus_mpi::nranks());
+            mpi::exit_failure("RESTART: Error! No snapshots found in %s (matching this run's rank "
+                              "count = %d)\n",
+                              out_dir.c_str(),
+                              mpi::nranks());
         }
 
-        const std::string suffix =
-            (proteus_mpi::nranks() > 1) ? ("." + std::to_string(proteus_mpi::rank()) + ".hdf5") : ".hdf5";
+        const std::string suffix    = (mpi::nranks() > 1) ? ("." + std::to_string(mpi::rank()) + ".hdf5") : ".hdf5";
         const std::string snap_path = out_dir + "snapshot_" + std::to_string(latest_snap_n) + suffix;
         logging::root() << "RESTART: Loading snapshot snapshot_" << latest_snap_n
-                        << ((proteus_mpi::nranks() > 1) ? ".<rank>.hdf5" : ".hdf5") << " from " << out_dir << std::endl;
+                        << ((mpi::nranks() > 1) ? ".<rank>.hdf5" : ".hdf5") << " from " << out_dir << std::endl;
 
         SnapshotHeader snap;
         if (!input.read_snapshot_file(snap_path, ic_data, snap)) {
-            proteus_mpi::exit_failure("RESTART: could not read snapshot %s\n", snap_path.c_str());
+            mpi::exit_failure("RESTART: could not read snapshot %s\n", snap_path.c_str());
         }
 
-        if (snap.nranks != proteus_mpi::nranks()) {
-            proteus_mpi::exit_failure("RESTART: Error! Snapshot was written with %d ranks, but this run has %d. "
-                                      "Restart requires the same nranks.\n",
-                                      snap.nranks,
-                                      proteus_mpi::nranks());
+        if (snap.nranks != mpi::nranks()) {
+            mpi::exit_failure("RESTART: Error! Snapshot was written with %d ranks, but this run has %d. "
+                              "Restart requires the same nranks.\n",
+                              snap.nranks,
+                              mpi::nranks());
         }
 
-        if (snap.rank != proteus_mpi::rank()) {
-            proteus_mpi::exit_failure("RESTART: Error! Snapshot file claims rank %d but this rank is %d "
-                                      "(filename / rank mismatch).\n",
-                                      snap.rank,
-                                      proteus_mpi::rank());
+        if (snap.rank != mpi::rank()) {
+            mpi::exit_failure("RESTART: Error! Snapshot file claims rank %d but this rank is %d "
+                              "(filename / rank mismatch).\n",
+                              snap.rank,
+                              mpi::rank());
         }
 
         sim.t_sim = snap.t_sim;
@@ -284,20 +283,19 @@ namespace begrun {
 
         int64_t my_lo = 0, my_hi = 0;
         // every rank reads an equal share of the rows, not the cells it will own
-        proteus_mpi::decomp_even_split(
-            ic_data.header.n_global, proteus_mpi::nranks(), proteus_mpi::rank(), &my_lo, &my_hi);
+        mpi::decomp_even_split(ic_data.header.n_global, mpi::nranks(), mpi::rank(), &my_lo, &my_hi);
         const uint64_t row_lo  = (uint64_t)my_lo;
         const uint64_t n_local = (uint64_t)(my_hi - my_lo);
 
         if (!input.read_ic_chunk_parallel(ic_data.header.ic_filename, ic_data, row_lo, n_local)) {
-            proteus_mpi::exit_failure("BEGRUN: parallel IC read failed for %s\n", ic_data.header.ic_filename.c_str());
+            mpi::exit_failure("BEGRUN: parallel IC read failed for %s\n", ic_data.header.ic_filename.c_str());
         }
 
         // cut the curve evenly and send every cell to its owner
-        proteus_mpi::distribute_ic_parallel(ic_data);
+        mpi::distribute_ic_parallel(ic_data);
 #else
         if (!input.read_ic_file(ic_data.header.ic_filename, ic_data)) {
-            proteus_mpi::exit_failure("BEGRUN: IC read failed for %s\n", ic_data.header.ic_filename.c_str());
+            mpi::exit_failure("BEGRUN: IC read failed for %s\n", ic_data.header.ic_filename.c_str());
         }
 #endif
         sim.n_hydro = ic_data.header.n_seeds;
@@ -307,14 +305,14 @@ namespace begrun {
     static void init_exch_buffers() {
 
         // all ranks size their per-cell arrays from the largest rank, with the headroom the user asks for
-        proteus_mpi::n_local_initial_max = logging::max_global((int)sim.n_hydro);
-        proteus_mpi::alloc_growth        = input.get_parameter_double("alloc_growth");
-        if (!(proteus_mpi::alloc_growth >= 1.0)) {
-            proteus_mpi::exit_failure("BEGRUN: alloc_growth = %g in the param file, it must be at least 1.\n",
-                                      proteus_mpi::alloc_growth);
+        mpi::n_local_initial_max = logging::max_global((int)sim.n_hydro);
+        mpi::alloc_growth        = input.get_parameter_double("alloc_growth");
+        if (!(mpi::alloc_growth >= 1.0)) {
+            mpi::exit_failure("BEGRUN: alloc_growth = %g in the param file, it must be at least 1.\n",
+                              mpi::alloc_growth);
         }
 
-        proteus_mpi::halo_init((int)sim.n_hydro);
+        mpi::halo_init((int)sim.n_hydro);
     }
 
     // hydro arrays, mesh allocation and the first mesh build
@@ -346,7 +344,7 @@ namespace begrun {
 
         if (sim.t_sim > 0.0) {
             logging::root() << "HYDRO: restarted from t = " << sim.t_sim << " (snap_num = " << sim.snap_num
-                            << ", step = " << sim.step << ", nranks = " << proteus_mpi::nranks()
+                            << ", step = " << sim.step << ", nranks = " << mpi::nranks()
                             << ", n_global = " << ic_data.header.n_global << ")" << std::endl;
         } else {
             logging::root() << "HYDRO: started from IC" << std::endl;

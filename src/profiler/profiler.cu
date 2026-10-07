@@ -64,7 +64,7 @@ void print_max_memory_usage() {
 
         constexpr double MiB     = 1024.0 * 1024.0;
         const double     rss_mib = rss_bytes / MiB;
-        const char*      tag     = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
+        const char*      tag     = mpi::nranks() > 1 ? " (rank 0)" : "";
         logging::root() << "MAIN: maximum CPU memory used" << tag << ": " << rss_mib << " MiB (" << total_ram / MiB
                         << " MiB total)" << std::endl;
     } else {
@@ -77,7 +77,7 @@ void print_max_memory_usage() {
     cudaMemGetInfo(&gpu_free, &gpu_total);
     constexpr double MiB      = 1024.0 * 1024.0;
     const double     peak_mib = (double)g_gpu_bytes_peak() / MiB;
-    const char*      tag      = proteus_mpi::nranks() > 1 ? " (rank 0)" : "";
+    const char*      tag      = mpi::nranks() > 1 ? " (rank 0)" : "";
     logging::root() << "MAIN: maximum GPU memory used" << tag << ": " << peak_mib << " MiB (" << (double)gpu_total / MiB
                     << " MiB total)" << std::endl;
 #endif

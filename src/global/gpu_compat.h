@@ -94,7 +94,7 @@ typedef struct {
     do {                                                                                                               \
         cudaError_t err = (call);                                                                                      \
         if (err != cudaSuccess) {                                                                                      \
-            proteus_mpi::exit_failure("CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));       \
+            mpi::exit_failure("CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));               \
         }                                                                                                              \
     } while (0)
 

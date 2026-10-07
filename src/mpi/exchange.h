@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace proteus_mpi {
+namespace mpi {
 
     // one block of items per partner rank in one buffer, partners in ascending rank order
     struct Blocks {
@@ -51,6 +51,6 @@ namespace proteus_mpi {
     // the items themselves, both sides know the blocks; both buffers in gpu memory
     void exchange_items(const void* sendbuf, const Blocks& out, void* recvbuf, const Blocks& in, size_t item_bytes);
 
-} // namespace proteus_mpi
+} // namespace mpi
 
 #endif

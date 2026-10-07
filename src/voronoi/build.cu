@@ -73,9 +73,9 @@ namespace voronoi {
     // stops the run if the point list is longer than the arrays
     static void check_seed_capacity(const VMesh* mesh, int n_total) {
         if ((uint64_t)n_total > mesh->total_capacity) {
-            proteus_mpi::exit_failure("VORONOI: Error! point count %d exceeds pre-allocated capacity %llu.\n",
-                                      n_total,
-                                      (unsigned long long)mesh->total_capacity);
+            mpi::exit_failure("VORONOI: Error! point count %d exceeds pre-allocated capacity %llu.\n",
+                              n_total,
+                              (unsigned long long)mesh->total_capacity);
         }
     }
 
@@ -276,9 +276,9 @@ namespace voronoi {
         mesh->num_faces         = (uint64_t)*mesh->face_offset;
         const int overflow_flag = *mesh->overflow_flag;
         if (overflow_flag) {
-            proteus_mpi::exit_failure("VORONOI: Error! face offset exceeds pre-allocated face capacity %llu. "
-                                      "Increase _FACE_CAPACITY_MULT_ in Config.sh.\n",
-                                      (unsigned long long)mesh->face_capacity);
+            mpi::exit_failure("VORONOI: Error! face offset exceeds pre-allocated face capacity %llu. "
+                              "Increase _FACE_CAPACITY_MULT_ in Config.sh.\n",
+                              (unsigned long long)mesh->face_capacity);
         }
     }
 

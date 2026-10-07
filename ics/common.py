@@ -101,7 +101,7 @@ def mpi_runtime():
 
 
 def even_split(N, P, i):
-    """Same per-rank row range as proteus_mpi::decomp_even_split. (row_lo, row_hi)."""
+    """Same per-rank row range as mpi::decomp_even_split. (row_lo, row_hi)."""
     base, rem = divmod(N, P)
     lo = i * base + min(i, rem)
     hi = lo + base + (1 if i < rem else 0)

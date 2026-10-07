@@ -25,7 +25,7 @@ OutputHandler::OutputHandler(const std::string& output_dir) : output_directory(o
 // creates output_directory if it does not exist (rank 0 does it)
 bool OutputHandler::initialize() {
     bool ok = true;
-    if (proteus_mpi::is_root()) {
+    if (mpi::is_root()) {
         struct stat st;
         if (stat(output_directory.c_str(), &st) != 0) {
             if (mkdir(output_directory.c_str(), 0755) != 0) {
@@ -84,7 +84,7 @@ static bool write_snapshot_file(const std::string& path, int n_hydro, int nranks
 #ifdef USE_MPI
     {
         // where this run cut the curve, a restart has to start from the same cuts
-        const auto&          dc = proteus_mpi::decomp;
+        const auto&          dc = mpi::decomp;
         std::vector<int64_t> cuts(dc.cuts, dc.cuts + dc.nranks + 1);
         h5::Group            decomp_group(H5Gcreate(file, "decomp", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
         if (!h5::write_dataset_1d(decomp_group, "hilbert_cuts", cuts.data(), (hsize_t)cuts.size())) { return false; }
@@ -144,8 +144,8 @@ void OutputHandler::write_snapshot() {
     PROFILE("IO_SNAPSHOT");
 
     const int n_hydro = (int)sim.mesh->n_hydro;
-    const int nranks  = proteus_mpi::nranks();
-    const int rank    = proteus_mpi::rank();
+    const int nranks  = mpi::nranks();
+    const int rank    = mpi::rank();
     // total cells over all ranks
     const int64_t n_global = logging::sum_global((long long)n_hydro);
 
@@ -163,7 +163,7 @@ void OutputHandler::write_snapshot() {
 
     // abort only out here: exit() skips destructors, so the h5 handles must be closed first
     if (!write_snapshot_file(full_path, n_hydro, nranks, rank, n_global)) {
-        proteus_mpi::exit_failure("OUTPUT: failed to write snapshot %s\n", full_path.c_str());
+        mpi::exit_failure("OUTPUT: failed to write snapshot %s\n", full_path.c_str());
     }
 
     sim.snap_num += 1;
@@ -186,7 +186,7 @@ void print_log() {
                     << std::endl;
 
     // prints the load imbalance every imbalance_log_interval steps
-    proteus_mpi::rebalance_imbalance_log(sim.step, sim.mesh);
+    mpi::rebalance_imbalance_log(sim.step, sim.mesh);
 }
 
 #ifdef OUTPUT_MESH

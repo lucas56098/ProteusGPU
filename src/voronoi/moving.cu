@@ -4,8 +4,6 @@
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../hydro/riemann.h"
-#include "../mpi/decomp.h"
-#include "../mpi/migrate.h"
 #include "../profiler/profiler.h"
 #include "../voronoi/voronoi.h"
 #include <cmath>
@@ -28,7 +26,6 @@ namespace voronoi {
     HD void compute_mesh_velocity_for_cell(uint64_t, VMesh*, const hydro::primvars*, const gradients::PrimGradients*);
     HD void move_mesh_for_cell(uint64_t, const VMesh*, double, POINT_TYPE*);
 
-    static void                 advance_seeds_by_dt(VMesh* mesh, double dt, POINT_TYPE* pts);
     static HD POINT_TYPE        gas_velocity_for_cell(uint64_t i, const hydro::primvars* primvar);
     static HD LloydDisplacement lloyd_correction_for_cell(uint64_t                        i,
                                                           const VMesh*                    mesh,
@@ -42,25 +39,11 @@ namespace voronoi {
             "V_MESH", mesh->n_hydro, [=] HD(size_t i) { compute_mesh_velocity_for_cell(i, mesh, primvar, grads); });
     }
 
-    // moves the seeds, migrates cells, builds the mesh again
-    void move_mesh(
-        VMesh* mesh, double dt, hydro::primvars* primvar, hydro::ConsVars* cons, gradients::PrimGradients* grads) {
-
-        advance_seeds_by_dt(mesh, dt, mesh->scratch_move);
-
-        // a rebalance moves the cuts, so more cells change rank
-        const bool rebalanced = proteus_mpi::rebalance_decide(sim.step, mesh, mesh->scratch_move);
-        proteus_mpi::migrate_cells(mesh, primvar, cons, grads);
-        if (rebalanced) proteus_mpi::rebalance_log_after_migration(mesh);
-
-        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, cons, grads);
-    }
-
-    // writes the moved positions into pts, mesh->seeds stays
-    static void advance_seeds_by_dt(VMesh* mesh, double dt, POINT_TYPE* pts) {
-        const uint64_t n_hydro = mesh->n_hydro;
+    // the seeds moved by v_mesh dt into mesh->scratch_move, mesh->seeds stays until the next build
+    void move_seeds(VMesh* mesh, double dt) {
+        POINT_TYPE* pts = mesh->scratch_move;
         parallel_for<_MESH_BLOCK_SIZE_>(
-            "MOVE_MESH", n_hydro, [=] HD(size_t i) { move_mesh_for_cell(i, mesh, dt, pts); });
+            "MOVE_MESH", mesh->n_hydro, [=] HD(size_t i) { move_mesh_for_cell(i, mesh, dt, pts); });
         GPU_SYNC();
     }
 

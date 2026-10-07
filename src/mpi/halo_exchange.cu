@@ -101,7 +101,7 @@ struct HaloPrimCell {
 #endif
 
 // state of the used ghosts
-void halo_exchange_primvars(hydro::primvars* primvar) {
+void exchange(hydro::primvars* primvar) {
 #ifndef USE_MPI
     (void)primvar;
 #else
@@ -124,7 +124,7 @@ void halo_exchange_primvars(hydro::primvars* primvar) {
 }
 
 // their gradients, all components in one message
-void halo_exchange_gradients(gradients::PrimGradients* grads) {
+void exchange(gradients::PrimGradients* grads) {
 #ifndef USE_MPI
     (void)grads;
 #else
@@ -145,7 +145,7 @@ void halo_exchange_gradients(gradients::PrimGradients* grads) {
 }
 
 // and their mesh velocity
-void halo_exchange_v_mesh(VMesh* mesh) {
+void exchange(VMesh* mesh) {
 #if !defined(USE_MPI) || !defined(MOVING_MESH)
     (void)mesh;
 #else
@@ -157,7 +157,7 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 }
 
 // where the centroid of each used ghost sits, relative to its seed
-void halo_exchange_centroids(VMesh* mesh) {
+void exchange_centroids(VMesh* mesh) {
 #ifndef USE_MPI
     (void)mesh;
 #else
@@ -170,7 +170,7 @@ void halo_exchange_centroids(VMesh* mesh) {
 
 #ifdef VOL_REGULARIZE
 // cell volumes of the used ghosts
-void halo_exchange_volumes(VMesh* mesh) {
+void exchange_volumes(VMesh* mesh) {
 #ifndef USE_MPI
     (void)mesh;
 #else

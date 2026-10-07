@@ -57,7 +57,7 @@ namespace hydro {
 
 } // namespace hydro
 
-namespace proteus_mpi {
+namespace mpi {
 
     extern int n_mpi_capacity; // ghost slots allocated on this rank
 
@@ -71,7 +71,7 @@ namespace proteus_mpi {
         return (int)((double)base * alloc_growth);
     }
 
-} // namespace proteus_mpi
+} // namespace mpi
 
 namespace gradients {
 

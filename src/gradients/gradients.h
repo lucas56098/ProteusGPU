@@ -12,7 +12,7 @@ namespace gradients {
 
     // cells with growth headroom, plus one entry per MPI ghost
     inline void allocate_grad(size_t n, PrimGradients* g) {
-        const size_t ext = (size_t)proteus_mpi::max_n_local((int)n);
+        const size_t ext = (size_t)mpi::max_n_local((int)n);
         g->rho           = gpu_alloc<POINT_TYPE>(ext);
         g->vx            = gpu_alloc<POINT_TYPE>(ext);
         g->vy            = gpu_alloc<POINT_TYPE>(ext);
@@ -32,7 +32,7 @@ namespace gradients {
         gpu_advise_gpu_preferred(g->P, ext * sizeof(POINT_TYPE));
         gpu_advise_gpu_preferred(g->anchor, ext * sizeof(POINT_TYPE));
 
-        const int gc = proteus_mpi::n_mpi_capacity;
+        const int gc = mpi::n_mpi_capacity;
         if (gc > 0) {
             g->rho_g = gpu_alloc<POINT_TYPE>(gc);
             g->vx_g  = gpu_alloc<POINT_TYPE>(gc);

@@ -172,7 +172,7 @@ namespace {
         std::vector<char>        kinds;
         for (const auto& kv : fresh) {
             if (kv.first.size() > PROFILE_NAME_LEN) {
-                proteus_mpi::exit_failure(
+                mpi::exit_failure(
                     "PROFILER: timer name longer than %zu bytes: %s\n", PROFILE_NAME_LEN, kv.first.c_str());
             }
             names.push_back(kv.first);
@@ -238,14 +238,14 @@ namespace {
 
 // continue on a restart, else a new file; MPI-IO from two ranks up
 void Profiler::open_profile_log(const std::string& path, int restart_step) {
-    s_my_rank    = proteus_mpi::rank();
-    s_nranks     = proteus_mpi::nranks();
+    s_my_rank    = mpi::rank();
+    s_nranks     = mpi::nranks();
     s_log_active = true;
 
     h5::Plist fapl(H5Pcreate(H5P_FILE_ACCESS));
 #ifdef USE_MPI
     if (parallel_log() && H5Pset_fapl_mpio(fapl, MPI_COMM_WORLD, MPI_INFO_NULL) < 0) {
-        proteus_mpi::exit_failure("PROFILER: could not select the MPI-IO driver for %s\n", path.c_str());
+        mpi::exit_failure("PROFILER: could not select the MPI-IO driver for %s\n", path.c_str());
     }
 #endif
 

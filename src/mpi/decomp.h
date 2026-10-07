@@ -16,7 +16,7 @@
 struct ICData;
 struct VMesh;
 
-namespace proteus_mpi {
+namespace mpi {
 
     // rank r owns the cells whose Hilbert key is in [cuts[r], cuts[r + 1]); the table is the same on all ranks
     struct MpiDecomp {
@@ -50,9 +50,11 @@ namespace proteus_mpi {
     // prints the imbalance every imbalance_log_interval steps
     void rebalance_imbalance_log(int step, VMesh* mesh);
 
-    // true when new cuts were applied, then the cells have to migrate
-    bool rebalance_decide(int step, VMesh* mesh, POINT_TYPE* pts);
+    // every rebalance_interval steps new cuts from the moved seeds in mesh->scratch_move, if the imbalance is
+    // worth it; the migration then moves the cells to them
+    void rebalance(int step, VMesh* mesh);
 
+    // the imbalance after the migration that followed new cuts; nothing after any other migration
     void rebalance_log_after_migration(VMesh* mesh);
 
     // bits a rank number takes as a sort key
@@ -196,6 +198,6 @@ namespace proteus_mpi {
     // rows [lo, hi) of N that part i reads, used for the parallel IC read
     void decomp_even_split(int64_t N, int P, int i, int64_t* lo, int64_t* hi);
 
-} // namespace proteus_mpi
+} // namespace mpi
 
 #endif

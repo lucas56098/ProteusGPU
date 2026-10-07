@@ -3,9 +3,12 @@
 #include "astro/sources.h"
 #include "begrun/begrun.h"
 #include "global/allvars.h"
+#include "gradients/gradients.h"
 #include "hydro/finite_volume_solver.h"
 #include "io/output.h"
+#include "mpi/decomp.h"
 #include "mpi/halo.h"
+#include "mpi/migrate.h"
 #include "mpi/mpi_compat.h"
 #include "profiler/profiler.h"
 #include "voronoi/voronoi.h"
@@ -27,38 +30,63 @@ Institution: Institute of Theoretical Astrophysics, Heidelberg University
 
 int main(int argc, char* argv[]) {
 
-    // start MPI and pick this rank's GPU
-    proteus_mpi::init(&argc, &argv);
+    // start MPI and set GPU of this rank
+    mpi::init(&argc, &argv);
 
-    // params, IC or snapshot, first mesh
+    // read params, load IC, first mesh, first snapshot
     begrun::begrun(argc, argv);
-
-    // snapshot at t = 0
-    if (sim.snap_num == 0) { output.write_snapshot(); }
 
     {
         PROFILE("HYDRO");
-        // time loop
         while (sim.t_sim < sim.t_end) {
 
-            // per-step setup of the source terms
+            // prepare source terms
             astro::sources_prepare();
 
-            // CFL timestep over all cells and ranks
-            double dt = hydro::calc_timestep(sim.CFL, sim.mesh, sim.primvar);
-
+            // CFL timestep calculation
+            const double dt = hydro::calc_timestep(sim.CFL, sim.mesh, sim.primvar);
             print_log();
 
-            // half step sources, hydro step, half step sources
+            // sources first half
             astro::apply_sources_first_half(0.5 * dt);
-            hydro::hydro_step(dt, sim.mesh, sim.primvar);
+
+            // gradients, mesh velocities
+            mpi::exchange(sim.primvar);
+            gradients::compute_prim_gradients(sim.mesh, sim.primvar, sim.grads);
+#ifdef MOVING_MESH
+            voronoi::compute_mesh_velocities(sim.mesh, sim.primvar, sim.grads);
+#endif
+            mpi::exchange(sim.grads, sim.mesh);
+
+            // hydro first half
+            hydro::prim_to_cons(sim.mesh, sim.primvar, sim.cons);
+            hydro::apply_flux_update(0.5 * dt, 0.0, sim.mesh, sim.primvar, sim.grads, sim.cons);
+
+#ifdef MOVING_MESH
+            // move the seeds
+            voronoi::move_seeds(sim.mesh, dt);
+
+            // optional rebalance + migration of cells
+            mpi::rebalance(sim.step, sim.mesh);
+            mpi::migrate_cells(sim.mesh, sim.primvar, sim.cons, sim.grads);
+
+            // build new mesh
+            voronoi::compute_periodic_mesh(sim.mesh, sim.primvar, sim.cons, sim.grads);
+            mpi::exchange(sim.primvar, sim.grads, sim.mesh);
+#endif
+
+            // hydro second half
+            hydro::apply_flux_update(0.5 * dt, dt, sim.mesh, sim.primvar, sim.grads, sim.cons);
+            hydro::cons_to_prim(sim.mesh, sim.cons, sim.primvar);
+
+            // sources second half
             astro::apply_sources_second_half(0.5 * dt);
+
+            // sanity check
+            hydro::check_unphysical_state(sim.mesh, sim.primvar);
+
             sim.t_sim += dt;
-
-            // snapshot at every output time and at the end of the run
             if (sim.t_sim >= sim.t_nextoutput || sim.t_sim >= sim.t_end) { output.write_snapshot(); }
-
-            // one row per step in profile.hdf5
             Profiler::log_timestep(sim.step);
             sim.step++;
         }
@@ -66,6 +94,6 @@ int main(int argc, char* argv[]) {
 
     // free everything and print the summary
     begrun::endrun();
-    proteus_mpi::finalize();
+    mpi::finalize();
     return 0;
 }

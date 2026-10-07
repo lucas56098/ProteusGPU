@@ -96,7 +96,7 @@ namespace astro {
         const double    m_local = parallel_reduce_sum<_HYDRO_BLOCK_SIZE_, double>(
             "AGN_COLDMASS", n, [=] HD(size_t i) { return cold_mass_contrib(i, mesh, primvar, p); });
 
-        s_m_cold_cached = proteus_mpi::sum_over_ranks(m_local);
+        s_m_cold_cached = mpi::sum_over_ranks(m_local);
     }
 
     // turns that mass into heat and jet momentum, half a step at a time

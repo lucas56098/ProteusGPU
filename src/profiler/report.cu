@@ -142,8 +142,8 @@ namespace {
 void Profiler::print_results() {
     drain_gpu_events(true);
 
-    const int nranks = proteus_mpi::nranks();
-    const int rank   = proteus_mpi::rank();
+    const int nranks = mpi::nranks();
+    const int rank   = mpi::rank();
 
     std::vector<std::string> my_names;
     my_names.reserve(s_cum_us.size());

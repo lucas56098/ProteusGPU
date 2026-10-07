@@ -154,7 +154,7 @@ fi
 # Coverage audit (ensures all existing configs have to be tested)
 # ============================================================
 AUDIT_IGNORE="__CUDA_ARCH__ __CUDACC_VER_MAJOR__ __cplusplus _OPENMP M_PI NDEBUG DRY_RUN GIT_COMMIT GIT_DIFFSTAT
-__APPLE__ __MACH__ __linux__ __unix__ __has_include MPIX_CUDA_AWARE_SUPPORT
+__APPLE__ __MACH__ __linux__ __unix__ __has_include MPIX_CUDA_AWARE_SUPPORT __GNUC__ __clang__ __NVCC__
 PROTEUS_HAS_MPIX_QUERY_CUDA RUN_MODE DIMENSION"
 
 run_audit() {

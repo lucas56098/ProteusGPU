@@ -22,7 +22,7 @@ namespace gradients {
     struct PrimGradients;
 }
 
-namespace proteus_mpi {
+namespace mpi {
 
     // a periodic shift s of the box, one of 3^DIMENSION, as a small code
     HD inline int shift_code(int sx, int sy, int sz) {
@@ -98,18 +98,27 @@ namespace proteus_mpi {
     // finds the ghosts the local cells really touch, so the state exchanges stay small
     void halo_build_used_subset(VMesh* mesh);
 
-    // state of those ghosts, once per use
-    void halo_exchange_primvars(hydro::primvars* primvar);
-    void halo_exchange_gradients(gradients::PrimGradients* grads);
-    void halo_exchange_v_mesh(VMesh* mesh);
-    void halo_exchange_centroids(VMesh* mesh);
+    // the state of those ghosts from their owners, once per use; collective. The mesh stands for its mesh
+    // velocities, nothing without MOVING_MESH
+    void exchange(hydro::primvars* primvar);
+    void exchange(gradients::PrimGradients* grads);
+    void exchange(VMesh* mesh);
+
+    // several at once, one after the other: exchange(sim.grads, sim.mesh)
+    template <typename A, typename B, typename... Rest> void exchange(A* a, B* b, Rest*... rest) {
+        exchange(a);
+        exchange(b, rest...);
+    }
+
+    // the geometry of those ghosts, for the mesh build
+    void exchange_centroids(VMesh* mesh);
 #ifdef VOL_REGULARIZE
-    void halo_exchange_volumes(VMesh* mesh);
+    void exchange_volumes(VMesh* mesh);
 #endif
 
     // more slots, everything that is sized by them grows along
     void halo_grow_capacity(int new_capacity);
 
-} // namespace proteus_mpi
+} // namespace mpi
 
 #endif

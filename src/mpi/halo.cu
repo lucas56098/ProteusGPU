@@ -16,7 +16,7 @@
 #include <cstdio>
 #include <utility>
 
-namespace proteus_mpi {
+namespace mpi {
 
     MpiHalo halo                = {};
     int     n_mpi_capacity      = 0;
@@ -116,4 +116,4 @@ namespace proteus_mpi {
     #include "halo_exchange.cu"
     // clang-format on
 
-} // namespace proteus_mpi
+} // namespace mpi

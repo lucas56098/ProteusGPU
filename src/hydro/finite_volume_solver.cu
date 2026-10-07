@@ -21,9 +21,6 @@ namespace hydro {
 #else
     HD double dt_CFL_for_cell(uint64_t, double, const VMesh*, const primvars*);
 #endif
-    static void check_unphysical_state(VMesh*, const primvars*);
-    static void prim_to_cons(const VMesh* mesh, const primvars* primvar, ConsVars* cons);
-    static void cons_to_prim(const VMesh* mesh, const ConsVars* cons, primvars* primvar);
 
     // allocates the state arrays and fills them from the IC
     void init_hydro() {
@@ -71,67 +68,22 @@ namespace hydro {
         sim.dt      = nullptr;
     }
 
-    // one step: half the fluxes, move the mesh, the other half
-    void hydro_step(double dt, VMesh* mesh, primvars* primvar) {
-
-        ConsVars*                 cons  = sim.cons;
-        gradients::PrimGradients* grads = sim.grads;
-
-        // the ghosts get the state of their own rank
-        proteus_mpi::halo_exchange_primvars(primvar);
-
-        // cons collects the update, primvar stays as it is until the end of the step
-        prim_to_cons(mesh, primvar, cons);
-
-        // gradients on the mesh as it is now, for both half steps
-        gradients::compute_prim_gradients(mesh, primvar, grads);
-        proteus_mpi::halo_exchange_gradients(grads);
-
-#ifdef MOVING_MESH
-        voronoi::compute_mesh_velocities(mesh, primvar, grads);
-        proteus_mpi::halo_exchange_v_mesh(mesh);
-#endif
-
-        // first half step, states taken at the current time
-        apply_flux_update(0.5 * dt, 0.0, mesh, primvar, grads, cons);
-        logging::root() << "HYDRO: Computed " << logging::sum_global((long long)mesh->num_faces) << " fluxes (1/2)"
-                        << std::endl;
-
-#ifdef MOVING_MESH
-
-        // move the mesh; the state and the gradients stay those of the start of the step
-        voronoi::move_mesh(mesh, dt, primvar, cons, grads);
-
-        // the new mesh has new ghosts, so they get all of it again
-        proteus_mpi::halo_exchange_primvars(primvar);
-        proteus_mpi::halo_exchange_v_mesh(mesh);
-        proteus_mpi::halo_exchange_gradients(grads);
-#endif
-
-        // second half step, states extrapolated to the end of the step
-        apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, cons);
-        logging::root() << "HYDRO: Computed " << logging::sum_global((long long)mesh->num_faces) << " fluxes (2/2)"
-                        << std::endl;
-
-        // the new state, from cons and the volumes of the current mesh
-        cons_to_prim(mesh, cons, primvar);
-
-        check_unphysical_state(mesh, primvar);
-    }
-
-    // one flux update over all cells; dt_extrap > 0 also extrapolates the states in time
+    // one flux update over all cells; dt_extrap > 0 also extrapolates the states in time, which only the
+    // second half step does
     void apply_flux_update(double                          dt_update,
                            double                          dt_extrap,
                            const VMesh*                    mesh,
                            const primvars*                 prim_old,
                            const gradients::PrimGradients* grads,
                            ConsVars*                       cons) {
-
-        PROFILE("FLUX");
-
-        parallel_for<_HYDRO_BLOCK_SIZE_, 2>("FLUX_KERNEL", mesh->n_hydro, [=] HD(size_t i) {
-            flux_update_for_cell(i, dt_update, dt_extrap, mesh, prim_old, grads, cons);
-        });
+        {
+            PROFILE("FLUX");
+            parallel_for<_HYDRO_BLOCK_SIZE_, 2>("FLUX_KERNEL", mesh->n_hydro, [=] HD(size_t i) {
+                flux_update_for_cell(i, dt_update, dt_extrap, mesh, prim_old, grads, cons);
+            });
+        }
+        logging::root() << "HYDRO: Computed " << logging::sum_global((long long)mesh->num_faces) << " fluxes "
+                        << ((dt_extrap == 0.0) ? "(1/2)" : "(2/2)") << std::endl;
     }
 
     // smallest CFL step of all cells, over all ranks
@@ -158,7 +110,7 @@ namespace hydro {
                 });
         }
 
-        *sim.dt = proteus_mpi::min_over_ranks(*sim.dt);
+        *sim.dt = mpi::min_over_ranks(*sim.dt);
 
         // do not step over the next output or the end of the run
         if (sim.t_sim + *sim.dt > sim.t_nextoutput) { *sim.dt = sim.t_nextoutput - sim.t_sim; }
@@ -168,7 +120,7 @@ namespace hydro {
     }
 
     // mass, momentum and energy of every cell, from its state and volume
-    static void prim_to_cons(const VMesh* mesh, const primvars* primvar, ConsVars* cons) {
+    void prim_to_cons(const VMesh* mesh, const primvars* primvar, ConsVars* cons) {
         PROFILE("PRIM_TO_CONS");
 
         parallel_for<_HYDRO_BLOCK_SIZE_>("PRIM_TO_CONS_KERNEL", mesh->n_hydro, [=] HD(size_t i) {
@@ -186,7 +138,7 @@ namespace hydro {
     }
 
     // and back, with the volumes of the current mesh
-    static void cons_to_prim(const VMesh* mesh, const ConsVars* cons, primvars* primvar) {
+    void cons_to_prim(const VMesh* mesh, const ConsVars* cons, primvars* primvar) {
         PROFILE("CONS_TO_PRIM");
 
         parallel_for<_HYDRO_BLOCK_SIZE_>(
@@ -199,7 +151,7 @@ namespace hydro {
     };
 
     // stops the run if any cell has rho <= 0, E <= 0 or a NaN
-    static void check_unphysical_state(VMesh* mesh, const primvars* primvar) {
+    void check_unphysical_state(const VMesh* mesh, const primvars* primvar) {
         PROFILE("UNPHYS_CHECK");
 
         const UnphysCounts counts = parallel_reduce<_HYDRO_BLOCK_SIZE_, UnphysCounts>(
@@ -229,7 +181,7 @@ namespace hydro {
         if (rho_bad > 0) logging::root() << "HYDRO: WARNING: " << rho_bad << " cells with rho<=0" << std::endl;
         if (E_bad > 0) logging::root() << "HYDRO: WARNING: " << E_bad << " cells with E<=0" << std::endl;
         if (nan_bad > 0) logging::root() << "HYDRO: WARNING: " << nan_bad << " cells with NaN" << std::endl;
-        proteus_mpi::exit_failure("HYDRO: ABORT: unphysical state detected — terminating run.\n");
+        mpi::exit_failure("HYDRO: ABORT: unphysical state detected — terminating run.\n");
     }
 
     // sums the fluxes over the faces of cell i and updates its state
