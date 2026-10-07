@@ -4,8 +4,8 @@
 #include "../global/allvars.h"
 #include "../gradients/gradients.h"
 #include "../hydro/riemann.h"
+#include "../mpi/decomp.h"
 #include "../mpi/migrate.h"
-#include "../mpi/rebalance.h"
 #include "../profiler/profiler.h"
 #include "../voronoi/voronoi.h"
 #include <cmath>

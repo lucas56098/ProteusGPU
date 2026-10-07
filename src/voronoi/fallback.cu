@@ -322,18 +322,11 @@ namespace voronoi {
         unsigned int* flags = mesh->scan_flags;
         parallel_for<_MESH_BLOCK_SIZE_>("FAILED_FLAG", n_hydro, [=] HD(int k) { flags[k] = failed(k) ? 1u : 0u; });
         parallel_exclusive_scan<_MESH_BLOCK_SIZE_>("FAILED_SCAN", (size_t)n_hydro, flags, flags, mesh->scan_scratch);
-        static int* s_failed     = nullptr;
-        static int  s_failed_cap = 0;
-        if (n_failed > s_failed_cap) {
-            if (s_failed) gpu_free(s_failed);
-            s_failed_cap = std::max(n_failed, 2 * s_failed_cap);
-            s_failed     = gpu_alloc<int>(s_failed_cap);
-        }
-        int* list = s_failed;
+        int* list = mesh->cell_list;
         parallel_for<_MESH_BLOCK_SIZE_>("FAILED_SCATTER", n_hydro, [=] HD(int k) {
             if (failed(k)) list[flags[k]] = k;
         });
-        cells->assign(s_failed, s_failed + n_failed);
+        cells->assign(list, list + n_failed);
 
         PROFILE("FALLBACK_NEEDS");
         double*             d_stored_points = (double*)mesh->knn->d_stored_points;

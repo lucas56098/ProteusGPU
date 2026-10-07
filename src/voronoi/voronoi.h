@@ -38,6 +38,16 @@ struct VMesh {
     double* est_r;       // first guess of how far the cell reaches
     double* req_r2;      // squared radius of the ball the cell asked for in this build, 0 if none
 
+    // the balls of one request round: per cell the radius it asks for, then the cells that ask and their radii
+    double* ball_r;
+    int*    ball_cell;
+    double* ball_rad;
+
+    // the cells one step of the cell build works on, and the face counter and overflow flag of its kernels
+    int*                cell_list;
+    unsigned long long* face_offset;
+    int*                overflow_flag;
+
 #ifdef VOL_REGULARIZE
     double* volumes_g;
 #endif

@@ -35,31 +35,13 @@ namespace voronoi {
     // a cell more than this many mean spacings from anything it does not hold needs no guess
     constexpr double LOCAL_SPACINGS = 4.0;
 
-    // the balls of one request round, one per cell that asks, in cell order; per cell the radius it asks for,
-    // 0 for none, below 0 for a cell that cannot grow any more
-    static double* s_ball_r    = nullptr;
-    static int*    s_ball_cell = nullptr;
-    static double* s_ball_rad  = nullptr;
-    static int     s_ball_cap  = 0;
-
-    static void ensure_ball_arrays(int n) {
-        if (n <= s_ball_cap) return;
-        if (s_ball_r) gpu_free(s_ball_r);
-        if (s_ball_cell) gpu_free(s_ball_cell);
-        if (s_ball_rad) gpu_free(s_ball_rad);
-        s_ball_cap  = std::max(n, 2 * s_ball_cap);
-        s_ball_r    = gpu_calloc<double>(s_ball_cap);
-        s_ball_cell = gpu_alloc<int>(s_ball_cap);
-        s_ball_rad  = gpu_alloc<double>(s_ball_cap);
-    }
-
     // the cells with a radius above 0, in cell order, into the ball list; returns how many
     static int compact_balls(VMesh* mesh) {
         const int n = (int)mesh->n_hydro;
         if (n == 0) return 0;
-        const double* r     = s_ball_r;
-        int*          cell  = s_ball_cell;
-        double*       rad   = s_ball_rad;
+        const double* r     = mesh->ball_r;
+        int*          cell  = mesh->ball_cell;
+        double*       rad   = mesh->ball_rad;
         unsigned int* flags = mesh->scan_flags;
         parallel_for<_MESH_BLOCK_SIZE_>("BALL_FLAG", n, [=] HD(int k) { flags[k] = (r[k] > 0.0) ? 1u : 0u; });
         const bool last = r[n - 1] > 0.0;
@@ -85,8 +67,7 @@ namespace voronoi {
         const int          me      = proteus_mpi::decomp.rank;
         const int*         sorted  = (const int*)mesh->real_sorted_ids;
         const double       r_local = std::fmin(LOCAL_SPACINGS * mean_spacing_of_rank(n), MAX_BALL_RADIUS);
-        ensure_ball_arrays(n);
-        double* ball_r = s_ball_r;
+        double*            ball_r  = mesh->ball_r;
 
         parallel_for<_VORO_BLOCK_SIZE_>("GUESS", n, [=] HD(int k) {
             // deep inside: the guess starts from that distance, nothing to ask
@@ -112,7 +93,7 @@ namespace voronoi {
         });
 
         const int nb = compact_balls(mesh);
-        proteus_mpi::halo_request_balls(mesh, cell_pos, s_ball_cell, s_ball_rad, nb);
+        proteus_mpi::halo_request_balls(mesh, cell_pos, mesh->ball_cell, mesh->ball_rad, nb);
     }
 
     // a finished cell whose sphere is not covered is left open, its sphere is what it needs next
@@ -134,6 +115,14 @@ namespace voronoi {
         GPU_SYNC();
     }
 
+    // their points did not change, so a build would give the same cells; certify_cells looks at them again
+    void reopen_uncertified_cells(VMesh* mesh) {
+        Status* stat = mesh->cell_status;
+        parallel_for<_MESH_BLOCK_SIZE_>("REOPEN_UNCERTIFIED", mesh->n_hydro, [=] HD(int k) {
+            if (stat[k] == security_radius_beyond_data) stat[k] = success;
+        });
+    }
+
     // the next ball of an open cell: its sphere, but at most twice what it had, and never past half the box;
     // 0 if it cannot grow any more
     HD inline double next_ball(double req_r2, double est_r, double need_d2) {
@@ -147,9 +136,8 @@ namespace voronoi {
     // stuck how many cannot grow any more
     int request_open_balls(VMesh* mesh, int* stuck) {
         PROFILE("OPEN_BALLS");
-        const int n = (int)mesh->n_hydro;
-        ensure_ball_arrays(n);
-        double*       need   = s_ball_r;
+        const int     n      = (int)mesh->n_hydro;
+        double*       need   = mesh->ball_r;
         const Status* stat   = mesh->cell_status;
         const double* sec_d2 = mesh->security_d2;
         parallel_for<_MESH_BLOCK_SIZE_>(
@@ -182,7 +170,7 @@ namespace voronoi {
 
     // asks for the balls the last request_open_balls collected
     void send_open_balls(VMesh* mesh, const POINT_TYPE* cell_pos, int nb) {
-        proteus_mpi::halo_request_balls(mesh, cell_pos, s_ball_cell, s_ball_rad, nb);
+        proteus_mpi::halo_request_balls(mesh, cell_pos, mesh->ball_cell, mesh->ball_rad, nb);
     }
 
 } // namespace voronoi

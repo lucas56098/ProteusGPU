@@ -30,10 +30,9 @@ namespace proteus_mpi {
 
     void report_gpu_aware_mpi();
 
-    // managed memory around an MPI call: to the host before a send, back to the device after a receive
-    void mpi_sync_before_send(const void* buf, size_t bytes);
-
-    void mpi_sync_after_recv(void* buf, size_t bytes);
+    // one number reduced over all ranks
+    double min_over_ranks(double v);
+    double sum_over_ranks(double v);
 
 } // namespace proteus_mpi
 

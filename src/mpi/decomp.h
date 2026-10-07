@@ -2,9 +2,11 @@
 #define MPI_DECOMP_H
 #pragma once
 
-// Splits the unit box along a Hilbert curve, one stretch of it per rank, and says who owns what.
+// Splits the unit box along a Hilbert curve, one stretch of it per rank, says who owns what, and moves the
+// cuts when the cells are spread unevenly.
 
 #include "global/gpu_compat.h"
+#include "global/parallel.h"
 #include "knn/keys.h"
 #include "mpi_compat.h"
 
@@ -12,6 +14,7 @@
 #include <vector>
 
 struct ICData;
+struct VMesh;
 
 namespace proteus_mpi {
 
@@ -24,6 +27,10 @@ namespace proteus_mpi {
 #ifdef USE_MPI
         MPI_Comm comm;
 #endif
+
+        // the open cuts of a cut search and the local cell count below each
+        GpuArray<uint64_t>  probe;
+        GpuArray<long long> below;
     };
 
     extern MpiDecomp decomp;
@@ -34,21 +41,31 @@ namespace proteus_mpi {
     // takes a new cut table, from a rebalance or from a snapshot; all ranks pass the same one
     void decomp_set_cuts(const uint64_t* cuts);
 
-    // cuts that give every rank the same number of keys out of all ranks' local_keys; collective
-    void decomp_balanced_cuts(std::vector<uint64_t>& local_keys, std::vector<uint64_t>* cuts_out);
+    void decomp_free();
 
-    // rank that owns a key
+    // cuts that give every rank about the same number of cells out of all ranks' points; collective.
+    // pts are the n local points in gpu memory, sort has room for n
+    void decomp_balanced_cuts(const POINT_TYPE* pts, int n, PairSort sort, std::vector<uint64_t>* cuts_out);
+
+    // prints the imbalance every imbalance_log_interval steps
+    void rebalance_imbalance_log(int step, VMesh* mesh);
+
+    // true when new cuts were applied, then the cells have to migrate
+    bool rebalance_decide(int step, VMesh* mesh, POINT_TYPE* pts);
+
+    void rebalance_log_after_migration(VMesh* mesh);
+
+    // bits a rank number takes as a sort key
+    inline int rank_key_bits() {
+        int b = 1;
+        while ((1 << b) < decomp.nranks)
+            b++;
+        return b;
+    }
+
+    // rank that owns a key: the last cut at or below it
     HD inline int owner_of_key(uint64_t key, const uint64_t* cuts, int nranks) {
-        int lo = 0;
-        int hi = nranks;
-        while (lo + 1 < hi) {
-            const int mid = (lo + hi) / 2;
-            if (cuts[mid] <= key)
-                lo = mid;
-            else
-                hi = mid;
-        }
-        return lo;
+        return (int)upper_bound_of(cuts, (size_t)nranks, key) - 1;
     }
 
     HD inline int owner_of_point(const POINT_TYPE& p, const uint64_t* cuts, int nranks) {

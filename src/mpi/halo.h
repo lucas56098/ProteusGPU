@@ -12,7 +12,6 @@
 #include "mpi_compat.h"
 
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 struct VMesh;
@@ -24,16 +23,6 @@ namespace gradients {
 }
 
 namespace proteus_mpi {
-
-    // one cell's state on the wire
-    struct HaloPrimCell {
-        double     rho;
-        POINT_TYPE v;
-        double     E;
-    };
-
-    // POINT_TYPEs per cell in the gradient message: rho, one per velocity axis, P, anchor
-    constexpr int HALO_GRAD_COMPONENTS = 4 + DIMENSION;
 
     // a periodic shift s of the box, one of 3^DIMENSION, as a small code
     HD inline int shift_code(int sx, int sy, int sz) {
@@ -62,45 +51,36 @@ namespace proteus_mpi {
 
     // the ghosts of this build and who they came from
     struct MpiHalo {
-        // ghost g: owner rank, cell on the owner, shift; it sits after the cells in the point list
-        std::vector<int>                  g_owner;
-        std::vector<int>                  g_k;
-        std::vector<int>                  g_shift;
-        std::vector<POINT_TYPE>           g_pos;
-        std::vector<int>                  g_slot;       // MPI ghost slot, -1 for a copy of an own cell
-        std::unordered_map<uint64_t, int> g_index;      // (owner, k, shift) -> ghost
-        int                               n_mpi_ghosts; // ghosts with a slot
+        // ghost g: the answer it came with, its owner rank and its MPI ghost slot, -1 for a periodic ghost;
+        // it sits after the cells in the point list
+        int                   n_ghosts;
+        int                   n_mpi_ghosts;
+        GpuArray<GhostAnswer> g_ans;
+        GpuArray<int>         g_owner;
+        GpuArray<int>         g_slot;
 
         // partners of this build: ranks this one asked, ranks that asked this one
         std::vector<int> asked;
         std::vector<int> askers;
-        // per asker, what it got: (k, shift) packed, sorted
-        std::vector<std::vector<uint64_t>> sent;
+        // what this rank sent, (asker, k, shift) as one key, sorted; the periodic ghosts too
+        GpuArray<uint64_t> sent;
+        size_t             n_sent;
 
         // the used subset: only ghosts that a local cell has as a face neighbour get state
-        int              used_subset_ready;
-        int              n_used_send;
-        int              n_used_recv;
-        std::vector<int> used_send_count;     // per asker
-        std::vector<int> used_recv_count;     // per asked rank
-        int*             used_export_indices; // cell behind every send entry
-        int*             used_to_full_slot;   // slot behind every receive entry
-        int              send_capacity;
+        int           used_subset_ready;
+        Blocks        state_send;          // per asker the cells this rank sends
+        Blocks        state_recv;          // per asked rank the ghosts this rank gets
+        GpuArray<int> used_export_indices; // cell behind every send entry
+        GpuArray<int> used_to_full_slot;   // slot behind every receive entry
 
-        // one pair of buffers per kind of data
-        HaloPrimCell* sendbuf_prim;
-        HaloPrimCell* recvbuf_prim;
-        POINT_TYPE*   sendbuf_point;
-        POINT_TYPE*   recvbuf_point;
-        POINT_TYPE*   sendbuf_grad;
-        POINT_TYPE*   recvbuf_grad;
-        double*       sendbuf_double;
-        double*       recvbuf_double;
+        // the state on the wire, one kind at a time
+        GpuArray<char> sendbuf;
+        GpuArray<char> recvbuf;
     };
 
     extern MpiHalo halo;
 
-    // buffers sized from an estimate; they grow when a build needs more
+    // the first ghost slots, from an estimate; they grow when a build needs more
     void halo_init(int n_local);
     void halo_free();
 
@@ -108,19 +88,19 @@ namespace proteus_mpi {
     void halo_begin_build();
 
     // asks for the cells in a ball of radius radii[i] around cell cells[i], i < nb, and appends the new ghosts;
-    // collective, also on one rank. All arrays in managed memory; cell_pos holds the seeds in cell order, the
+    // collective, also on one rank. All arrays in gpu memory; cell_pos holds the seeds in cell order, the
     // owners answer from theirs
     void halo_request_balls(VMesh* mesh, const POINT_TYPE* cell_pos, const int* cells, const double* radii, int nb);
 
-    // the build sorted the ghosts into the point list; this writes their seeds and neighbour indices
-    void halo_write_ghosts(VMesh* mesh, POINT_TYPE* pts, uint64_t* ghost_ids, int n_hydro);
+    // the build sorted the ghosts into the point list pts; this writes their seeds and neighbour indices
+    void halo_write_ghosts(VMesh* mesh, POINT_TYPE* pts);
 
     // finds the ghosts the local cells really touch, so the state exchanges stay small
     void halo_build_used_subset(VMesh* mesh);
 
     // state of those ghosts, once per use
-    void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar);
-    void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads);
+    void halo_exchange_primvars(hydro::primvars* primvar);
+    void halo_exchange_gradients(gradients::PrimGradients* grads);
     void halo_exchange_v_mesh(VMesh* mesh);
     void halo_exchange_centroids(VMesh* mesh);
 #ifdef VOL_REGULARIZE
@@ -139,9 +119,6 @@ namespace proteus_mpi {
     // tells those ranks where the cells are now and takes what the others moved; collective
     void
     halo_exchange_moved_seeds(const VMesh* mesh, const std::vector<int>& moved_ks, std::vector<MovedSeed>* received);
-
-    void halo_dt_allreduce(double* dt);
-    void halo_sum_allreduce(double* v);
 
     // more slots, everything that is sized by them grows along
     void halo_grow_capacity(int new_capacity);

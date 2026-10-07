@@ -1,157 +1,146 @@
 // the used subset and the state exchanges with the partners of the build (included by halo.cu)
 
-static unsigned char* s_used_bitmap     = nullptr; // per ghost slot, whether a local cell has it as a face neighbour
-static int            s_used_bitmap_cap = 0;
-
-static size_t index_of_partner(const std::vector<int>& list, int r) {
-    return std::lower_bound(list.begin(), list.end(), r) - list.begin();
+// exclusive scan of the n flags into pos; returns how many are set
+static size_t scan_flags(size_t n) {
+    if (n == 0) return 0;
+    unsigned int*      flag = s_buffers.flag.data;
+    unsigned int*      pos  = s_buffers.pos.data;
+    const unsigned int last = flag[n - 1];
+    parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_>("FLAG_SCAN", n, flag, pos, s_buffers.scan_scratch(n));
+    return (size_t)pos[n - 1] + last;
 }
 
 // marks the slots behind a face, then tells every owner which of its cells are used here
 void halo_build_used_subset(VMesh* mesh) {
     halo.used_subset_ready = 1;
-    halo.n_used_send       = 0;
-    halo.n_used_recv       = 0;
-    halo.used_send_count.assign(halo.askers.size(), 0);
-    halo.used_recv_count.assign(halo.asked.size(), 0);
+    halo.state_send.clear();
+    halo.state_recv.clear();
     if (halo.asked.empty() && halo.askers.empty()) return;
 
     PROFILE("HALO_USED_BUILD");
-    const int n_hydro = (int)mesh->n_hydro;
-    const int n_mpi   = halo.n_mpi_ghosts;
-
-    if (n_mpi > s_used_bitmap_cap) {
-        if (s_used_bitmap) gpu_free(s_used_bitmap);
-        s_used_bitmap_cap = std::max(n_mpi, 2 * s_used_bitmap_cap);
-        s_used_bitmap     = gpu_alloc<unsigned char>(s_used_bitmap_cap);
-    }
+    const int      n_hydro = (int)mesh->n_hydro;
+    const int      n_mpi   = halo.n_mpi_ghosts;
+    unsigned char* used    = s_buffers.used_bitmap.fit((size_t)n_mpi);
     if (n_mpi > 0) {
-        gpu_memset(s_used_bitmap, 0, (size_t)n_mpi);
-        unsigned char* used = s_used_bitmap;
-        const int*     nc   = mesh->neighbor_cell;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("BITMAP_MARK", mesh->num_faces, [=] HD(int f) {
-            pack::mark_used_bitmap_body(f, nc, n_hydro, n_hydro + n_mpi, used);
+        gpu_memset(used, 0, (size_t)n_mpi);
+        const int* nc = mesh->neighbor_cell;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("BITMAP_MARK", mesh->num_faces, [=] HD(size_t f) {
+            const int kn = nc[f];
+            if (kn >= n_hydro && kn < n_hydro + n_mpi) used[kn - n_hydro] = 1;
         });
-        GPU_SYNC();
     }
 
-    // per owner the used slots in slot order, and the cells behind them
-    std::vector<std::vector<int>> slots(halo.asked.size()), cells(halo.asked.size());
-    for (size_t g = 0; g < halo.g_owner.size(); g++) {
-        const int slot = halo.g_slot[g];
-        if (slot < 0 || !s_used_bitmap[slot]) continue;
-        const size_t i = index_of_partner(halo.asked, halo.g_owner[g]);
-        slots[i].push_back(slot);
-        cells[i].push_back(halo.g_k[g]);
+    // the used ghosts in ghost order, then grouped by owner; within an owner they stay in slot order
+    const size_t       n_g     = (size_t)halo.n_ghosts;
+    const int*         g_slot  = halo.g_slot.data;
+    const int*         g_owner = halo.g_owner.data;
+    const GhostAnswer* g_ans   = halo.g_ans.data;
+    unsigned int*      flag    = s_buffers.flag.fit(n_g);
+    unsigned int*      pos     = s_buffers.pos.fit(n_g);
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("USED_FLAG", n_g, [=] HD(size_t g) {
+        const int s = g_slot[g];
+        flag[g]     = (s >= 0 && used[s]) ? 1u : 0u;
+    });
+    const size_t n_used = scan_flags(n_g);
+    PairSort     sort   = s_buffers.sort.fit(n_used);
+    {
+        uint64_t*     keys = sort.keys;
+        unsigned int* vals = sort.vals;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("USED_COMPACT", n_g, [=] HD(size_t g) {
+            if (!flag[g]) return;
+            keys[pos[g]] = (uint64_t)g_owner[g];
+            vals[pos[g]] = (unsigned int)g;
+        });
     }
-    Messages out;
-    for (size_t i = 0; i < halo.asked.size(); i++) {
-        std::vector<char>& msg = out.to(halo.asked[i]);
-        for (int k : cells[i])
-            append(msg, k);
-        for (int slot : slots[i])
-            halo.used_to_full_slot[halo.n_used_recv++] = slot;
-        halo.used_recv_count[i] = (int)slots[i].size();
-    }
+    sort.sort("USED_SORT", n_used, rank_key_bits());
 
-    Messages in;
-    partner_exchange(out, halo.askers, &in);
+    halo.state_recv = with_partners(blocks_of_sorted_ranks(sort.keys, n_used, &s_buffers.run_scratch), halo.asked);
+    const unsigned int* ghosts       = sort.vals;
+    int*                cells        = s_buffers.cells.fit(n_used);
+    int*                to_full_slot = halo.used_to_full_slot.fit(n_used);
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("USED_GATHER", n_used, [=] HD(size_t j) {
+        const unsigned int g = ghosts[j];
+        cells[j]             = g_ans[g].k;
+        to_full_slot[j]      = g_slot[g];
+    });
 
-    int total = 0;
-    for (size_t m = 0; m < in.ranks.size(); m++)
-        total += (int)count_of<int>(in.data[m]);
-    ensure_send_capacity(total);
-    for (size_t m = 0; m < in.ranks.size(); m++) {
-        const size_t i  = index_of_partner(halo.askers, in.ranks[m]);
-        const size_t n  = count_of<int>(in.data[m]);
-        const int*   ks = items_of<int>(in.data[m]);
-        for (size_t j = 0; j < n; j++)
-            halo.used_export_indices[halo.n_used_send++] = ks[j];
-        halo.used_send_count[i] = (int)n;
-    }
+    // every owner learns which of its cells are used here, in that order
+    partner_counts(halo.state_recv, halo.askers, &halo.state_send);
+    exchange_items(
+        cells, halo.state_recv, halo.used_export_indices.fit(halo.state_send.total), halo.state_send, sizeof(int));
 }
 
 #ifdef USE_MPI
-// the used cells to the askers, the used ghosts from the asked; both sides know the counts
-static void exchange_used(const void* sendbuf, void* recvbuf, size_t item_bytes, int tag) {
-    mpi_sync_before_send(sendbuf, item_bytes * (size_t)halo.n_used_send);
-    std::vector<MPI_Request> reqs;
-    const char*              s   = (const char*)sendbuf;
-    char*                    r   = (char*)recvbuf;
-    size_t                   off = 0;
-    for (size_t i = 0; i < halo.askers.size(); i++) {
-        const int n = halo.used_send_count[i];
-        if (n > 0) {
-            reqs.emplace_back();
-            MPI_Isend(
-                s + off * item_bytes, (int)(n * item_bytes), MPI_BYTE, halo.askers[i], tag, decomp.comm, &reqs.back());
-        }
-        off += (size_t)n;
-    }
-    off = 0;
-    for (size_t j = 0; j < halo.asked.size(); j++) {
-        const int n = halo.used_recv_count[j];
-        if (n > 0) {
-            reqs.emplace_back();
-            MPI_Irecv(
-                r + off * item_bytes, (int)(n * item_bytes), MPI_BYTE, halo.asked[j], tag, decomp.comm, &reqs.back());
-        }
-        off += (size_t)n;
-    }
-    if (!reqs.empty()) MPI_Waitall((int)reqs.size(), reqs.data(), MPI_STATUSES_IGNORE);
-    mpi_sync_after_recv(recvbuf, item_bytes * (size_t)halo.n_used_recv);
-}
-
 static bool have_partners() {
     return halo.used_subset_ready && !(halo.asked.empty() && halo.askers.empty());
 }
 
-enum HaloTag { TAG_PRIM = 6001, TAG_GRAD, TAG_V_MESH, TAG_COM_OFF, TAG_VOL };
+// one used cell's state to the askers, one used ghost's state from the asked; Item is what one cell sends,
+// pack(k) makes it from cell k, unpack(slot, item) puts it into the ghost slot
+template <typename Item, typename Pack, typename Unpack> static void exchange_state(Pack pack, Unpack unpack) {
+    const size_t n_send  = halo.state_send.total;
+    const size_t n_recv  = halo.state_recv.total;
+    Item*        send    = (Item*)halo.sendbuf.fit(n_send * sizeof(Item));
+    Item*        recv    = (Item*)halo.recvbuf.fit(n_recv * sizeof(Item));
+    const int*   exports = halo.used_export_indices.data;
+    const int*   slots   = halo.used_to_full_slot.data;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", n_send, [=] HD(size_t s) { send[s] = pack(exports[s]); });
+    {
+        PROFILE_MPI("WAIT");
+        exchange_items(send, halo.state_send, recv, halo.state_recv, sizeof(Item));
+    }
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("UNPACK", n_recv, [=] HD(size_t s) { unpack(slots[s], recv[s]); });
+}
+
+// one cell's primvars on the wire
+struct HaloPrimCell {
+    double     rho;
+    POINT_TYPE v;
+    double     E;
+};
 #endif
 
 // state of the used ghosts
-void halo_exchange_primvars(VMesh* mesh, hydro::primvars* primvar) {
-    (void)mesh;
+void halo_exchange_primvars(hydro::primvars* primvar) {
 #ifndef USE_MPI
     (void)primvar;
 #else
     if (!have_partners()) return;
     PROFILE("HALO_PRIM");
-    auto* sendbuf = halo.sendbuf_prim;
-    auto* exports = halo.used_export_indices;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "PACK", halo.n_used_send, [=] HD(int s) { pack::pack_prim_body(s, exports, primvar, sendbuf); });
-    {
-        PROFILE_MPI("WAIT");
-        exchange_used(halo.sendbuf_prim, halo.recvbuf_prim, sizeof(HaloPrimCell), TAG_PRIM);
-    }
-    auto* recvbuf = halo.recvbuf_prim;
-    auto* slots   = halo.used_to_full_slot;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_prim_body(s, slots, recvbuf, primvar); });
+    exchange_state<HaloPrimCell>(
+        [=] HD(int k) {
+            HaloPrimCell c;
+            c.rho = primvar->rho[k];
+            c.v   = primvar->v[k];
+            c.E   = primvar->E[k];
+            return c;
+        },
+        [=] HD(int g, const HaloPrimCell& c) {
+            primvar->rho_g[g] = c.rho;
+            primvar->v_g[g]   = c.v;
+            primvar->E_g[g]   = c.E;
+        });
 #endif
 }
 
 // their gradients, all components in one message
-void halo_exchange_gradients(VMesh* mesh, gradients::PrimGradients* grads) {
-    (void)mesh;
+void halo_exchange_gradients(gradients::PrimGradients* grads) {
 #ifndef USE_MPI
     (void)grads;
 #else
     if (!have_partners()) return;
     PROFILE("HALO_GRAD");
-    auto* sendbuf = halo.sendbuf_grad;
-    auto* exports = halo.used_export_indices;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "PACK", halo.n_used_send, [=] HD(int s) { pack::pack_grad_body(s, exports, grads, sendbuf); });
-    {
-        PROFILE_MPI("WAIT");
-        exchange_used(halo.sendbuf_grad, halo.recvbuf_grad, sizeof(POINT_TYPE) * HALO_GRAD_COMPONENTS, TAG_GRAD);
-    }
-    auto* recvbuf = halo.recvbuf_grad;
-    auto* slots   = halo.used_to_full_slot;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_grad_body(s, slots, recvbuf, grads); });
+    exchange_state<gradients::PrimGradient>([=] HD(int k) { return grads->load(k); },
+                                            [=] HD(int g, const gradients::PrimGradient& c) {
+                                                grads->rho_g[g] = c.rho;
+                                                grads->vx_g[g]  = c.vx;
+                                                grads->vy_g[g]  = c.vy;
+#ifdef dim_3D
+                                                grads->vz_g[g] = c.vz;
+#endif
+                                                grads->P_g[g]      = c.P;
+                                                grads->anchor_g[g] = c.anchor;
+                                            });
 #endif
 }
 
@@ -162,18 +151,8 @@ void halo_exchange_v_mesh(VMesh* mesh) {
 #else
     if (!have_partners()) return;
     PROFILE("HALO_VMESH");
-    auto* sendbuf = halo.sendbuf_point;
-    auto* exports = halo.used_export_indices;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "PACK", halo.n_used_send, [=] HD(int s) { pack::pack_v_mesh_body(s, exports, mesh->v_mesh, sendbuf); });
-    {
-        PROFILE_MPI("WAIT");
-        exchange_used(halo.sendbuf_point, halo.recvbuf_point, sizeof(POINT_TYPE), TAG_V_MESH);
-    }
-    auto* recvbuf = halo.recvbuf_point;
-    auto* slots   = halo.used_to_full_slot;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_v_mesh_body(s, slots, recvbuf, mesh->v_mesh_g); });
+    exchange_state<POINT_TYPE>([=] HD(int k) { return mesh->v_mesh[k]; },
+                               [=] HD(int g, const POINT_TYPE& v) { mesh->v_mesh_g[g] = v; });
 #endif
 }
 
@@ -184,19 +163,8 @@ void halo_exchange_centroids(VMesh* mesh) {
 #else
     if (!have_partners()) return;
     PROFILE("HALO_COM");
-    auto* sendbuf = halo.sendbuf_point;
-    auto* exports = halo.used_export_indices;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", halo.n_used_send, [=] HD(int s) {
-        pack::pack_com_off_body(s, exports, mesh->com, mesh->seeds, sendbuf);
-    });
-    {
-        PROFILE_MPI("WAIT");
-        exchange_used(halo.sendbuf_point, halo.recvbuf_point, sizeof(POINT_TYPE), TAG_COM_OFF);
-    }
-    auto* recvbuf = halo.recvbuf_point;
-    auto* slots   = halo.used_to_full_slot;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_com_off_body(s, slots, recvbuf, mesh->com_off_g); });
+    exchange_state<POINT_TYPE>([=] HD(int k) { return point_diff_periodic(mesh->com[k], mesh->seeds[k]); },
+                               [=] HD(int g, const POINT_TYPE& d) { mesh->com_off_g[g] = d; });
 #endif
 }
 
@@ -208,101 +176,123 @@ void halo_exchange_volumes(VMesh* mesh) {
 #else
     if (!have_partners()) return;
     PROFILE("HALO_VOL");
-    auto* sendbuf = halo.sendbuf_double;
-    auto* exports = halo.used_export_indices;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "PACK", halo.n_used_send, [=] HD(int s) { pack::pack_vol_body(s, exports, mesh->volumes, sendbuf); });
-    {
-        PROFILE_MPI("WAIT");
-        exchange_used(halo.sendbuf_double, halo.recvbuf_double, sizeof(double), TAG_VOL);
-    }
-    auto* recvbuf = halo.recvbuf_double;
-    auto* slots   = halo.used_to_full_slot;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "UNPACK", halo.n_used_recv, [=] HD(int s) { pack::unpack_vol_body(s, slots, recvbuf, mesh->volumes_g); });
+    exchange_state<double>([=] HD(int k) { return mesh->volumes[k]; },
+                           [=] HD(int g, const double& v) { mesh->volumes_g[g] = v; });
 #endif
 }
 #endif
 
+// flags the sent keys of other askers whose cell moved, with their place in pos; returns how many
+static size_t flag_moved_exports(const std::vector<int>& moved_ks) {
+    const size_t n_sent = halo.n_sent;
+    if (moved_ks.empty() || n_sent == 0) return 0;
+    std::vector<int> ks(moved_ks);
+    std::sort(ks.begin(), ks.end());
+    ks.erase(std::unique(ks.begin(), ks.end()), ks.end());
+    int* moved = s_buffers.moved.fit(ks.size());
+    std::memcpy(moved, ks.data(), ks.size() * sizeof(int));
+
+    const uint64_t* sent    = halo.sent.data;
+    const size_t    n_moved = ks.size();
+    const int       me      = decomp.rank;
+    unsigned int*   flag    = s_buffers.flag.fit(n_sent);
+    s_buffers.pos.fit(n_sent);
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("MOVED_FLAG", n_sent, [=] HD(size_t i) {
+        const uint64_t key = sent[i];
+        const int      k   = key_cell(key);
+        const size_t   at  = lower_bound_of(moved, n_moved, k);
+        flag[i]            = (key_rank(key) != me && at < n_moved && moved[at] == k) ? 1u : 0u;
+    });
+    return scan_flags(n_sent);
+}
+
 // cells another rank holds as a ghost, counted once per ghost
 int halo_count_moved_exports(const std::vector<int>& moved_ks) {
     if (moved_ks.empty() || halo.askers.empty()) return 0;
-    const std::unordered_set<int> moved(moved_ks.begin(), moved_ks.end());
-    int                           n = 0;
-    for (const auto& sent : halo.sent) {
-        for (uint64_t key : sent)
-            if (moved.count((int)(key >> 5))) n++;
-    }
-    return n;
+    return (int)flag_moved_exports(moved_ks);
 }
 
 // every asker gets the new position of the cells it holds, every owner sends ours
 void halo_exchange_moved_seeds(const VMesh* mesh, const std::vector<int>& moved_ks, std::vector<MovedSeed>* received) {
     received->clear();
-    const std::unordered_set<int> moved(moved_ks.begin(), moved_ks.end());
 
-    Messages out;
-    for (size_t i = 0; i < halo.askers.size(); i++) {
-        std::vector<char>& msg = out.to(halo.askers[i]);
-        for (uint64_t key : halo.sent[i]) {
-            const int k = (int)(key >> 5);
-            if (!moved.count(k)) continue;
-            GhostAnswer ans;
-            ans.k     = k;
-            ans.shift = (int)(key & 31u);
+    // the moved cells per asker, in the order they were sent
+    const size_t    n_out = halo.askers.empty() ? 0 : flag_moved_exports(moved_ks);
+    GhostAnswer*    out   = s_buffers.m_out.fit(n_out);
+    uint64_t*       dest  = s_buffers.m_dest.fit(n_out);
+    const uint64_t* sent  = halo.sent.data;
+    if (n_out > 0) {
+        const unsigned int* flag  = s_buffers.flag.data;
+        const unsigned int* pos   = s_buffers.pos.data;
+        const double3*      seeds = mesh->seeds;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MOVED_PACK", halo.n_sent, [=] HD(size_t i) {
+            if (!flag[i]) return;
+            const uint64_t key = sent[i];
+            GhostAnswer    a;
+            a.k     = key_cell(key);
+            a.shift = key_shift(key);
             double s[3];
-            shift_of_code(ans.shift, s);
-            ans.p.x = mesh->seeds[k].x + s[0];
-            ans.p.y = mesh->seeds[k].y + s[1];
+            shift_of_code(a.shift, s);
+            a.p.x = seeds[a.k].x + s[0];
+            a.p.y = seeds[a.k].y + s[1];
 #ifdef dim_3D
-            ans.p.z = mesh->seeds[k].z + s[2];
+            a.p.z = seeds[a.k].z + s[2];
 #endif
-            append(msg, ans);
-        }
+            out[pos[i]]  = a;
+            dest[pos[i]] = (uint64_t)key_rank(key);
+        });
     }
 
-    Messages in;
-    partner_exchange(out, halo.asked, &in);
+    const Blocks blocks = with_partners(blocks_of_sorted_ranks(dest, n_out, &s_buffers.run_scratch), halo.askers);
+    Blocks       in;
+    partner_counts(blocks, halo.asked, &in);
+    GhostAnswer* moved_in = s_buffers.m_in.fit(in.total);
+    exchange_items(out, blocks, moved_in, in, sizeof(GhostAnswer));
+    if (in.total == 0) return;
 
-    for (size_t m = 0; m < in.ranks.size(); m++) {
-        const int          owner = in.ranks[m];
-        const size_t       n     = count_of<GhostAnswer>(in.data[m]);
-        const GhostAnswer* as    = items_of<GhostAnswer>(in.data[m]);
-        for (size_t i = 0; i < n; i++) {
-            const auto it = halo.g_index.find(ghost_key(owner, as[i].k, as[i].shift));
-            if (it == halo.g_index.end() || halo.g_slot[it->second] < 0) {
+    // the ghost behind every answer, from the ghosts sorted by key
+    const size_t n_g  = (size_t)halo.n_ghosts;
+    PairSort     sort = s_buffers.sort.fit(n_g);
+    {
+        const GhostAnswer* g_ans   = halo.g_ans.data;
+        const int*         g_owner = halo.g_owner.data;
+        uint64_t*          keys    = sort.keys;
+        unsigned int*      vals    = sort.vals;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("GHOST_KEYS", n_g, [=] HD(size_t g) {
+            keys[g] = ghost_key(g_owner[g], g_ans[g].k, g_ans[g].shift);
+            vals[g] = (unsigned int)g;
+        });
+    }
+    sort.sort("GHOST_SORT", n_g, 36 + rank_key_bits());
+    const uint64_t*     sorted_keys = sort.keys;
+    const unsigned int* sorted_vals = sort.vals;
+    int*                ghost       = s_buffers.m_ghost.fit(in.total);
+    for (size_t j = 0; j < in.ranks.size(); j++) {
+        const int          owner = in.ranks[j];
+        const GhostAnswer* as    = moved_in + in.offsets[j];
+        int*               g_of  = ghost + in.offsets[j];
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("GHOST_FIND", in.counts[j], [=] HD(size_t i) {
+            const uint64_t key = ghost_key(owner, as[i].k, as[i].shift);
+            const size_t   at  = lower_bound_of(sorted_keys, n_g, key);
+            g_of[i]            = (at < n_g && sorted_keys[at] == key) ? (int)sorted_vals[at] : -1;
+        });
+    }
+
+    // the few moved ghosts go to the host for the repair
+    for (size_t j = 0; j < in.ranks.size(); j++) {
+        for (size_t i = in.offsets[j]; i < in.offsets[j] + in.counts[j]; i++) {
+            const int g = ghost[i];
+            if (g < 0 || halo.g_slot.data[g] < 0) {
                 exit_failure("HALO: rank %d moved cell %d, which rank %d does not hold as a ghost\n",
-                             owner,
-                             as[i].k,
+                             in.ranks[j],
+                             moved_in[i].k,
                              decomp.rank);
             }
-            halo.g_pos[it->second] = as[i].p;
+            halo.g_ans.data[g].p = moved_in[i].p;
             MovedSeed ms;
-            ms.pos        = as[i].p;
-            ms.ghost_slot = halo.g_slot[it->second];
+            ms.pos        = moved_in[i].p;
+            ms.ghost_slot = halo.g_slot.data[g];
             received->push_back(ms);
         }
     }
-}
-
-// the smallest timestep of all ranks
-void halo_dt_allreduce(double* dt) {
-#ifdef USE_MPI
-    PROFILE_MPI("DT_ALLREDUCE");
-    double local = *dt;
-    MPI_Allreduce(&local, dt, 1, MPI_DOUBLE, MPI_MIN, decomp.comm);
-#else
-    (void)dt;
-#endif
-}
-
-// one number summed over all ranks
-void halo_sum_allreduce(double* v) {
-#ifdef USE_MPI
-    PROFILE_MPI("SUM_ALLREDUCE");
-    double local = *v;
-    MPI_Allreduce(&local, v, 1, MPI_DOUBLE, MPI_SUM, decomp.comm);
-#else
-    (void)v;
-#endif
 }

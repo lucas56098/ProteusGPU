@@ -8,11 +8,17 @@
 #include "profiler/profiler.h"
 #include "voronoi/voronoi.h"
 
-#include <algorithm>
-#include <cstring>
 #include <vector>
 
 namespace proteus_mpi {
+
+    static int s_last_n_migrated = 0;
+
+    int last_n_migrated() {
+        return s_last_n_migrated;
+    }
+
+#ifdef USE_MPI
 
     // everything a cell needs to carry to its new rank
     struct MigrantCell {
@@ -29,95 +35,102 @@ namespace proteus_mpi {
 #endif
     };
 
-} // namespace proteus_mpi
-
-#include "migrate_packing.h"
-
-namespace proteus_mpi {
-
-#ifdef USE_MPI
-    static int s_n_local_max = 0;
-#endif
-    static int s_last_n_migrated = 0;
-
-#ifdef USE_MPI
-
-    // scratch of the migration, grown when it gets too small
-    static int*         s_send_counts         = nullptr;
-    static int          s_send_counts_cap     = 0;
-    static int*         s_recv_counts         = nullptr;
-    static int          s_recv_counts_cap     = 0;
-    static int*         s_send_displs         = nullptr;
-    static int          s_send_displs_cap     = 0;
-    static int*         s_recv_displs         = nullptr;
-    static int          s_recv_displs_cap     = 0;
-    static int*         s_per_cell_slot       = nullptr;
-    static int          s_per_cell_slot_cap   = 0;
-    static MigrantCell* s_sendbuf             = nullptr;
-    static int          s_sendbuf_cap         = 0;
-    static MigrantCell* s_recvbuf             = nullptr;
-    static int          s_recvbuf_cap         = 0;
-    static int*         s_migrant_local_k     = nullptr;
-    static int          s_migrant_local_k_cap = 0;
-    static int          s_n_migrant_local     = 0;
-    static int*         s_mig_scan            = nullptr;
-    static int          s_mig_scan_cap        = 0;
-    static int*         s_scan_scratch        = nullptr;
-    static int          s_scan_scratch_cap    = 0;
-    static int*         s_dest_pos            = nullptr;
-    static int          s_dest_pos_cap        = 0;
-    static int*         s_chunk_tab           = nullptr;
-    static int          s_chunk_tab_cap       = 0;
+    // the per-cell arrays a migrant is taken from and put into
+    struct CellArrays {
+        POINT_TYPE*      pts;
+        hydro::primvars* prim;
+        hydro::ConsVars* cons;
+#ifdef MOVING_MESH
+        POINT_TYPE*               v_mesh;
+        gradients::PrimGradients* grads;
 #endif
 
-    // scratch that grows and then stays
-    template <typename T> static void ensure_managed(T*& ptr, int& cap, int need) {
-        if (need <= cap) return;
-        const int new_cap = std::max(64, std::max(need, 2 * cap));
-        if (ptr) gpu_free(ptr);
-        ptr = (T*)gpu_malloc(sizeof(T) * (size_t)new_cap);
-        cap = new_cap;
+        HD MigrantCell load(int k) const {
+            MigrantCell mc;
+            mc.pos      = pts[k];
+            mc.rho_old  = prim->rho[k];
+            mc.v_old    = prim->v[k];
+            mc.E_old    = prim->E[k];
+            mc.mass     = cons->mass[k];
+            mc.momentum = cons->momentum[k];
+            mc.energy   = cons->energy[k];
+#ifdef MOVING_MESH
+            mc.v_mesh = v_mesh[k];
+            mc.grad   = grads->load(k);
+#endif
+            return mc;
+        }
+
+        HD void store(int k, const MigrantCell& mc) const {
+            pts[k]            = mc.pos;
+            prim->rho[k]      = mc.rho_old;
+            prim->v[k]        = mc.v_old;
+            prim->E[k]        = mc.E_old;
+            cons->mass[k]     = mc.mass;
+            cons->momentum[k] = mc.momentum;
+            cons->energy[k]   = mc.energy;
+#ifdef MOVING_MESH
+            v_mesh[k]     = mc.v_mesh;
+            grads->rho[k] = mc.grad.rho;
+            grads->vx[k]  = mc.grad.vx;
+            grads->vy[k]  = mc.grad.vy;
+#ifdef dim_3D
+            grads->vz[k] = mc.grad.vz;
+#endif
+            grads->P[k]      = mc.grad.P;
+            grads->anchor[k] = mc.grad.anchor;
+#endif
+        }
+    };
+
+    // the arrays of the migration, kept between steps
+    struct MigrateBuffers {
+        GpuArray<int>          owner; // target rank of every cell, -1 if it stays
+        GpuArray<int>          flag, pos, scan_scratch;
+        GpuArray<int>          leaving; // the leaving cells in cell order
+        GpuArray<int>          filler;  // the staying cells behind the new end
+        PairSortArrays         sort;
+        GpuArray<unsigned int> run_scratch;
+        GpuArray<MigrantCell>  sendbuf, recvbuf;
+
+        void free() {
+            owner.free();
+            flag.free();
+            pos.free();
+            scan_scratch.free();
+            leaving.free();
+            filler.free();
+            sort.free();
+            run_scratch.free();
+            sendbuf.free();
+            recvbuf.free();
+        }
+    };
+
+    static MigrateBuffers s_buffers;
+
+    // exclusive scan of the n flags into pos; returns how many are set
+    static int scan_flags(int n) {
+        if (n <= 0) return 0;
+        int*      flag = s_buffers.flag.data;
+        int*      pos  = s_buffers.pos.data;
+        const int last = flag[n - 1];
+        parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_, int>(
+            "MIG_SCAN", (size_t)n, flag, pos, s_buffers.scan_scratch.fit(scan_scratch_size(n, _MPI_PACK_BLOCK_SIZE_)));
+        return pos[n - 1] + last;
     }
 
-#ifdef USE_MPI
-    static int  assign_destinations(VMesh* mesh, int n_hydro, std::vector<int>* dests);
-    static void build_displacements(int nn, int* total_send, int* total_recv);
-    static void pack_outgoing_migrants(VMesh*                    mesh,
-                                       hydro::primvars*          primvar,
-                                       hydro::ConsVars*          cons,
-                                       gradients::PrimGradients* grads,
-                                       POINT_TYPE*               pts,
-                                       int                       n_hydro,
-                                       int                       nslots);
-    static int  exchange_payload(const std::vector<int>& dests, int total_send);
-    static int  remove_migrated_local(VMesh*                    mesh,
-                                      hydro::primvars*          primvar,
-                                      hydro::ConsVars*          cons,
-                                      gradients::PrimGradients* grads,
-                                      POINT_TYPE*               pts,
-                                      int                       n_hydro);
-    static void append_incoming_migrants(VMesh*                    mesh,
-                                         hydro::primvars*          primvar,
-                                         hydro::ConsVars*          cons,
-                                         gradients::PrimGradients* grads,
-                                         POINT_TYPE*               pts,
-                                         int                       n_after_remove,
-                                         int                       total_recv,
-                                         int                       my_rank);
+    static int  find_leaving_cells(const VMesh* mesh, int n_hydro);
+    static void pack_outgoing(const CellArrays& cells, int m, Blocks* out);
+    static void fill_holes(const CellArrays& cells, int n_hydro, int m);
+    static void append_incoming(const CellArrays& cells, double3* seeds, int n_after_remove, int total_recv);
     static void check_conservation(int n_new);
 
 #endif
 
-    int last_n_migrated() {
-        return s_last_n_migrated;
-    }
-
-    // the cell arrays never grow, so this is the ceiling
-    void migrate_init(int n_local_initial) {
+    void migrate_free() {
 #ifdef USE_MPI
-        s_n_local_max = max_n_local(n_local_initial);
-#else
-        (void)n_local_initial;
+        s_buffers.free();
 #endif
     }
 
@@ -134,41 +147,43 @@ namespace proteus_mpi {
 
         PROFILE("MIGRATE");
 
-        const int   my_rank = decomp.rank;
-        const int   n_hydro = (int)mesh->n_hydro;
-        POINT_TYPE* pts     = mesh->scratch_move;
+        const int  n_hydro = (int)mesh->n_hydro;
+        CellArrays cells;
+        cells.pts  = mesh->scratch_move;
+        cells.prim = primvar;
+        cells.cons = cons;
+#ifdef MOVING_MESH
+        cells.v_mesh = mesh->v_mesh;
+        cells.grads  = grads;
+#else
+        (void)grads;
+#endif
 
-        // target rank of every cell, as an index into the sorted list of targets
-        std::vector<int> dests;
-        const int        nslots = assign_destinations(mesh, n_hydro, &dests);
+        const int m       = find_leaving_cells(mesh, n_hydro);
+        s_last_n_migrated = m;
 
-        int total_send = 0, total_recv = 0;
-        for (int i = 0; i < nslots; i++)
-            s_recv_counts[i] = 0;
-        build_displacements(nslots, &total_send, &total_recv);
-        s_last_n_migrated = total_send;
-
-        pack_outgoing_migrants(mesh, primvar, cons, grads, pts, n_hydro, nslots);
-
+        Blocks out, in;
+        pack_outgoing(cells, m, &out);
         {
             PROFILE_MPI("PAYLOAD_WAIT");
-            total_recv = exchange_payload(dests, total_send);
+            sparse_counts(out, &in);
+            exchange_items(s_buffers.sendbuf.data, out, s_buffers.recvbuf.fit(in.total), in, sizeof(MigrantCell));
         }
 
-        // the leavers go out of the arrays, the arrivals come behind the rest
-        const int n_after_remove = remove_migrated_local(mesh, primvar, cons, grads, pts, n_hydro);
-
-        const int n_new = n_after_remove + total_recv;
-        if (n_new > s_n_local_max) {
+        // the leavers out of the arrays, the arrivals behind the rest; the arrays never grow
+        const int n_after_remove = n_hydro - m;
+        const int n_new          = n_after_remove + (int)in.total;
+        const int n_max          = max_n_local(n_hydro);
+        if (n_new > n_max) {
             exit_failure("[rank %d] MIGRATE: n_hydro_new=%d > n_local_max=%d (migration overflows the per-cell "
                          "arrays). Raise alloc_growth in the param file or enable rebalance with a tighter "
                          "imbalance_threshold, then restart from the last snapshot.\n",
-                         my_rank,
+                         decomp.rank,
                          n_new,
-                         s_n_local_max);
+                         n_max);
         }
-
-        append_incoming_migrants(mesh, primvar, cons, grads, pts, n_after_remove, total_recv, my_rank);
+        fill_holes(cells, n_hydro, m);
+        append_incoming(cells, mesh->seeds, n_after_remove, (int)in.total);
         mesh->n_hydro = (uint64_t)n_new;
 
         check_conservation(n_new);
@@ -177,296 +192,97 @@ namespace proteus_mpi {
 
 #ifdef USE_MPI
 
-    // owner of every cell at its new position; returns how many other ranks get cells, dests lists them
-    static int assign_destinations(VMesh* mesh, int n_hydro, std::vector<int>* dests) {
-        ensure_managed(s_per_cell_slot, s_per_cell_slot_cap, std::max(n_hydro, 1));
+    // owner of every cell at its new position, and the cells that leave in cell order; returns how many leave
+    static int find_leaving_cells(const VMesh* mesh, int n_hydro) {
         const POINT_TYPE* pts    = mesh->scratch_move;
         const uint64_t*   cuts   = decomp.cuts;
         const int         nranks = decomp.nranks;
         const int         me     = decomp.rank;
-        int*              owner  = s_per_cell_slot;
+        int*              owner  = s_buffers.owner.fit(n_hydro);
+        int*              flag   = s_buffers.flag.fit(n_hydro);
+        s_buffers.pos.fit(n_hydro);
         parallel_for<_MPI_PACK_BLOCK_SIZE_>("ASSIGN", n_hydro, [=] HD(int k) {
             const int o = owner_of_point(pts[k], cuts, nranks);
             owner[k]    = (o == me) ? -1 : o;
+            flag[k]     = (o == me) ? 0 : 1;
         });
+        const int m = scan_flags(n_hydro);
 
-        // targets in rank order, then every cell gets the index of its target
-        dests->clear();
-        for (int k = 0; k < n_hydro; k++)
-            if (owner[k] >= 0) dests->push_back(owner[k]);
-        std::sort(dests->begin(), dests->end());
-        dests->erase(std::unique(dests->begin(), dests->end()), dests->end());
-
-        const int nslots = (int)dests->size();
-        ensure_managed(s_send_counts, s_send_counts_cap, std::max(nslots, 1));
-        ensure_managed(s_recv_counts, s_recv_counts_cap, std::max(nslots, 1));
-        for (int i = 0; i < nslots; i++)
-            s_send_counts[i] = 0;
-        for (int k = 0; k < n_hydro; k++) {
-            if (owner[k] < 0) continue;
-            const int slot = (int)(std::lower_bound(dests->begin(), dests->end(), owner[k]) - dests->begin());
-            owner[k]       = slot;
-            s_send_counts[slot]++;
-        }
-        return nslots;
+        const int* pos     = s_buffers.pos.data;
+        int*       leaving = s_buffers.leaving.fit(m);
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_COMPACT", n_hydro, [=] HD(int k) {
+            if (flag[k]) leaving[pos[k]] = k;
+        });
+        return m;
     }
 
-    // one block per target in both buffers
-    static void build_displacements(int nn, int* total_send, int* total_recv) {
-        ensure_managed(s_send_displs, s_send_displs_cap, nn);
-        ensure_managed(s_recv_displs, s_recv_displs_cap, nn);
-        int ts = 0, tr = 0;
-        for (int n = 0; n < nn; n++) {
-            s_send_displs[n] = ts;
-            s_recv_displs[n] = tr;
-            ts += s_send_counts[n];
-            tr += s_recv_counts[n];
-        }
-        ensure_managed(s_sendbuf, s_sendbuf_cap, std::max(ts, 1));
-        ensure_managed(s_recvbuf, s_recvbuf_cap, std::max(tr, 1));
-        *total_send = ts;
-        *total_recv = tr;
-    }
-
-    static constexpr int PACK_TABLE_BUDGET = 1 << 20;
-    static constexpr int PACK_MAX_CHUNKS   = 1024;
-
-    static int pack_chunks_for(int nslots) {
-        int c = (nslots > 0) ? (PACK_TABLE_BUDGET / nslots) : PACK_MAX_CHUNKS;
-        if (c > PACK_MAX_CHUNKS) c = PACK_MAX_CHUNKS;
-        if (c < 1) c = 1;
-        return c;
-    }
-
-    HD inline void pack_chunk_range(int c, int m, int chunks, int* lo, int* hi) {
-        const int span = (m + chunks - 1) / chunks;
-        int       a    = c * span;
-        int       b    = a + span;
-        if (a > m) a = m;
-        if (b > m) b = m;
-        *lo = a;
-        *hi = b;
-    }
-
-    // place of every migrating cell in the send buffer, found without atomics so it is the same in every run
-    static void build_pack_layout(int n_hydro, int nslots) {
-        ensure_managed(s_mig_scan, s_mig_scan_cap, std::max(n_hydro, 1));
-        ensure_managed(s_dest_pos, s_dest_pos_cap, std::max(n_hydro, 1));
-        ensure_managed(s_migrant_local_k, s_migrant_local_k_cap, std::max(n_hydro, 1));
-
-        const int* per_cell_slot = s_per_cell_slot;
-        int*       off           = s_mig_scan;
-
-        s_n_migrant_local = 0;
-        if (n_hydro <= 0) return;
-
-        // flag and scan gives every migrating cell a number
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-            "MIG_FLAG", n_hydro, [=] HD(size_t k) { off[k] = (per_cell_slot[k] >= 0) ? 1 : 0; });
-
-        const size_t need = scan_scratch_size((size_t)n_hydro, _MPI_PACK_BLOCK_SIZE_);
-        ensure_managed(s_scan_scratch, s_scan_scratch_cap, (int)need);
-        parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_, int>("MIG_SCAN", (size_t)n_hydro, off, off, s_scan_scratch);
-
-        const int m       = off[n_hydro - 1] + ((per_cell_slot[n_hydro - 1] >= 0) ? 1 : 0);
-        s_n_migrant_local = m;
+    // the leaving cells grouped by target rank, cell order kept within a rank, into the send buffer
+    static void pack_outgoing(const CellArrays& cells, int m, Blocks* out) {
+        out->clear();
         if (m == 0) return;
 
-        int* mig_k = s_migrant_local_k;
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_COMPACT", n_hydro, [=] HD(size_t k) {
-            if (per_cell_slot[k] >= 0) mig_k[off[k]] = (int)k;
-        });
+        const int* owner   = s_buffers.owner.data;
+        const int* leaving = s_buffers.leaving.data;
+        PairSort   sort    = s_buffers.sort.fit(m);
+        {
+            uint64_t*     keys = sort.keys;
+            unsigned int* vals = sort.vals;
+            parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_DEST", m, [=] HD(int j) {
+                keys[j] = (uint64_t)owner[leaving[j]];
+                vals[j] = (unsigned int)j;
+            });
+        }
+        sort.sort("MIG_SORT", (size_t)m, rank_key_bits());
+        *out = blocks_of_sorted_ranks(sort.keys, (size_t)m, &s_buffers.run_scratch);
 
-        // count per chunk and target, scan the small table, then every chunk fills from its own base
-        const int chunks = pack_chunks_for(nslots);
-        ensure_managed(s_chunk_tab, s_chunk_tab_cap, chunks * nslots);
-        int*       tab         = s_chunk_tab;
-        const int* send_displs = s_send_displs;
-        int*       dest_pos    = s_dest_pos;
+        const unsigned int* order   = sort.vals;
+        MigrantCell*        sendbuf = s_buffers.sendbuf.fit(m);
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", m, [=] HD(int j) { sendbuf[j] = cells.load(leaving[order[j]]); });
+    }
+
+    // the i-th leaving cell below the new end takes the i-th staying cell above it; there are as many of one
+    // as of the other
+    static void fill_holes(const CellArrays& cells, int n_hydro, int m) {
+        if (m == 0) return;
+        const int  n_after = n_hydro - m;
+        const int* owner   = s_buffers.owner.data;
+        const int* leaving = s_buffers.leaving.data;
+
+        // holes: the leaving cells are in cell order, so the ones below the new end come first
+        const int holes = parallel_reduce_sum<_MPI_PACK_BLOCK_SIZE_, int>(
+            "MIG_HOLES", (size_t)m, [=] HD(size_t j) { return (leaving[j] < n_after) ? 1 : 0; });
+        if (holes == 0) return;
+
+        // fillers: the staying cells in [n_after, n_hydro), in cell order
+        int* flag = s_buffers.flag.data;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+            "MIG_STAY", m, [=] HD(int t) { flag[t] = (owner[n_after + t] < 0) ? 1 : 0; });
+        const int fillers = scan_flags(m);
+        if (fillers != holes) {
+            exit_failure("[rank %d] MIGRATE: %d holes but %d cells to fill them\n", decomp.rank, holes, fillers);
+        }
+        const int* pos    = s_buffers.pos.data;
+        int*       filler = s_buffers.filler.fit(m);
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_FILLERS", m, [=] HD(int t) {
+            if (flag[t]) filler[pos[t]] = n_after + t;
+        });
 
         parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-            "MIG_TAB_ZERO", (size_t)chunks * (size_t)nslots, [=] HD(size_t i) { tab[i] = 0; });
-
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_TAB_COUNT", chunks, [=] HD(size_t c) {
-            int lo, hi;
-            pack_chunk_range((int)c, m, chunks, &lo, &hi);
-            for (int j = lo; j < hi; j++)
-                tab[(size_t)c * nslots + per_cell_slot[mig_k[j]]]++;
-        });
-
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_TAB_SCAN", nslots, [=] HD(size_t sl) {
-            int run = send_displs[sl];
-            for (int c = 0; c < chunks; c++) {
-                const size_t idx = (size_t)c * nslots + sl;
-                const int    t   = tab[idx];
-                tab[idx]         = run;
-                run += t;
-            }
-        });
-
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("MIG_TAB_POS", chunks, [=] HD(size_t c) {
-            int lo, hi;
-            pack_chunk_range((int)c, m, chunks, &lo, &hi);
-            for (int j = lo; j < hi; j++) {
-                const int k = mig_k[j];
-                dest_pos[k] = tab[(size_t)c * nslots + per_cell_slot[k]]++;
-            }
-        });
-    }
-
-    // copy the cells into the send buffer
-    static void pack_outgoing_migrants(VMesh*                    mesh,
-                                       hydro::primvars*          primvar,
-                                       hydro::ConsVars*          cons,
-                                       gradients::PrimGradients* grads,
-                                       POINT_TYPE*               pts,
-                                       int                       n_hydro,
-                                       int                       nslots) {
-        build_pack_layout(n_hydro, nslots);
-
-        auto*   per_cell_slot = s_per_cell_slot;
-        auto*   dest_pos      = s_dest_pos;
-        auto*   sendbuf       = s_sendbuf;
-        double* rho           = primvar->rho;
-        auto*   v             = primvar->v;
-        double* E             = primvar->E;
-        double* mass          = cons->mass;
-        auto*   momentum      = cons->momentum;
-        double* energy        = cons->energy;
-#ifdef MOVING_MESH
-        auto* v_mesh = mesh->v_mesh;
-#endif
-
-        parallel_for<_MPI_PACK_BLOCK_SIZE_>("PACK", n_hydro, [=] HD(int k) {
-            pack::pack_migrant_body(k,
-                                    per_cell_slot,
-                                    dest_pos,
-                                    pts,
-                                    rho,
-                                    v,
-                                    E,
-                                    mass,
-                                    momentum,
-                                    energy,
-#ifdef MOVING_MESH
-                                    v_mesh,
-                                    grads,
-#endif
-                                    sendbuf);
-        });
-#ifndef MOVING_MESH
-        (void)mesh;
-        (void)grads;
-#endif
-    }
-
-    // the cells themselves, to ranks that do not know they get some; what comes in is in source rank order
-    static int exchange_payload(const std::vector<int>& dests, int total_send) {
-        mpi_sync_before_send(s_sendbuf, sizeof(MigrantCell) * (size_t)total_send);
-        Messages out, in;
-        for (size_t i = 0; i < dests.size(); i++) {
-            const char* first = (const char*)(s_sendbuf + s_send_displs[i]);
-            out.to(dests[i]).assign(first, first + sizeof(MigrantCell) * (size_t)s_send_counts[i]);
-        }
-        sparse_exchange(out, &in);
-
-        int total_recv = 0;
-        for (size_t m = 0; m < in.ranks.size(); m++)
-            total_recv += (int)count_of<MigrantCell>(in.data[m]);
-        ensure_managed(s_recvbuf, s_recvbuf_cap, std::max(total_recv, 1));
-        size_t at = 0;
-        for (size_t m = 0; m < in.ranks.size(); m++) {
-            std::memcpy((char*)(s_recvbuf + at), in.data[m].data(), in.data[m].size());
-            at += count_of<MigrantCell>(in.data[m]);
-        }
-        mpi_sync_after_recv(s_recvbuf, sizeof(MigrantCell) * (size_t)total_recv);
-        return total_recv;
-    }
-
-    // close the holes the leaving cells left: the last cell moves into the hole
-    static int remove_migrated_local(VMesh*                    mesh,
-                                     hydro::primvars*          primvar,
-                                     hydro::ConsVars*          cons,
-                                     gradients::PrimGradients* grads,
-                                     POINT_TYPE*               pts,
-                                     int                       n_hydro) {
-        std::sort(s_migrant_local_k, s_migrant_local_k + s_n_migrant_local, std::greater<int>());
-        int n_after = n_hydro;
-        for (int i = 0; i < s_n_migrant_local; i++) {
-            const int k_remove = s_migrant_local_k[i];
-            const int k_last   = n_after - 1;
-            if (k_remove != k_last) {
-                pts[k_remove]            = pts[k_last];
-                primvar->rho[k_remove]   = primvar->rho[k_last];
-                primvar->v[k_remove]     = primvar->v[k_last];
-                primvar->E[k_remove]     = primvar->E[k_last];
-                cons->mass[k_remove]     = cons->mass[k_last];
-                cons->momentum[k_remove] = cons->momentum[k_last];
-                cons->energy[k_remove]   = cons->energy[k_last];
-#ifdef MOVING_MESH
-                mesh->v_mesh[k_remove] = mesh->v_mesh[k_last];
-                grads->rho[k_remove]   = grads->rho[k_last];
-                grads->vx[k_remove]    = grads->vx[k_last];
-                grads->vy[k_remove]    = grads->vy[k_last];
-#ifdef dim_3D
-                grads->vz[k_remove] = grads->vz[k_last];
-#endif
-                grads->P[k_remove]      = grads->P[k_last];
-                grads->anchor[k_remove] = grads->anchor[k_last];
-#endif
-            }
-            n_after--;
-        }
-#ifndef MOVING_MESH
-        (void)mesh;
-        (void)grads;
-#endif
-        return n_after;
+            "MIG_MOVE", holes, [=] HD(int i) { cells.store(leaving[i], cells.load(filler[i])); });
     }
 
     // the arrivals go behind the cells that stayed
-    static void append_incoming_migrants(VMesh*                    mesh,
-                                         hydro::primvars*          primvar,
-                                         hydro::ConsVars*          cons,
-                                         gradients::PrimGradients* grads,
-                                         POINT_TYPE*               pts,
-                                         int                       n_after_remove,
-                                         int                       total_recv,
-                                         int                       my_rank) {
-        (void)my_rank;
-#ifndef MOVING_MESH
-        (void)grads;
-#endif
-        if (total_recv <= 0) return;
-
-        auto*   recvbuf  = s_recvbuf;
-        auto*   seeds    = mesh->seeds;
-        double* rho      = primvar->rho;
-        auto*   v        = primvar->v;
-        double* E        = primvar->E;
-        double* mass     = cons->mass;
-        auto*   momentum = cons->momentum;
-        double* energy   = cons->energy;
-#ifdef MOVING_MESH
-        auto* v_mesh = mesh->v_mesh;
-#endif
-
+    static void append_incoming(const CellArrays& cells, double3* seeds, int n_after_remove, int total_recv) {
+        const MigrantCell* recvbuf = s_buffers.recvbuf.data;
         parallel_for<_MPI_PACK_BLOCK_SIZE_>("APPEND", total_recv, [=] HD(int j) {
-            pack::unpack_migrant_body(j,
-                                      n_after_remove,
-                                      recvbuf,
-#ifdef MOVING_MESH
-                                      v_mesh,
-                                      grads,
+            const int         k  = n_after_remove + j;
+            const MigrantCell mc = recvbuf[j];
+            cells.store(k, mc);
+#ifdef dim_3D
+            seeds[k] = double3{mc.pos.x, mc.pos.y, mc.pos.z};
+#else
+            seeds[k] = double3{mc.pos.x, mc.pos.y, 0.0};
 #endif
-                                      pts,
-                                      seeds,
-                                      rho,
-                                      v,
-                                      E,
-                                      mass,
-                                      momentum,
-                                      energy);
         });
     }
 

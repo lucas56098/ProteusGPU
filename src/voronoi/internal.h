@@ -36,6 +36,9 @@ namespace voronoi {
     // a finished cell whose sphere is not covered becomes security_radius_beyond_data
     void certify_cells(VMesh* mesh, const POINT_TYPE* cell_pos);
 
+    // cells left open only by certify_cells count as finished again, for a round without new points
+    void reopen_uncertified_cells(VMesh* mesh);
+
     // the next ball of every cell left open; returns how many ask, stuck how many cannot grow any more
     int request_open_balls(VMesh* mesh, int* stuck);
 

@@ -444,4 +444,42 @@ inline void parallel_sort_pairs(const char*    name,
 #endif
 }
 
+// the arrays of one parallel_sort_pairs: fill keys and vals, sort, then they hold the sorted pairs
+struct PairSort {
+    uint64_t*     keys     = nullptr;
+    unsigned int* vals     = nullptr;
+    uint64_t*     keys_alt = nullptr;
+    unsigned int* vals_alt = nullptr;
+    unsigned int* scratch  = nullptr;
+
+    void sort(const char* name, size_t n, int key_bits) {
+        parallel_sort_pairs(name, n, key_bits, keys, vals, keys_alt, vals_alt, scratch);
+    }
+};
+
+// arrays a PairSort can be made of, kept between calls
+struct PairSortArrays {
+    GpuArray<uint64_t>     keys, keys_alt;
+    GpuArray<unsigned int> vals, vals_alt, scratch;
+
+    // a sort of n pairs on these arrays
+    PairSort fit(size_t n) {
+        PairSort s;
+        s.keys     = keys.fit(n);
+        s.keys_alt = keys_alt.fit(n);
+        s.vals     = vals.fit(n);
+        s.vals_alt = vals_alt.fit(n);
+        s.scratch  = scratch.fit(sort_scratch_size(n));
+        return s;
+    }
+
+    void free() {
+        keys.free();
+        keys_alt.free();
+        vals.free();
+        vals_alt.free();
+        scratch.free();
+    }
+};
+
 #endif

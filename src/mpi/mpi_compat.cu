@@ -1,5 +1,6 @@
 // implements the MPI helpers (mpi_compat.h)
 
+#include "decomp.h"
 #include "global/gpu_compat.h"
 #include "mpi_compat.h"
 #include "profiler/profiler.h"
@@ -165,45 +166,25 @@ namespace proteus_mpi {
 #endif
     }
 
-#if defined(USE_MPI) && !defined(CPU_DEBUG)
-    static void sync_device() {
-        cudaDeviceSynchronize();
-    }
-#endif
-
-    // without GPU aware MPI the buffer has to sit on the host before it is sent
-    void mpi_sync_before_send(const void* buf, size_t bytes) {
-#if defined(CPU_DEBUG) || !defined(USE_MPI)
-        (void)buf;
-        (void)bytes;
-        return;
+    double min_over_ranks(double v) {
+#ifdef USE_MPI
+        PROFILE_MPI("MIN_ALLREDUCE");
+        double g = v;
+        MPI_Allreduce(&v, &g, 1, MPI_DOUBLE, MPI_MIN, decomp.comm);
+        return g;
 #else
-        sync_device();
-#ifndef GPU_AWARE_MPI
-        if (bytes > 0 && buf != nullptr) {
-            gpu_prefetch_to_cpu(const_cast<void*>(buf), bytes);
-            sync_device();
-        }
-#else
-        (void)buf;
-        (void)bytes;
-#endif
+        return v;
 #endif
     }
 
-    // and goes back to the device after it arrived
-    void mpi_sync_after_recv(void* buf, size_t bytes) {
-#if defined(CPU_DEBUG) || !defined(USE_MPI)
-        (void)buf;
-        (void)bytes;
-        return;
+    double sum_over_ranks(double v) {
+#ifdef USE_MPI
+        PROFILE_MPI("SUM_ALLREDUCE");
+        double g = v;
+        MPI_Allreduce(&v, &g, 1, MPI_DOUBLE, MPI_SUM, decomp.comm);
+        return g;
 #else
-#ifndef GPU_AWARE_MPI
-        if (bytes > 0 && buf != nullptr) { gpu_prefetch_to_gpu(buf, bytes); }
-#else
-        (void)buf;
-        (void)bytes;
-#endif
+        return v;
 #endif
     }
 

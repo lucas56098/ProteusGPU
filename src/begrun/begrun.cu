@@ -9,7 +9,6 @@
 #include "../mpi/halo.h"
 #include "../mpi/migrate.h"
 #include "../mpi/mpi_compat.h"
-#include "../mpi/rebalance.h"
 #include "../profiler/profiler.h"
 #include "../voronoi/voronoi.h"
 #include "begrun.h"
@@ -114,6 +113,8 @@ namespace begrun {
         voronoi::free_mesh(sim.mesh);
         hydro::free_hydro();
         proteus_mpi::halo_free();
+        proteus_mpi::migrate_free();
+        proteus_mpi::decomp_free();
         sim.mesh = nullptr;
 
         Profiler::stop_total_timer();
@@ -302,7 +303,7 @@ namespace begrun {
         sim.n_hydro = ic_data.header.n_seeds;
     }
 
-    // halo and migration buffers
+    // headroom of the per-cell arrays and the first ghost slots
     static void init_exch_buffers() {
 
         // all ranks size their per-cell arrays from the largest rank, with the headroom the user asks for
@@ -314,7 +315,6 @@ namespace begrun {
         }
 
         proteus_mpi::halo_init((int)sim.n_hydro);
-        proteus_mpi::migrate_init((int)sim.n_hydro);
     }
 
     // hydro arrays, mesh allocation and the first mesh build

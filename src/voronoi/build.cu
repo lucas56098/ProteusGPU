@@ -13,7 +13,7 @@ namespace voronoi {
     template <typename T> static void permute_inplace(T*& live, T*& scratch, uint64_t n, const unsigned int* perm);
     static void                       compute_cells(VMesh* mesh, bool only_open);
 
-    static void allocate_cell_scratch(uint64_t n_hydro, uint64_t first_face);
+    static void reset_face_counter(VMesh* mesh, uint64_t first_face);
     static int  reopen_cells(VMesh* mesh);
     static void run_fast_cell_kernel(VMesh* mesh, int n_listed);
     static int  collect_failed_cells(VMesh* mesh);
@@ -22,18 +22,8 @@ namespace voronoi {
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed);
     static void read_face_count_from_gpu(VMesh* mesh);
 
-    static int* d_failed_indices          = nullptr; // cells the fast tier could not finish
-    static int  d_failed_indices_capacity = 0;
-#ifndef CPU_DEBUG
-    static uint64_t* d_face_offset   = nullptr; // face counter of the cell kernels
-    static int*      d_overflow_flag = nullptr;
-#else
-    static unsigned long long s_cpu_face_offset   = 0;
-    static int                s_cpu_overflow_flag = 0;
-#endif
-
     // the cells alone in Morton order give the cell order of this step; the state and the positions follow,
-    // so input point k is cell k from now on, and the tree is built again over the cells in that order
+    // so input point k is cell k from now on, and the tree of that sort stays the tree of the cells
     void fix_cell_order(VMesh*                    mesh,
                         POINT_TYPE*               cell_pos,
                         hydro::primvars*          primvar,
@@ -48,11 +38,10 @@ namespace voronoi {
         parallel_for<_MESH_BLOCK_SIZE_>("GATHER_PERM", n, [=] HD(size_t k) { gathered[k] = dperm[k]; });
         permute_persistent_state(mesh, primvar, cons, grads);
 
-        POINT_TYPE* tmp = mesh->scratch_point;
-        parallel_for<_MESH_BLOCK_SIZE_>("PERMUTE_POS", n, [=] HD(size_t k) { tmp[k] = cell_pos[gathered[k]]; });
-        gpu_memcpy(cell_pos, tmp, n * sizeof(POINT_TYPE));
+        // the sort left the positions in that order already
+        gpu_memcpy(cell_pos, mesh->knn->d_stored_points, n * sizeof(POINT_TYPE));
 
-        knn::prepare(mesh->knn, (const POINT_TYPE*)cell_pos, (int)n);
+        knn::take_sorted_order(mesh->knn);
         build_index_maps(mesh);
     }
 
@@ -60,7 +49,7 @@ namespace voronoi {
     void compute_mesh(VMesh* mesh, POINT_TYPE* pts, int n_total, bool only_open) {
         {
             PROFILE("KNN_PREP");
-            knn::prepare(mesh->knn, (const POINT_TYPE*)pts, n_total);
+            knn::prepare_appended(mesh->knn, (const POINT_TYPE*)pts, n_total);
         }
 
         check_seed_capacity(mesh, n_total);
@@ -168,7 +157,7 @@ namespace voronoi {
     // fast tier for all cells or the reopened ones, slow tier for what failed; a cell that is finished keeps its
     // faces, the faces of the others come after them
     static void compute_cells(VMesh* mesh, bool only_open) {
-        allocate_cell_scratch(mesh->n_hydro, only_open ? mesh->num_faces : 0);
+        reset_face_counter(mesh, only_open ? mesh->num_faces : 0);
 
         const int n_listed = only_open ? reopen_cells(mesh) : -1;
         run_fast_cell_kernel(mesh, n_listed);
@@ -184,7 +173,7 @@ namespace voronoi {
     // the cells not finished yet into the list, their old faces out of the way
     static int reopen_cells(VMesh* mesh) {
         const int  n_open = collect_failed_cells(mesh);
-        const int* list   = d_failed_indices;
+        const int* list   = mesh->cell_list;
         Status*    stat   = mesh->cell_status;
         parallel_for<_MESH_BLOCK_SIZE_>("REOPEN", n_open, [=] HD(int i) {
             const int      k     = list[i];
@@ -201,40 +190,10 @@ namespace voronoi {
         return n_open;
     }
 
-    // scratch of the cell kernels, kept between builds; new faces start at first_face
-    static void allocate_cell_scratch(uint64_t n_hydro, uint64_t first_face) {
-        if (d_failed_indices_capacity < (int)n_hydro) {
-            if (d_failed_indices) gpu_free(d_failed_indices);
-            d_failed_indices          = gpu_alloc<int>((int)n_hydro);
-            d_failed_indices_capacity = (int)n_hydro;
-        }
-#ifndef CPU_DEBUG
-        if (!d_face_offset) {
-            d_face_offset   = gpu_calloc<uint64_t>(1);
-            d_overflow_flag = gpu_calloc<int>(1);
-        }
-        *d_face_offset = first_face;
-        gpu_memset(d_overflow_flag, 0, sizeof(int));
-#else
-        s_cpu_face_offset   = first_face;
-        s_cpu_overflow_flag = 0;
-#endif
-    }
-
-    static unsigned long long* cell_face_offset() {
-#ifndef CPU_DEBUG
-        return (unsigned long long*)d_face_offset;
-#else
-        return &s_cpu_face_offset;
-#endif
-    }
-
-    static int* cell_overflow_flag() {
-#ifndef CPU_DEBUG
-        return d_overflow_flag;
-#else
-        return &s_cpu_overflow_flag;
-#endif
+    // new faces start at first_face
+    static void reset_face_counter(VMesh* mesh, uint64_t first_face) {
+        *mesh->face_offset   = first_face;
+        *mesh->overflow_flag = 0;
     }
 
     // all cells, or the first n_listed of the list, small capacities
@@ -242,9 +201,9 @@ namespace voronoi {
         double*             pts   = (double*)mesh->knn->d_stored_points;
         const knn_problem*  knn   = mesh->knn;
         Status*             stat  = mesh->cell_status;
-        unsigned long long* foff  = cell_face_offset();
-        int*                oflag = cell_overflow_flag();
-        const int*          list  = d_failed_indices;
+        unsigned long long* foff  = mesh->face_offset;
+        int*                oflag = mesh->overflow_flag;
+        const int*          list  = mesh->cell_list;
         const int           n     = (n_listed < 0) ? (int)mesh->n_hydro : n_listed;
 
         parallel_for<_VORO_BLOCK_SIZE_, 16, Sched::Dynamic>("FAST", n, [=] HD(int i) {
@@ -264,7 +223,7 @@ namespace voronoi {
         const Status* stat    = mesh->cell_status;
         unsigned int* flags   = mesh->scan_flags;
         unsigned int* scratch = mesh->scan_scratch;
-        int*          out     = d_failed_indices;
+        int*          out     = mesh->cell_list;
 
         parallel_for<_MESH_BLOCK_SIZE_>(
             "COLLECT_FLAG", n_hydro, [=] HD(int k) { flags[k] = (stat[k] != success) ? 1u : 0u; });
@@ -286,20 +245,20 @@ namespace voronoi {
     }
 
     static void print_cell_build_summary(uint64_t n_hydro, int n_failed) {
-        const int n_global        = logging::sum_global((int)n_hydro);
-        const int n_failed_global = logging::sum_global(n_failed);
+        const long long n_global        = logging::sum_global((long long)n_hydro);
+        const long long n_failed_global = logging::sum_global((long long)n_failed);
         logging::root() << "VORONOI: Generated " << n_global << " cells. ("
                         << (100.0 * n_failed_global / (double)n_global) << "% slow tier)" << std::endl;
     }
 
     // again with the full capacities
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed) {
-        const int*          failed_ks = d_failed_indices;
+        const int*          failed_ks = mesh->cell_list;
         double*             pts       = (double*)mesh->knn->d_stored_points;
         const knn_problem*  knn       = mesh->knn;
         Status*             stat      = mesh->cell_status;
-        unsigned long long* foff      = cell_face_offset();
-        int*                oflag     = cell_overflow_flag();
+        unsigned long long* foff      = mesh->face_offset;
+        int*                oflag     = mesh->overflow_flag;
 
         parallel_for<_VORO_BLOCK_SIZE_, 8, Sched::Dynamic>("SLOW", n_failed, [=] HD(int i) {
             const int k       = failed_ks[i];
@@ -311,14 +270,9 @@ namespace voronoi {
 
     // total faces, aborts if they did not fit
     static void read_face_count_from_gpu(VMesh* mesh) {
-#ifndef CPU_DEBUG
         GPU_SYNC();
-        mesh->num_faces         = *d_face_offset;
-        const int overflow_flag = *d_overflow_flag;
-#else
-        mesh->num_faces         = (uint64_t)s_cpu_face_offset;
-        const int overflow_flag = s_cpu_overflow_flag;
-#endif
+        mesh->num_faces         = (uint64_t)*mesh->face_offset;
+        const int overflow_flag = *mesh->overflow_flag;
         if (overflow_flag) {
             proteus_mpi::exit_failure("VORONOI: Error! face offset exceeds pre-allocated face capacity %llu. "
                                       "Increase _FACE_CAPACITY_MULT_ in Config.sh.\n",

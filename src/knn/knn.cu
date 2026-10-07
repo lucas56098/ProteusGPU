@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <utility>
 
 #include "tree.cu"
 
@@ -72,6 +73,73 @@ namespace knn {
         build_tree(knn);
     }
 
+    void prepare_appended(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
+        const int n_old = knn->len_pts;
+        const int n_new = len_pts - n_old;
+
+        // the new points sort behind the old ones in the key arrays; without the room, or without old points, the
+        // whole list is sorted
+        if (n_old == 0 || n_new < 0 || (size_t)n_old + 2 * (size_t)n_new > (size_t)knn->pts_capacity) {
+            prepare(knn, pts, len_pts);
+            return;
+        }
+        if (n_new == 0) return;
+        knn->len_pts = len_pts;
+
+        // the keys of the new points, sorted on their own
+        uint64_t*     new_keys     = knn->d_keys + n_old;
+        unsigned int* new_perm     = knn->d_permutation + n_old;
+        uint64_t*     new_keys_alt = new_keys + n_new;
+        unsigned int* new_perm_alt = new_perm + n_new;
+        {
+            uint64_t*     keys = new_keys;
+            unsigned int* perm = new_perm;
+            parallel_for<_KNN_BLOCK_SIZE_>("KEYS_NEW", n_new, [=] HD(int j) {
+                keys[j] = morton_key(pts[n_old + j]);
+                perm[j] = (unsigned int)(n_old + j);
+            });
+        }
+        parallel_sort_pairs("SORT_NEW",
+                            (size_t)n_new,
+                            KEY_TOTAL_BITS,
+                            new_keys,
+                            new_perm,
+                            new_keys_alt,
+                            new_perm_alt,
+                            knn->d_sort_scratch);
+
+        // every point finds its place in the merged list; an old point goes before a new one with the same key, as in
+        // the stable sort of the whole list
+        const uint64_t*     old_keys = knn->d_keys;
+        const unsigned int* old_perm = knn->d_permutation;
+        const uint64_t*     nk       = new_keys;
+        const unsigned int* np       = new_perm;
+        uint64_t*           out_keys = knn->d_keys_alt;
+        unsigned int*       out_perm = knn->d_perm_alt;
+        parallel_for<_KNN_BLOCK_SIZE_>("MERGE_OLD", n_old, [=] HD(int i) {
+            const size_t at = (size_t)i + lower_bound_of(nk, (size_t)n_new, old_keys[i]);
+            out_keys[at]    = old_keys[i];
+            out_perm[at]    = old_perm[i];
+        });
+        parallel_for<_KNN_BLOCK_SIZE_>("MERGE_NEW", n_new, [=] HD(int j) {
+            const size_t at = (size_t)j + upper_bound_of(old_keys, (size_t)n_old, nk[j]);
+            out_keys[at]    = nk[j];
+            out_perm[at]    = np[j];
+        });
+        std::swap(knn->d_keys, knn->d_keys_alt);
+        std::swap(knn->d_permutation, knn->d_perm_alt);
+
+        const unsigned int* order  = knn->d_permutation;
+        POINT_TYPE*         stored = knn->d_stored_points;
+        parallel_for<_KNN_BLOCK_SIZE_>("GATHER", len_pts, [=] HD(int s) { stored[s] = pts[order[s]]; });
+        build_tree(knn);
+    }
+
+    void take_sorted_order(knn_problem* knn) {
+        unsigned int* perm = knn->d_permutation;
+        parallel_for<_KNN_BLOCK_SIZE_>("IDENTITY", knn->len_pts, [=] HD(int s) { perm[s] = (unsigned int)s; });
+    }
+
     // points into Morton order; equal keys stay in input order
     static void sort_points(knn_problem* knn, const POINT_TYPE* pts, int len_pts) {
         uint64_t*     keys = knn->d_keys;
@@ -107,6 +175,7 @@ namespace knn {
         if (new_pts_capacity <= knn->pts_capacity) return;
         free_point_arrays(knn);
         allocate_point_arrays(knn, new_pts_capacity);
+        knn->len_pts = 0;
     }
 
 } // namespace knn

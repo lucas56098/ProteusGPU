@@ -18,7 +18,7 @@ namespace gradients {
 
 namespace proteus_mpi {
 
-    void migrate_init(int n_local_initial);
+    void migrate_free();
 
     // every cell goes to the owner of its new position, which can be any rank
     void migrate_cells(VMesh* mesh, hydro::primvars* primvar, hydro::ConsVars* cons, gradients::PrimGradients* grads);

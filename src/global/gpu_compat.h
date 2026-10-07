@@ -178,12 +178,72 @@ template <typename T> inline T* gpu_calloc(size_t count) {
     return p;
 }
 
+// an array in gpu memory that grows when a call needs more and is kept for the next call; freed by hand,
+// a destructor would run after the CUDA runtime is gone
+template <typename T> struct GpuArray {
+    T*     data     = nullptr;
+    size_t capacity = 0;
+
+    // room for n, at least double what it had; the content is not kept
+    T* fit(size_t n) {
+        if (n <= capacity) return data;
+        if (data) gpu_free(data);
+        capacity = (n > 2 * capacity) ? n : 2 * capacity;
+        data     = gpu_alloc<T>(capacity);
+        return data;
+    }
+
+    // the same, the content kept
+    T* grow(size_t n) {
+        if (n <= capacity) return data;
+        const size_t new_capacity = (n > 2 * capacity) ? n : 2 * capacity;
+        T*           p            = gpu_alloc<T>(new_capacity);
+        if (data) {
+            gpu_memcpy(p, data, capacity * sizeof(T));
+            gpu_free(data);
+        }
+        data     = p;
+        capacity = new_capacity;
+        return data;
+    }
+
+    void free() {
+        if (data) gpu_free(data);
+        data     = nullptr;
+        capacity = 0;
+    }
+};
+
 // int min / max usable on the device
 HD inline int imin(int a, int b) {
     return a < b ? a : b;
 }
 HD inline int imax(int a, int b) {
     return a > b ? a : b;
+}
+
+// first index of the sorted a[0, n) whose value is not below v, and the first one above v
+template <typename T> HD inline size_t lower_bound_of(const T* a, size_t n, T v) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (a[mid] < v)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+template <typename T> HD inline size_t upper_bound_of(const T* a, size_t n, T v) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (v < a[mid])
+            hi = mid;
+        else
+            lo = mid + 1;
+    }
+    return lo;
 }
 
 #ifndef CPU_DEBUG

@@ -3,7 +3,6 @@
 #include "../global/allvars.h"
 #include "../mpi/decomp.h"
 #include "../mpi/mpi_compat.h"
-#include "../mpi/rebalance.h"
 #include "../voronoi/voronoi.h"
 #include "h5.h"
 #include "output.h"

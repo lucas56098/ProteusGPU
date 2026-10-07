@@ -4,8 +4,14 @@
 HD inline uint64_t ghost_key(int owner, int k, int shift) {
     return ((uint64_t)owner << 36) | ((uint64_t)(unsigned int)k << 5) | (uint64_t)shift;
 }
-HD inline uint64_t sent_key(int k, int shift) {
-    return ((uint64_t)(unsigned int)k << 5) | (uint64_t)shift;
+HD inline int key_rank(uint64_t key) {
+    return (int)(key >> 36);
+}
+HD inline int key_cell(uint64_t key) {
+    return (int)((key >> 5) & 0x7FFFFFFFull);
+}
+HD inline int key_shift(uint64_t key) {
+    return (int)(key & 31u);
 }
 
 // adds r to a sorted list of ranks if it is not in there
@@ -15,19 +21,14 @@ static void add_partner(std::vector<int>* list, int r) {
 }
 
 void halo_begin_build() {
-    halo.g_owner.clear();
-    halo.g_k.clear();
-    halo.g_shift.clear();
-    halo.g_pos.clear();
-    halo.g_slot.clear();
-    halo.g_index.clear();
+    halo.n_ghosts     = 0;
     halo.n_mpi_ghosts = 0;
+    halo.n_sent       = 0;
     halo.asked.clear();
     halo.askers.clear();
-    halo.sent.clear();
     halo.used_subset_ready = 0;
-    halo.n_used_send       = 0;
-    halo.n_used_recv       = 0;
+    halo.state_send.clear();
+    halo.state_recv.clear();
 }
 
 // a ball's image rarely touches many ranks; a short list keeps one from being asked twice
@@ -81,34 +82,15 @@ HD inline void queries_of_ball(const POINT_TYPE& c, double r, const uint64_t* cu
     }
 }
 
-// scratch of the queries, kept between rounds
-static unsigned int* s_q_offset       = nullptr;
-static unsigned int* s_q_scan_scratch = nullptr;
-static size_t        s_q_balls_cap    = 0;
-static uint64_t*     s_q_dest         = nullptr;
-static uint64_t*     s_q_dest_alt     = nullptr;
-static unsigned int* s_q_order        = nullptr;
-static unsigned int* s_q_order_alt    = nullptr;
-static unsigned int* s_q_sort_scratch = nullptr;
-static GhostQuery*   s_q_built        = nullptr;
-static GhostQuery*   s_q_sorted       = nullptr;
-static size_t        s_q_cap          = 0;
-
 // the queries of all balls in one array, grouped by target rank, ball order kept within a rank
-static void build_queries(const POINT_TYPE* cell_pos, const int* cells, const double* radii, int nb, Messages* out) {
+static const GhostQuery*
+build_queries(const POINT_TYPE* cell_pos, const int* cells, const double* radii, int nb, Blocks* out) {
     out->clear();
-    if (nb == 0) return;
-    if ((size_t)nb + 1 > s_q_balls_cap) {
-        if (s_q_offset) gpu_free(s_q_offset);
-        if (s_q_scan_scratch) gpu_free(s_q_scan_scratch);
-        s_q_balls_cap    = std::max((size_t)nb + 1, 2 * s_q_balls_cap);
-        s_q_offset       = gpu_alloc<unsigned int>(s_q_balls_cap);
-        s_q_scan_scratch = gpu_alloc<unsigned int>(scan_scratch_size(s_q_balls_cap, _MPI_PACK_BLOCK_SIZE_));
-    }
+    if (nb == 0) return nullptr;
     const uint64_t* cuts   = decomp.cuts;
     const int       nranks = decomp.nranks;
     const int       me     = decomp.rank;
-    unsigned int*   offset = s_q_offset;
+    unsigned int*   offset = s_buffers.q_offset.fit((size_t)nb + 1);
 
     // count, scan, then every ball writes its queries at its offset
     parallel_for<_MPI_PACK_BLOCK_SIZE_>("COUNT", nb, [=] HD(int i) {
@@ -117,90 +99,57 @@ static void build_queries(const POINT_TYPE* cell_pos, const int* cells, const do
         offset[i] = n;
     });
     offset[nb] = 0;
-    parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_>("SCAN", (size_t)nb + 1, offset, offset, s_q_scan_scratch);
+    parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_>(
+        "SCAN", (size_t)nb + 1, offset, offset, s_buffers.scan_scratch((size_t)nb + 1));
     const size_t total = offset[nb];
-    if (total == 0) return;
+    if (total == 0) return nullptr;
 
-    if (total > s_q_cap) {
-        for (void* p : {(void*)s_q_dest,
-                        (void*)s_q_dest_alt,
-                        (void*)s_q_order,
-                        (void*)s_q_order_alt,
-                        (void*)s_q_sort_scratch,
-                        (void*)s_q_built,
-                        (void*)s_q_sorted})
-            if (p) gpu_free(p);
-        s_q_cap          = std::max(total, 2 * s_q_cap);
-        s_q_dest         = gpu_alloc<uint64_t>(s_q_cap);
-        s_q_dest_alt     = gpu_alloc<uint64_t>(s_q_cap);
-        s_q_order        = gpu_alloc<unsigned int>(s_q_cap);
-        s_q_order_alt    = gpu_alloc<unsigned int>(s_q_cap);
-        s_q_sort_scratch = gpu_alloc<unsigned int>(sort_scratch_size(s_q_cap));
-        s_q_built        = gpu_alloc<GhostQuery>(s_q_cap);
-        s_q_sorted       = gpu_alloc<GhostQuery>(s_q_cap);
-    }
-    uint64_t*     dest  = s_q_dest;
-    unsigned int* order = s_q_order;
-    GhostQuery*   built = s_q_built;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>("FILL", nb, [=] HD(int i) {
-        unsigned int at = offset[i];
-        queries_of_ball(cell_pos[cells[i]], radii[i], cuts, nranks, me, [&](int o, const GhostQuery& q) {
-            dest[at]  = (uint64_t)o;
-            order[at] = at;
-            built[at] = q;
-            at++;
+    PairSort    sort  = s_buffers.sort.fit(total);
+    GhostQuery* built = s_buffers.q_built.fit(total);
+    {
+        uint64_t*     dest  = sort.keys;
+        unsigned int* order = sort.vals;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("FILL", nb, [=] HD(int i) {
+            unsigned int at = offset[i];
+            queries_of_ball(cell_pos[cells[i]], radii[i], cuts, nranks, me, [&](int o, const GhostQuery& q) {
+                dest[at]  = (uint64_t)o;
+                order[at] = at;
+                built[at] = q;
+                at++;
+            });
         });
-    });
+    }
 
     // grouped by target rank; the sort is stable, so ball order stays within a rank
-    if (nranks > 1) {
-        int key_bits = 1;
-        while ((1 << key_bits) < nranks)
-            key_bits++;
-        parallel_sort_pairs(
-            "SORT", total, key_bits, s_q_dest, s_q_order, s_q_dest_alt, s_q_order_alt, s_q_sort_scratch);
-    }
-    const unsigned int* sorted_order = s_q_order;
-    GhostQuery*         sorted       = s_q_sorted;
+    if (nranks > 1) sort.sort("SORT", total, rank_key_bits());
+    const unsigned int* sorted_order = sort.vals;
+    GhostQuery*         sorted       = s_buffers.q_sorted.fit(total);
     parallel_for<_MPI_PACK_BLOCK_SIZE_>("GATHER", total, [=] HD(size_t j) { sorted[j] = built[sorted_order[j]]; });
 
-    // only the finished messages go to the host
-    std::vector<uint64_t>   h_dest(total);
-    std::vector<GhostQuery> h_q(total);
-    gpu_memcpy(h_dest.data(), s_q_dest, total * sizeof(uint64_t));
-    gpu_memcpy(h_q.data(), s_q_sorted, total * sizeof(GhostQuery));
-    for (size_t j = 0; j < total;) {
-        size_t e = j;
-        while (e < total && h_dest[e] == h_dest[j])
-            e++;
-        out->to((int)h_dest[j]).assign((const char*)&h_q[j], (const char*)&h_q[e]);
-        j = e;
-    }
+    *out = blocks_of_sorted_ranks(sort.keys, total, &s_buffers.run_scratch);
+    return sorted;
 }
 
-// scratch of the answers: per own cell one bit per shift of an asker's balls, then the compacted list
-static GhostQuery*   s_queries      = nullptr;
-static size_t        s_queries_cap  = 0;
-static unsigned int* s_hit_mask     = nullptr;
-static unsigned int* s_hit_offset   = nullptr;
-static unsigned int* s_scan_scratch = nullptr;
-static uint64_t*     s_hits         = nullptr;
-static GhostAnswer*  s_answers      = nullptr;
-static size_t        s_cells_cap    = 0;
-static size_t        s_hits_cap     = 0;
-static int*          s_stack_full   = nullptr;
+// cells per run of the hit mask; an asker's balls only touch the runs near it, so only those are read
+constexpr int MARK_RUN = 256;
 
-// marks the own cells in a ball; the tree boxes only filter, a cell counts by its exact distance
-HD inline void
-mark_cells_in_ball(const knn_problem* knn, int n_hydro, const GhostQuery& q, unsigned int* mask, int* stack_full) {
+// marks the own cells in a ball and their run; the tree boxes only filter, a cell counts by its exact distance
+HD inline void mark_cells_in_ball(const knn_problem* knn,
+                                  int                n_hydro,
+                                  const GhostQuery&  q,
+                                  unsigned int*      mask,
+                                  unsigned int*      run_hit,
+                                  int*               stack_full) {
     const int n = knn->len_pts;
     if (n == 0) return;
     const double       r2  = q.r * q.r;
     const unsigned int bit = 1u << q.shift;
     if (n == 1) {
         const unsigned int orig = knn->d_permutation[0];
-        if ((int)orig < n_hydro && knn::dist2_point(q.c, knn->d_stored_points[0]) <= r2)
+        if ((int)orig < n_hydro && knn::dist2_point(q.c, knn->d_stored_points[0]) <= r2) {
             portable_atomicOr(&mask[orig], bit);
+            portable_atomicOr(&run_hit[orig / MARK_RUN], 1u);
+        }
         return;
     }
     const TreeNode* nodes = knn->d_nodes;
@@ -214,7 +163,10 @@ mark_cells_in_ball(const knn_problem* knn, int n_hydro, const GhostQuery& q, uns
             const int c = nd.child[h];
             if (c >= leaf0) {
                 const unsigned int orig = knn->d_permutation[c - leaf0];
-                if ((int)orig < n_hydro && knn::dist2_point(q.c, nd.lo[h]) <= r2) portable_atomicOr(&mask[orig], bit);
+                if ((int)orig < n_hydro && knn::dist2_point(q.c, nd.lo[h]) <= r2) {
+                    portable_atomicOr(&mask[orig], bit);
+                    portable_atomicOr(&run_hit[orig / MARK_RUN], 1u);
+                }
             } else if (knn::dist2_box(nd.lo[h], nd.hi[h], q.c) <= r2 * knn::TREE_PRUNE_SLACK) {
                 if (sp == knn::TREE_STACK) {
                     *stack_full = 1;
@@ -226,65 +178,56 @@ mark_cells_in_ball(const knn_problem* knn, int n_hydro, const GhostQuery& q, uns
     }
 }
 
-// the own cells inside the balls of one asker, as (k, shift) keys in that order, each once, and the answers
-static void cells_in_balls(VMesh*                    mesh,
-                           const POINT_TYPE*         cell_pos,
-                           const GhostQuery*         qs,
-                           size_t                    nq,
-                           std::vector<uint64_t>*    found,
-                           std::vector<GhostAnswer>* answers) {
-    found->clear();
-    answers->clear();
+// the own cells inside the balls of one asker as keys (asker, k, shift) in that order, each once, and the
+// answers; returns how many. The hit mask and the run flags are zero before and after
+static size_t hits_of_asker(VMesh* mesh, const POINT_TYPE* cell_pos, const GhostQuery* qs, size_t nq, int asker) {
     const int n_hydro = (int)mesh->n_hydro;
-    if (nq == 0 || n_hydro == 0) return;
-
-    if (nq > s_queries_cap) {
-        if (s_queries) gpu_free(s_queries);
-        s_queries_cap = std::max(nq, 2 * s_queries_cap);
-        s_queries     = gpu_alloc<GhostQuery>(s_queries_cap);
-    }
-    if ((size_t)n_hydro > s_cells_cap) {
-        if (s_hit_mask) gpu_free(s_hit_mask);
-        if (s_hit_offset) gpu_free(s_hit_offset);
-        if (s_scan_scratch) gpu_free(s_scan_scratch);
-        s_cells_cap    = std::max((size_t)n_hydro, 2 * s_cells_cap);
-        s_hit_mask     = gpu_alloc<unsigned int>(s_cells_cap);
-        s_hit_offset   = gpu_alloc<unsigned int>(s_cells_cap);
-        s_scan_scratch = gpu_alloc<unsigned int>(scan_scratch_size(s_cells_cap, _MPI_PACK_BLOCK_SIZE_));
-    }
-    if (!s_stack_full) s_stack_full = gpu_calloc<int>(1);
-    std::memcpy(s_queries, qs, nq * sizeof(GhostQuery));
-    gpu_memset(s_hit_mask, 0, (size_t)n_hydro * sizeof(unsigned int));
+    if (nq == 0 || n_hydro == 0) return 0;
 
     const knn_problem* knn        = mesh->knn;
-    GhostQuery*        queries    = s_queries;
-    unsigned int*      mask       = s_hit_mask;
-    unsigned int*      offset     = s_hit_offset;
-    int*               stack_full = s_stack_full;
+    unsigned int*      mask       = s_buffers.hit_mask.data;
+    unsigned int*      run_hit    = s_buffers.run_hit.data;
+    int*               stack_full = s_buffers.stack_full.data;
     parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "MARK", nq, [=] HD(size_t i) { mark_cells_in_ball(knn, n_hydro, queries[i], mask, stack_full); });
-    if (*s_stack_full) exit_failure("HALO: rank %d ran out of tree stack answering a ball\n", decomp.rank);
+        "MARK", nq, [=] HD(size_t i) { mark_cells_in_ball(knn, n_hydro, qs[i], mask, run_hit, stack_full); });
+    if (*stack_full) exit_failure("HALO: rank %d ran out of tree stack answering a ball\n", decomp.rank);
 
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
-        "COUNT", n_hydro, [=] HD(size_t k) { offset[k] = (unsigned int)portable_popcount(mask[k]); });
-    parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_>("SCAN", (size_t)n_hydro, offset, offset, s_scan_scratch);
-    const size_t total = (size_t)offset[n_hydro - 1] + (size_t)portable_popcount(mask[n_hydro - 1]);
-    if (total == 0) return;
+    // the runs with a hit in cell order; their flags go back to zero
+    const size_t       n_runs   = (size_t)(n_hydro + MARK_RUN - 1) / MARK_RUN;
+    unsigned int*      run_pos  = s_buffers.pos.fit(n_runs);
+    unsigned int*      run_list = s_buffers.run_list.fit(n_runs);
+    const unsigned int last_run = run_hit[n_runs - 1];
+    parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_>(
+        "RUN_SCAN", n_runs, run_hit, run_pos, s_buffers.scan_scratch(n_runs));
+    const size_t n_touched = (size_t)run_pos[n_runs - 1] + last_run;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("RUN_LIST", n_runs, [=] HD(size_t r) {
+        if (run_hit[r]) {
+            run_list[run_pos[r]] = (unsigned int)r;
+            run_hit[r]           = 0;
+        }
+    });
+    if (n_touched == 0) return 0;
 
-    if (total > s_hits_cap) {
-        if (s_hits) gpu_free(s_hits);
-        if (s_answers) gpu_free(s_answers);
-        s_hits_cap = std::max(total, 2 * s_hits_cap);
-        s_hits     = gpu_alloc<uint64_t>(s_hits_cap);
-        s_answers  = gpu_alloc<GhostAnswer>(s_hits_cap);
-    }
-    uint64_t*    hits = s_hits;
-    GhostAnswer* ans  = s_answers;
-    parallel_for<_MPI_PACK_BLOCK_SIZE_>("FILL", n_hydro, [=] HD(size_t k) {
-        unsigned int m  = mask[k];
-        unsigned int at = offset[k];
-        for (int shift = 0; m != 0; shift++, m >>= 1) {
-            if (!(m & 1u)) continue;
+    // the hits of those runs, in cell order
+    const size_t  m      = n_touched * MARK_RUN;
+    unsigned int* offset = s_buffers.hit_offset.fit(m);
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("COUNT", m, [=] HD(size_t i) {
+        const size_t k = (size_t)run_list[i / MARK_RUN] * MARK_RUN + i % MARK_RUN;
+        offset[i]      = (k < (size_t)n_hydro) ? (unsigned int)portable_popcount(mask[k]) : 0u;
+    });
+    const unsigned int last_count = offset[m - 1];
+    parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_>("SCAN", m, offset, offset, s_buffers.scan_scratch(m));
+    const size_t total = (size_t)offset[m - 1] + last_count;
+
+    uint64_t*    hits = s_buffers.hits.fit(total);
+    GhostAnswer* ans  = s_buffers.hit_ans.fit(total);
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("FILL", m, [=] HD(size_t i) {
+        const size_t k = (size_t)run_list[i / MARK_RUN] * MARK_RUN + i % MARK_RUN;
+        if (k >= (size_t)n_hydro) return;
+        unsigned int mm = mask[k];
+        unsigned int at = offset[i];
+        for (int shift = 0; mm != 0; shift++, mm >>= 1) {
+            if (!(mm & 1u)) continue;
             double s[3];
             shift_of_code(shift, s);
             GhostAnswer a;
@@ -296,122 +239,162 @@ static void cells_in_balls(VMesh*                    mesh,
 #ifdef dim_3D
             a.p.z = a.p.z + s[2];
 #endif
-            hits[at] = sent_key((int)k, shift);
+            hits[at] = ghost_key(asker, (int)k, shift);
             ans[at]  = a;
             at++;
         }
+        mask[k] = 0;
     });
-    found->resize(total);
-    answers->resize(total);
-    gpu_memcpy(found->data(), s_hits, total * sizeof(uint64_t));
-    gpu_memcpy(answers->data(), s_answers, total * sizeof(GhostAnswer));
+    return total;
+}
+
+// the hits this asker did not get earlier in the build go to the answers at a_at and to the pending keys;
+// returns how many
+static size_t keep_new_hits(size_t h, size_t a_at) {
+    if (h == 0) return 0;
+    const uint64_t* sent   = halo.sent.data;
+    const size_t    n_sent = halo.n_sent;
+    const uint64_t* hits   = s_buffers.hits.data;
+    unsigned int*   flag   = s_buffers.flag.fit(h);
+    unsigned int*   pos    = s_buffers.pos.fit(h);
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("NEW", h, [=] HD(size_t i) {
+        const size_t j = lower_bound_of(sent, n_sent, hits[i]);
+        flag[i]        = (j < n_sent && sent[j] == hits[i]) ? 0u : 1u;
+    });
+    parallel_exclusive_scan<_MPI_PACK_BLOCK_SIZE_>("NEW_SCAN", h, flag, pos, s_buffers.scan_scratch(h));
+    const size_t n_new = (size_t)pos[h - 1] + flag[h - 1];
+    if (n_new == 0) return 0;
+
+    const GhostAnswer* ans     = s_buffers.hit_ans.data;
+    GhostAnswer*       a_out   = s_buffers.a_out.grow(a_at + n_new) + a_at;
+    uint64_t*          pending = s_buffers.pending.grow(s_buffers.n_pending + n_new) + s_buffers.n_pending;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("KEEP", h, [=] HD(size_t i) {
+        if (!flag[i]) return;
+        a_out[pos[i]]   = ans[i];
+        pending[pos[i]] = hits[i];
+    });
+    s_buffers.n_pending += n_new;
+    return n_new;
+}
+
+// the pending keys into the sorted sent keys; neither has a key of the other, so every key knows its place
+static void merge_pending_into_sent() {
+    if (s_buffers.n_pending == 0) return;
+    const size_t    n_a = halo.n_sent;
+    const size_t    n_b = s_buffers.n_pending;
+    const uint64_t* a   = halo.sent.data;
+    const uint64_t* b   = s_buffers.pending.data;
+    uint64_t*       out = s_buffers.sent_alt.fit(n_a + n_b);
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "MERGE_A", n_a, [=] HD(size_t i) { out[i + lower_bound_of(b, n_b, a[i])] = a[i]; });
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>(
+        "MERGE_B", n_b, [=] HD(size_t j) { out[j + lower_bound_of(a, n_a, b[j])] = b[j]; });
+    std::swap(halo.sent, s_buffers.sent_alt);
+    halo.n_sent         = n_a + n_b;
+    s_buffers.n_pending = 0;
+}
+
+// the answers that came back become ghosts in owner order, each owner's cells in the order it sent them
+static void append_ghosts(const Blocks& a_in) {
+    const size_t n_total = (size_t)halo.n_ghosts + a_in.total;
+    halo.g_ans.grow(n_total);
+    halo.g_owner.grow(n_total);
+    halo.g_slot.grow(n_total);
+    const int me   = decomp.rank;
+    int       slot = halo.n_mpi_ghosts;
+    for (size_t j = 0; j < a_in.ranks.size(); j++) {
+        const size_t n = a_in.counts[j];
+        if (n == 0) continue;
+        const int          owner  = a_in.ranks[j];
+        const int          slot0  = (owner == me) ? -1 : slot;
+        const size_t       g0     = (size_t)halo.n_ghosts + a_in.offsets[j];
+        const GhostAnswer* in     = s_buffers.a_in.data + a_in.offsets[j];
+        GhostAnswer*       g_ans  = halo.g_ans.data + g0;
+        int*               g_own  = halo.g_owner.data + g0;
+        int*               g_slot = halo.g_slot.data + g0;
+        parallel_for<_MPI_PACK_BLOCK_SIZE_>("APPEND", n, [=] HD(size_t i) {
+            g_ans[i]  = in[i];
+            g_own[i]  = owner;
+            g_slot[i] = (slot0 < 0) ? -1 : slot0 + (int)i;
+        });
+        if (owner != me) slot += (int)n;
+    }
+    halo.n_ghosts     = (int)n_total;
+    halo.n_mpi_ghosts = slot;
 }
 
 void halo_request_balls(VMesh* mesh, const POINT_TYPE* cell_pos, const int* cells, const double* radii, int nb) {
     PROFILE("HALO_REQUEST");
     const int me = decomp.rank;
 
-    Messages q_out, q_in;
+    Blocks            q_out, q_in;
+    const GhostQuery* q_send;
     {
         PROFILE("BUILD");
-        build_queries(cell_pos, cells, radii, nb, &q_out);
+        q_send = build_queries(cell_pos, cells, radii, nb, &q_out);
     }
     {
         PROFILE("QUERIES");
-        sparse_exchange(q_out, &q_in);
+        sparse_counts(q_out, &q_in);
+        exchange_items(q_send, q_out, s_buffers.q_in.fit(q_in.total), q_in, sizeof(GhostQuery));
     }
     for (int r : q_out.ranks)
         if (r != me) add_partner(&halo.asked, r);
+    for (int r : q_in.ranks)
+        if (r != me) add_partner(&halo.askers, r);
 
     // answers: every query on the tree of this build, only own cells, each cell once per asker and build
-    Messages a_out;
+    Blocks a_out;
     {
         PROFILE("ANSWER");
-        for (size_t m = 0; m < q_in.ranks.size(); m++) {
-            const int         src = q_in.ranks[m];
-            const size_t      nq  = count_of<GhostQuery>(q_in.data[m]);
-            const GhostQuery* qs  = items_of<GhostQuery>(q_in.data[m]);
-
-            std::vector<uint64_t>    found;
-            std::vector<GhostAnswer> answers;
-            cells_in_balls(mesh, cell_pos, qs, nq, &found, &answers);
-
-            // what this asker already has stays home
-            std::vector<char>& msg = a_out.to(src);
-            if (src == me) {
-                msg.assign((const char*)answers.data(), (const char*)(answers.data() + answers.size()));
-                continue;
-            }
-            auto         it = std::lower_bound(halo.askers.begin(), halo.askers.end(), src);
-            const size_t a  = it - halo.askers.begin();
-            if (it == halo.askers.end() || *it != src) {
-                halo.askers.insert(it, src);
-                halo.sent.insert(halo.sent.begin() + a, std::vector<uint64_t>());
-            }
-            std::vector<uint64_t>& sent = halo.sent[a];
-            std::vector<uint64_t>  merged;
-            merged.reserve(sent.size() + found.size());
-            size_t j = 0;
-            for (size_t i = 0; i < found.size(); i++) {
-                while (j < sent.size() && sent[j] < found[i])
-                    merged.push_back(sent[j++]);
-                if (j < sent.size() && sent[j] == found[i]) continue;
-                merged.push_back(found[i]);
-                append(msg, answers[i]);
-            }
-            while (j < sent.size())
-                merged.push_back(sent[j++]);
-            sent.swap(merged);
+        const size_t n_hydro = (size_t)mesh->n_hydro;
+        const size_t n_runs  = (n_hydro + MARK_RUN - 1) / MARK_RUN;
+        if (n_hydro > 0) {
+            gpu_memset(s_buffers.hit_mask.fit(n_hydro), 0, n_hydro * sizeof(unsigned int));
+            gpu_memset(s_buffers.run_hit.fit(n_runs), 0, n_runs * sizeof(unsigned int));
         }
+        *s_buffers.stack_full.fit(1) = 0;
+
+        size_t a_total = 0;
+        for (size_t m = 0; m < q_in.ranks.size(); m++) {
+            const GhostQuery* qs = s_buffers.q_in.data + q_in.offsets[m];
+            const size_t      h  = hits_of_asker(mesh, cell_pos, qs, q_in.counts[m], q_in.ranks[m]);
+            const size_t      n  = keep_new_hits(h, a_total);
+            a_out.add(q_in.ranks[m], n);
+            a_total += n;
+        }
+        merge_pending_into_sent();
     }
 
     // every rank asked answers, possibly with nothing
-    Messages a_in;
+    Blocks a_in;
     {
         PROFILE("ANSWERS");
-        partner_exchange(a_out, q_out.ranks, &a_in);
+        partner_counts(a_out, q_out.ranks, &a_in);
+        exchange_items(s_buffers.a_out.data, a_out, s_buffers.a_in.fit(a_in.total), a_in, sizeof(GhostAnswer));
     }
-
-    // new ghosts in owner order, each owner's cells in the order it sent them
-    for (size_t m = 0; m < a_in.ranks.size(); m++) {
-        const int          owner = a_in.ranks[m];
-        const size_t       na    = count_of<GhostAnswer>(a_in.data[m]);
-        const GhostAnswer* as    = items_of<GhostAnswer>(a_in.data[m]);
-        for (size_t i = 0; i < na; i++) {
-            const uint64_t key = ghost_key(owner, as[i].k, as[i].shift);
-            if (halo.g_index.count(key)) continue;
-            halo.g_index[key] = (int)halo.g_owner.size();
-            halo.g_owner.push_back(owner);
-            halo.g_k.push_back(as[i].k);
-            halo.g_shift.push_back(as[i].shift);
-            halo.g_pos.push_back(as[i].p);
-            halo.g_slot.push_back(owner == me ? -1 : halo.n_mpi_ghosts++);
-        }
-    }
+    append_ghosts(a_in);
 }
 
-// the ghosts go after the cells: a copy of an own cell stands for that cell, any other ghost for its slot;
-// written in three bulk copies
-void halo_write_ghosts(VMesh* mesh, POINT_TYPE* pts, uint64_t* ghost_ids, int n_hydro) {
+// the ghosts go after the cells: a copy of an own cell stands for that cell, any other ghost for its slot
+void halo_write_ghosts(VMesh* mesh, POINT_TYPE* pts) {
     if (halo.n_mpi_ghosts > n_mpi_capacity) halo_grow_capacity(halo.n_mpi_ghosts);
-    const size_t          n_ghosts = halo.g_owner.size();
-    std::vector<uint64_t> ids(n_ghosts);
-    std::vector<double3>  slot_seeds((size_t)halo.n_mpi_ghosts);
-    for (size_t g = 0; g < n_ghosts; g++) {
-        const int slot = halo.g_slot[g];
-        ids[g]         = (slot < 0) ? (uint64_t)halo.g_k[g] : (uint64_t)(n_hydro + slot);
-        if (slot < 0) continue;
-        const POINT_TYPE& p = halo.g_pos[g];
+    const int          n_hydro   = (int)mesh->n_hydro;
+    const GhostAnswer* ans       = halo.g_ans.data;
+    const int*         slot      = halo.g_slot.data;
+    uint64_t*          ghost_ids = mesh->ghost_ids;
+    double3*           seeds_g   = mesh->seeds_g;
+    parallel_for<_MPI_PACK_BLOCK_SIZE_>("WRITE_GHOSTS", halo.n_ghosts, [=] HD(int g) {
+        const POINT_TYPE p = ans[g].p;
+        const int        s = slot[g];
+        pts[n_hydro + g]   = p;
+        ghost_ids[g]       = (s < 0) ? (uint64_t)ans[g].k : (uint64_t)(n_hydro + s);
+        if (s < 0) return;
 #ifdef dim_3D
-        slot_seeds[slot] = double3{p.x, p.y, p.z};
+        seeds_g[s] = double3{p.x, p.y, p.z};
 #else
-        slot_seeds[slot] = double3{p.x, p.y, 0.0};
+        seeds_g[s] = double3{p.x, p.y, 0.0};
 #endif
-    }
-    if (n_ghosts > 0) {
-        gpu_memcpy(pts + n_hydro, halo.g_pos.data(), n_ghosts * sizeof(POINT_TYPE));
-        gpu_memcpy(ghost_ids, ids.data(), n_ghosts * sizeof(uint64_t));
-    }
-    if (!slot_seeds.empty()) gpu_memcpy(mesh->seeds_g, slot_seeds.data(), slot_seeds.size() * sizeof(double3));
+    });
     mesh->n_mpi_ghosts = halo.n_mpi_ghosts;
 }

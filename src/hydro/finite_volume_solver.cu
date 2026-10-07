@@ -50,7 +50,7 @@ namespace hydro {
 
         sim.dt = gpu_alloc<double>(1);
 
-        const int n_hydro_global = logging::sum_global(n_hydro);
+        const long long n_hydro_global = logging::sum_global((long long)n_hydro);
         logging::root() << "HYDRO: Initialized hydro for " << n_hydro_global << " particles" << std::endl;
     }
 
@@ -78,14 +78,14 @@ namespace hydro {
         gradients::PrimGradients* grads = sim.grads;
 
         // the ghosts get the state of their own rank
-        proteus_mpi::halo_exchange_primvars(mesh, primvar);
+        proteus_mpi::halo_exchange_primvars(primvar);
 
         // cons collects the update, primvar stays as it is until the end of the step
         prim_to_cons(mesh, primvar, cons);
 
         // gradients on the mesh as it is now, for both half steps
         gradients::compute_prim_gradients(mesh, primvar, grads);
-        proteus_mpi::halo_exchange_gradients(mesh, grads);
+        proteus_mpi::halo_exchange_gradients(grads);
 
 #ifdef MOVING_MESH
         voronoi::compute_mesh_velocities(mesh, primvar, grads);
@@ -94,7 +94,7 @@ namespace hydro {
 
         // first half step, states taken at the current time
         apply_flux_update(0.5 * dt, 0.0, mesh, primvar, grads, cons);
-        logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (1/2)"
+        logging::root() << "HYDRO: Computed " << logging::sum_global((long long)mesh->num_faces) << " fluxes (1/2)"
                         << std::endl;
 
 #ifdef MOVING_MESH
@@ -103,14 +103,14 @@ namespace hydro {
         voronoi::move_mesh(mesh, dt, primvar, cons, grads);
 
         // the new mesh has new ghosts, so they get all of it again
-        proteus_mpi::halo_exchange_primvars(mesh, primvar);
+        proteus_mpi::halo_exchange_primvars(primvar);
         proteus_mpi::halo_exchange_v_mesh(mesh);
-        proteus_mpi::halo_exchange_gradients(mesh, grads);
+        proteus_mpi::halo_exchange_gradients(grads);
 #endif
 
         // second half step, states extrapolated to the end of the step
         apply_flux_update(0.5 * dt, dt, mesh, primvar, grads, cons);
-        logging::root() << "HYDRO: Computed " << logging::sum_global((int)mesh->num_faces) << " fluxes (2/2)"
+        logging::root() << "HYDRO: Computed " << logging::sum_global((long long)mesh->num_faces) << " fluxes (2/2)"
                         << std::endl;
 
         // the new state, from cons and the volumes of the current mesh
@@ -158,7 +158,7 @@ namespace hydro {
                 });
         }
 
-        proteus_mpi::halo_dt_allreduce(sim.dt);
+        *sim.dt = proteus_mpi::min_over_ranks(*sim.dt);
 
         // do not step over the next output or the end of the run
         if (sim.t_sim + *sim.dt > sim.t_nextoutput) { *sim.dt = sim.t_nextoutput - sim.t_sim; }

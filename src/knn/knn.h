@@ -45,6 +45,14 @@ namespace knn {
     // sorts the points and builds the tree, once per mesh build
     void prepare(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
 
+    // the same when pts starts with the points of the last prepare, in the same order: only the points behind them
+    // are sorted, then merged in. Same order and same tree as prepare
+    void prepare_appended(knn_problem* knn, const POINT_TYPE* pts, int len_pts);
+
+    // the caller put the points of the last prepare into its sorted order: the tree stays, the permutation
+    // becomes the identity
+    void take_sorted_order(knn_problem* knn);
+
     // frees everything and clears the pointer
     void knn_free(knn_problem** knn);
 

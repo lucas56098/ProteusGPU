@@ -51,11 +51,17 @@ namespace voronoi {
         mesh->Ri_ref = portable_cbrt(3.0 * V_ref / (4.0 * PI));
 #endif
 
-        mesh->cell_status  = gpu_alloc<Status>(ext);
-        mesh->security_d2  = gpu_calloc<double>(ext);
-        mesh->est_r        = gpu_calloc<double>(ext);
-        mesh->req_r2       = gpu_calloc<double>(ext);
-        mesh->n_mpi_ghosts = 0;
+        mesh->cell_status   = gpu_alloc<Status>(ext);
+        mesh->security_d2   = gpu_calloc<double>(ext);
+        mesh->est_r         = gpu_calloc<double>(ext);
+        mesh->req_r2        = gpu_calloc<double>(ext);
+        mesh->ball_r        = gpu_calloc<double>(ext);
+        mesh->ball_cell     = gpu_alloc<int>(ext);
+        mesh->ball_rad      = gpu_alloc<double>(ext);
+        mesh->cell_list     = gpu_alloc<int>(ext);
+        mesh->face_offset   = gpu_calloc<unsigned long long>(1);
+        mesh->overflow_flag = gpu_calloc<int>(1);
+        mesh->n_mpi_ghosts  = 0;
 #ifdef MOVING_MESH
         mesh->v_mesh = gpu_calloc<POINT_TYPE>(ext);
 #endif
@@ -138,6 +144,12 @@ namespace voronoi {
         gpu_free(mesh->security_d2);
         gpu_free(mesh->est_r);
         gpu_free(mesh->req_r2);
+        gpu_free(mesh->ball_r);
+        gpu_free(mesh->ball_cell);
+        gpu_free(mesh->ball_rad);
+        gpu_free(mesh->cell_list);
+        gpu_free(mesh->face_offset);
+        gpu_free(mesh->overflow_flag);
 #ifdef MOVING_MESH
         gpu_free(mesh->v_mesh);
 #endif
