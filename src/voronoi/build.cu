@@ -251,7 +251,8 @@ namespace voronoi {
                         << (100.0 * n_failed_global / (double)n_global) << "% slow tier)" << std::endl;
     }
 
-    // again with the full capacities
+    // again with the full capacities; a cell the double test could not decide would fail the same way, it
+    // goes straight to the CPU
     static void run_slow_cell_kernel(VMesh* mesh, int n_failed) {
         const int*          failed_ks = mesh->cell_list;
         double*             pts       = (double*)mesh->knn->d_stored_points;
@@ -261,7 +262,8 @@ namespace voronoi {
         int*                oflag     = mesh->overflow_flag;
 
         parallel_for<_VORO_BLOCK_SIZE_, 8, Sched::Dynamic>("SLOW", n_failed, [=] HD(int i) {
-            const int k       = failed_ks[i];
+            const int k = failed_ks[i];
+            if (stat[k] == needs_exact_predicates) return;
             const int seed_id = (int)mesh->real_sorted_ids[k];
             compute_single_voronoi_cell<_K_, _MAX_P_, _MAX_T_, uchar, VERT_TYPE, true>(
                 k, seed_id, pts, knn, stat, mesh, foff, oflag);

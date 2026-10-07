@@ -107,8 +107,7 @@ namespace voronoi {
                                uint64_t                  num_points,
                                hydro::primvars*          primvar,
                                hydro::ConsVars*          cons,
-                               gradients::PrimGradients* grads,
-                               double                    dt);
+                               gradients::PrimGradients* grads);
 
     // move it
     void compute_mesh_velocities(VMesh* mesh, const hydro::primvars* primvar, const gradients::PrimGradients* grads);

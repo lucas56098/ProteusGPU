@@ -107,19 +107,6 @@ namespace proteus_mpi {
     void halo_exchange_volumes(VMesh* mesh);
 #endif
 
-    // a ghost seed its owner moved after it was sent
-    struct MovedSeed {
-        POINT_TYPE pos;
-        int        ghost_slot;
-    };
-
-    // how many of these cells another rank holds as a ghost
-    int halo_count_moved_exports(const std::vector<int>& moved_ks);
-
-    // tells those ranks where the cells are now and takes what the others moved; collective
-    void
-    halo_exchange_moved_seeds(const VMesh* mesh, const std::vector<int>& moved_ks, std::vector<MovedSeed>* received);
-
     // more slots, everything that is sized by them grows along
     void halo_grow_capacity(int new_capacity);
 

@@ -73,12 +73,17 @@ namespace voronoi {
     }
 #endif
 
-    // turns the corner order around if the normal points at the seed
+    // turns the corner order around if the normal points at the seed; the normal of the whole fan, since
+    // corners of a degenerate cell can coincide
     HD void orient_face_outward(double4_t* face_verts, int n_fv, double4_t seed) {
 
-        const double4_t edge1      = minus4(face_verts[1], face_verts[0]);
-        const double4_t edge2      = minus4(face_verts[2], face_verts[0]);
-        const double4_t face_cross = cross3(edge1, edge2);
+        double4_t face_cross = make_double4_t(0, 0, 0, 0);
+        for (int i = 1; i + 1 < n_fv; i++) {
+            const double4_t cr = cross3(minus4(face_verts[i], face_verts[0]), minus4(face_verts[i + 1], face_verts[0]));
+            face_cross.x += cr.x;
+            face_cross.y += cr.y;
+            face_cross.z += cr.z;
+        }
 
         double4_t fc = make_double4_t(0, 0, 0, 0);
         for (int i = 0; i < n_fv; i++) {

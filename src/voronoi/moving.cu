@@ -53,7 +53,7 @@ namespace voronoi {
         proteus_mpi::migrate_cells(mesh, primvar, cons, grads);
         if (rebalanced) proteus_mpi::rebalance_log_after_migration(mesh);
 
-        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, cons, grads, dt);
+        compute_periodic_mesh(mesh, mesh->scratch_move, mesh->n_hydro, primvar, cons, grads);
     }
 
     // writes the moved positions into pts, mesh->seeds stays

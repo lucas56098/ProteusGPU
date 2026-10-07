@@ -10,18 +10,10 @@ namespace voronoi {
 
     // the sphere of 2 x the farthest corner holds every point that can cut the cell; covered when this rank
     // asked for all points in a ball around the seed that holds the sphere, or holds them itself
-    HD inline bool sphere_is_covered(const POINT_TYPE& seed,
-                                     const POINT_TYPE& ball_centre,
-                                     double            sec_d2,
-                                     double            req_r2,
-                                     const uint64_t*   cuts,
-                                     int               nranks,
-                                     int               me) {
+    HD inline bool
+    sphere_is_covered(const POINT_TYPE& seed, double sec_d2, double req_r2, const uint64_t* cuts, int nranks, int me) {
         const double sec_r = sqrt(sec_d2);
-        if (req_r2 > 0.0) {
-            const double moved = sqrt(knn::dist2_point(seed, ball_centre));
-            if (sec_r + moved <= sqrt(req_r2)) return true;
-        }
+        if (req_r2 > 0.0 && sec_r <= sqrt(req_r2)) return true;
         return proteus_mpi::ball_is_local(seed, sec_r, cuts, nranks, me);
     }
 
@@ -109,7 +101,7 @@ namespace voronoi {
 
         parallel_for<_MESH_BLOCK_SIZE_>("CERTIFY", n, [=] HD(int k) {
             if (stat[k] != success) return;
-            if (!sphere_is_covered(cell_pos[k], cell_pos[k], sec_d2[k], req_r2[k], cuts, nranks, me))
+            if (!sphere_is_covered(cell_pos[k], sec_d2[k], req_r2[k], cuts, nranks, me))
                 stat[k] = security_radius_beyond_data;
         });
         GPU_SYNC();
@@ -143,7 +135,7 @@ namespace voronoi {
         parallel_for<_MESH_BLOCK_SIZE_>(
             "NEED", n, [=] HD(int k) { need[k] = (stat[k] == security_radius_beyond_data) ? sec_d2[k] : -1.0; });
 
-        // the few cells only the CPU can build say themselves how far they reach
+        // the cells only the CPU can build are built now; those that reach past their ball say how far
         std::vector<int>    failed;
         std::vector<double> failed_need;
         fallback_needs(mesh, &failed, &failed_need);

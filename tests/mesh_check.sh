@@ -40,9 +40,8 @@ Options:
   -h, --help       show this message
 
 To add a case, create tests/mesh/<name>/ with a case.sh setting CASE_DESC, CASE_DIM,
-CASE_FLAGS, CASE_N, CASE_TIME_END and CASE_IC. The runner needs no edit. Use seeds that are
-not on a lattice: on an exact lattice the Voronoi cells are degenerate and the two codes may
-split them differently.
+CASE_FLAGS, CASE_N, CASE_TIME_END and CASE_IC. The runner needs no edit. Seeds on a lattice
+are fine: their degenerate cells get faces of zero size, which the face comparison leaves out.
 
 Exit status is non-zero if any check fails. Configurations needing a capability this
 machine lacks (nvcc, mpirun, parallel HDF5, scipy) are skipped and counted separately -- a

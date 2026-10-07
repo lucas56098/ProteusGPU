@@ -67,14 +67,6 @@ namespace knn {
 #endif
     }
 
-    HD inline bool box_holds(const POINT_TYPE& lo, const POINT_TYPE& hi, const POINT_TYPE& p) {
-#ifdef dim_2D
-        return p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y;
-#else
-        return p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y && p.z >= lo.z && p.z <= hi.z;
-#endif
-    }
-
     // radix tree over the sorted keys (Karras 2012), then the child boxes from the leaves up
     static void build_tree(knn_problem* knn) {
         const int n = knn->len_pts;
@@ -188,64 +180,6 @@ namespace knn {
 
         std::sort_heap(best.begin(), best.end());
         return best;
-    }
-
-    // every point with distance^2 <= r2 from p
-    void points_within_on_host(const knn_problem* knn, POINT_TYPE p, double r2, std::vector<int>* out) {
-        out->clear();
-        const int n = knn->len_pts;
-        if (n == 0) return;
-        if (n == 1) {
-            if (dist2_point(p, knn->d_stored_points[0]) <= r2) out->push_back(0);
-            return;
-        }
-
-        const TreeNode*  nodes = knn->d_nodes;
-        const int        leaf0 = n - 1;
-        std::vector<int> stack(1, 0);
-        while (!stack.empty()) {
-            const TreeNode& nd = nodes[stack.back()];
-            stack.pop_back();
-            for (int h = 0; h < 2; h++) {
-                if (nd.child[h] >= leaf0) {
-                    if (dist2_point(p, nd.lo[h]) <= r2) out->push_back(nd.child[h] - leaf0);
-                } else if (dist2_box(nd.lo[h], nd.hi[h], p) <= r2 * TREE_PRUNE_SLACK) {
-                    stack.push_back(nd.child[h]);
-                }
-            }
-        }
-    }
-
-    // the leaf takes the new position, the boxes above it widen until one already holds it
-    void point_moved(knn_problem* knn, int sid) {
-        const int n = knn->len_pts;
-        if (n < 2) return;
-        const POINT_TYPE p     = knn->d_stored_points[sid];
-        TreeNode*        nodes = knn->d_nodes;
-        int              c     = n - 1 + sid;
-        int              node  = knn->d_parent[c];
-        bool             leaf  = true;
-        while (node >= 0) {
-            TreeNode& nd = nodes[node];
-            const int h  = (nd.child[0] == c) ? 0 : 1;
-            if (leaf) {
-                nd.lo[h] = p;
-                nd.hi[h] = p;
-                leaf     = false;
-            } else {
-                if (box_holds(nd.lo[h], nd.hi[h], p)) return;
-                nd.lo[h].x = min_of(nd.lo[h].x, p.x);
-                nd.lo[h].y = min_of(nd.lo[h].y, p.y);
-                nd.hi[h].x = max_of(nd.hi[h].x, p.x);
-                nd.hi[h].y = max_of(nd.hi[h].y, p.y);
-#ifdef dim_3D
-                nd.lo[h].z = min_of(nd.lo[h].z, p.z);
-                nd.hi[h].z = max_of(nd.hi[h].z, p.z);
-#endif
-            }
-            c    = node;
-            node = knn->d_parent[node];
-        }
     }
 
 } // namespace knn

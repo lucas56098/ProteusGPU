@@ -62,12 +62,6 @@ namespace knn {
     // the max_k nearest points of sorted point sid, as (distance^2, sid), nearest first
     std::vector<std::pair<double, int>> nearest_on_host(const knn_problem* knn, int sid, int max_k);
 
-    // every sorted point with distance^2 <= r2 from p
-    void points_within_on_host(const knn_problem* knn, POINT_TYPE p, double r2, std::vector<int>* out);
-
-    // sorted point sid was moved in place; the search has to find it at the new position
-    void point_moved(knn_problem* knn, int sid);
-
     // squared distance between two points
     HD static inline double dist2_point(const POINT_TYPE& a, const POINT_TYPE& b) {
 #ifdef dim_2D

@@ -5,7 +5,6 @@
 
 #include <vector>
 
-#include "../mpi/halo.h"
 #include "voronoi.h"
 
 namespace voronoi {
@@ -23,15 +22,9 @@ namespace voronoi {
     // first guess of every cell's reach; the cells whose guess leaves the rank or the box ask for it. Collective
     void first_guess_balls(VMesh* mesh, const POINT_TYPE* cell_pos);
 
-    // whether the sphere of a cell lies in a ball it asked for (centred where the seed was then) or in what this
-    // rank holds anyway
-    HD inline bool sphere_is_covered(const POINT_TYPE& seed,
-                                     const POINT_TYPE& ball_centre,
-                                     double            sec_d2,
-                                     double            req_r2,
-                                     const uint64_t*   cuts,
-                                     int               nranks,
-                                     int               me);
+    // whether the sphere of a cell lies in the ball it asked for or in what this rank holds anyway
+    HD inline bool
+    sphere_is_covered(const POINT_TYPE& seed, double sec_d2, double req_r2, const uint64_t* cuts, int nranks, int me);
 
     // a finished cell whose sphere is not covered becomes security_radius_beyond_data
     void certify_cells(VMesh* mesh, const POINT_TYPE* cell_pos);
@@ -45,20 +38,12 @@ namespace voronoi {
     // sends the balls request_open_balls collected; collective
     void send_open_balls(VMesh* mesh, const POINT_TYPE* cell_pos, int nb);
 
-    // failed cells whose CPU build reaches past what they asked for, with the squared radius they need
+    // builds the cells no GPU tier could build on the CPU with exact tests and writes those that are final;
+    // the others, which reach past what they asked for, come back with the squared radius they need
     void fallback_needs(VMesh* mesh, std::vector<int>* cells, std::vector<double>* need_d2);
 
-    // rebuild failed cells on the CPU, returns the number of moved seeds
-    int cpu_fallback_failed_cells(VMesh*            mesh,
-                                  int*              num_failed_out,
-                                  double            dt,
-                                  std::vector<int>* perturbed_ks_out = nullptr);
-
-    // rebuild after another rank moved a seed
-    int repair_cells_for_moved_ghosts(VMesh*                                     mesh,
-                                      const std::vector<proteus_mpi::MovedSeed>& moved,
-                                      double                                     dt,
-                                      std::vector<int>*                          newly_perturbed_out);
+    // how many cells the CPU wrote since the last call
+    int take_cpu_built();
 
 } // namespace voronoi
 

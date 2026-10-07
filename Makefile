@@ -81,6 +81,9 @@ endif
 LDFLAGS =
 BUILD_MODE_MESSAGE = CUDA RELEASE
 
+# the exact predicates need every product and sum rounded on its own
+NO_FP_CONTRACT = --compiler-options -ffp-contract=off
+
 # optionally enable openmp
 ifneq (,$(call flag,USE_OPENMP))
 	CXXFLAGS += --compiler-options -fopenmp
@@ -101,6 +104,9 @@ else
 CXXFLAGS = -Wall -Wextra -std=c++14 -O3
 LDFLAGS =
 BUILD_MODE_MESSAGE = RELEASE
+
+# the exact predicates need every product and sum rounded on its own
+NO_FP_CONTRACT = -ffp-contract=off
 
 # g++ does not recognize .cu extension — treat as C++
 CXXFLAGS += -x c++
@@ -151,7 +157,7 @@ GLOBAL_OBJ = $(BUILD_DIR)/globals.o $(BUILD_DIR)/log.o
 IO_OBJ = $(BUILD_DIR)/input.o $(BUILD_DIR)/output.o
 KNN_OBJ = $(BUILD_DIR)/knn.o
 BEGRUN_OBJ = $(BUILD_DIR)/begrun.o
-VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/moving.o
+VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/moving.o $(BUILD_DIR)/predicates.o
 HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o
 GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
 PROFILER_OBJ = $(BUILD_DIR)/profiler.o
@@ -387,8 +393,11 @@ $(BUILD_DIR)/begrun.o: $(BEGRUN_DIR)/begrun.cu $(BEGRUN_DIR)/begrun.h | $(BUILD_
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # voronoi mesh construction
-$(BUILD_DIR)/voronoi.o: $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/voronoi.h $(VORONOI_DIR)/internal.h $(VORONOI_DIR)/alloc.cu $(VORONOI_DIR)/build.cu $(VORONOI_DIR)/cell.cu $(VORONOI_DIR)/cell.h $(VORONOI_DIR)/fallback.cu $(VORONOI_DIR)/geometry.cu $(VORONOI_DIR)/geometry.h $(VORONOI_DIR)/reach.cu $(MPI_DIR)/halo.h $(MPI_DIR)/decomp.h | $(BUILD_DIR)
+$(BUILD_DIR)/voronoi.o: $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/voronoi.h $(VORONOI_DIR)/internal.h $(VORONOI_DIR)/alloc.cu $(VORONOI_DIR)/build.cu $(VORONOI_DIR)/cell.cu $(VORONOI_DIR)/cell.h $(VORONOI_DIR)/fallback.cu $(VORONOI_DIR)/geometry.cu $(VORONOI_DIR)/geometry.h $(VORONOI_DIR)/reach.cu $(VORONOI_DIR)/predicates.h $(MPI_DIR)/halo.h $(MPI_DIR)/decomp.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/predicates.o: $(VORONOI_DIR)/predicates.cu $(VORONOI_DIR)/predicates.h | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(NO_FP_CONTRACT) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/moving.o: $(VORONOI_DIR)/moving.cu $(VORONOI_DIR)/voronoi.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@

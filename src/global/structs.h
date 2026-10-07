@@ -15,8 +15,9 @@ namespace voronoi {
         inconsistent_boundary       = 2, // clipping left a boundary that does not close
         security_radius_not_reached = 3, // neighbour list ran out before the cell was final
         success                     = 4,
-        needs_exact_predicates      = 5, // a determinant was too small to decide
-        security_radius_beyond_data = 6  // the cell may reach points this rank has not asked for yet
+        needs_exact_predicates      = 5, // a determinant too close to zero for doubles, the CPU decides it
+        security_radius_beyond_data = 6, // the cell may reach points this rank has not asked for yet
+        coincident_points           = 7  // the exact test met two points at one position
     };
 
 } // namespace voronoi

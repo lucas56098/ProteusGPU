@@ -19,8 +19,6 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "alloc.cu"
@@ -35,11 +33,8 @@ namespace voronoi {
     namespace {
         // what the build needed, for the summary line
         struct BuildStats {
-            int local_failed_cells      = 0; // cells no GPU tier could build
-            int global_failed_cells     = 0;
-            int rounds                  = 0; // builds after the first one, for cells that asked for more
-            int perturb_loop_iters_used = 0;
-            int cells_perturbed_total   = 0; // cells with a moved seed
+            int cpu_cells = 0; // cells no GPU tier could build, built on the CPU
+            int rounds    = 0; // builds after the first one, for cells that asked for more
         };
     } // namespace
 
@@ -48,7 +43,6 @@ namespace voronoi {
                                              hydro::primvars*          primvar,
                                              hydro::ConsVars*          cons,
                                              gradients::PrimGradients* grads);
-    static void       cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt);
     static void       exchange_ghost_geometry(VMesh* mesh);
     static void       print_step_summary(const BuildStats& stats);
     static void       sum_ints_across_ranks(const int* local, int* global, int n);
@@ -56,14 +50,13 @@ namespace voronoi {
     // the most rounds a build may take; every round doubles the balls that are still open
     constexpr int MAX_REQUEST_ROUNDS = 24;
 
-    // builds the mesh, repairs what failed, sends the ghost state
+    // builds the mesh, the CPU builds what the GPU could not, sends the ghost geometry
     void compute_periodic_mesh(VMesh*                    mesh,
                                POINT_TYPE*               pts_data,
                                uint64_t                  num_points,
                                hydro::primvars*          primvar,
                                hydro::ConsVars*          cons,
-                               gradients::PrimGradients* grads,
-                               double                    dt) {
+                               gradients::PrimGradients* grads) {
         PROFILE("MESH");
 
         // the cell positions of this build live in managed memory, in k-order after the first sort
@@ -71,15 +64,7 @@ namespace voronoi {
         mesh->n_hydro        = num_points;
         if (pts_data != cell_pos) gpu_memcpy(cell_pos, pts_data, num_points * sizeof(POINT_TYPE));
 
-        BuildStats stats = build_mesh_by_requests(mesh, cell_pos, primvar, cons, grads);
-
-        stats.global_failed_cells = logging::sum_global(stats.local_failed_cells);
-
-        // cells no tier could build go to the CPU
-        if (stats.global_failed_cells > 0) {
-            PROFILE("PERTURB");
-            cpu_perturb_and_repair(mesh, stats, dt);
-        }
+        const BuildStats stats = build_mesh_by_requests(mesh, cell_pos, primvar, cons, grads);
 
         // ghosts have their final position now
         exchange_ghost_geometry(mesh);
@@ -96,6 +81,7 @@ namespace voronoi {
         BuildStats stats{};
 
         proteus_mpi::halo_begin_build();
+        take_cpu_built();
         {
             PROFILE("ORDER");
             fix_cell_order(mesh, cell_pos, primvar, cons, grads);
@@ -148,71 +134,15 @@ namespace voronoi {
             send_open_balls(mesh, cell_pos, nb);
         }
 
-        stats.local_failed_cells = count_failed_cells(mesh);
-        return stats;
-    }
-
-    // CPU fallback, and the rebuilds a moved seed causes here and on the ranks that hold it as a ghost
-    static void cpu_perturb_and_repair(VMesh* mesh, BuildStats& stats, double dt) {
-        constexpr int MAX_CASCADE_ITERS = 8;
-
-        std::vector<int> pending;
-
-        for (int iter = 0; iter < MAX_CASCADE_ITERS; iter++) {
-            int       local_num_failed = 0;
-            const int local_perturbed  = cpu_fallback_failed_cells(mesh, &local_num_failed, dt, &pending);
-            stats.cells_perturbed_total += local_perturbed;
-
-            // cells with a moved seed, each one once
-            std::sort(pending.begin(), pending.end());
-            pending.erase(std::unique(pending.begin(), pending.end()), pending.end());
-
-            // a moved seed that another rank holds as a ghost has to be sent there
-            const int local_exported = proteus_mpi::halo_count_moved_exports(pending);
-
-            int local[3]  = {(int)pending.size(), local_num_failed, local_exported};
-            int global[3] = {local[0], local[1], local[2]};
-            sum_ints_across_ranks(local, global, 3);
-            const int global_pending    = global[0];
-            const int global_num_failed = global[1];
-            const int global_exported   = global[2];
-
-            if (global_num_failed > 0) {
-                logging::root() << "VORONOI: fallback recovered " << global_num_failed << " cells globally (iter "
-                                << iter << ")." << std::endl;
-            }
-
-            if (global_pending == 0) {
-                stats.perturb_loop_iters_used = iter;
-                if (iter > 0)
-                    logging::root() << "VORONOI: perturbation cascade converged in " << iter << " round(s)."
-                                    << std::endl;
-                return;
-            }
-            stats.perturb_loop_iters_used = iter + 1;
-
-            if (global_exported == 0) return;
-
-            std::vector<proteus_mpi::MovedSeed> received;
-            {
-                PROFILE("EXCHANGE");
-                proteus_mpi::halo_exchange_moved_seeds(mesh, pending, &received);
-            }
-            pending.clear();
-            {
-                PROFILE("REPAIR");
-                repair_cells_for_moved_ghosts(mesh, received, dt, &pending);
-            }
-        }
-
-        if (proteus_mpi::halo_count_moved_exports(pending) > 0) {
-            proteus_mpi::exit_failure("[rank %d] VORONOI: perturbation cascade did not converge in %d rounds: "
-                                      "exported seed(s) moved in the last round, other ranks still hold the old "
-                                      "position. Aborting.\n",
+        // the CPU built and wrote what the GPU could not while the rounds went on
+        stats.cpu_cells     = take_cpu_built();
+        const int n_unbuilt = count_failed_cells(mesh);
+        if (n_unbuilt > 0) {
+            proteus_mpi::exit_failure("[rank %d] VORONOI: %d cell(s) left unbuilt after the request rounds.\n",
                                       proteus_mpi::rank(),
-                                      MAX_CASCADE_ITERS);
+                                      n_unbuilt);
         }
-        logging::root() << "VORONOI: perturbation cascade hit MAX_ITERS=" << MAX_CASCADE_ITERS << "." << std::endl;
+        return stats;
     }
 
     // finds the ghosts a cell really uses and sends their geometry; their state is up to the caller
@@ -224,15 +154,13 @@ namespace voronoi {
 #endif
     }
 
-    // one line with rounds, retries, ghosts and migration
+    // one line with rounds, ghosts and migration
     static void print_step_summary(const BuildStats& stats) {
-        const int rounds_global   = logging::max_global(stats.rounds);
-        const int cascade_global  = logging::max_global(stats.perturb_loop_iters_used);
-        const int perturbed_total = logging::sum_global(stats.cells_perturbed_total);
-
-        if (rounds_global > 0 || cascade_global > 0 || perturbed_total > 0) {
-            logging::root() << "VORONOI: retries rounds=" << rounds_global << " cascade=" << cascade_global
-                            << " perturbed=" << perturbed_total << std::endl;
+        const int       rounds_global = logging::max_global(stats.rounds);
+        const long long cpu_global    = logging::sum_global((long long)stats.cpu_cells);
+        if (rounds_global > 0 || cpu_global > 0) {
+            logging::root() << "VORONOI: request rounds=" << rounds_global << "  built on the CPU=" << cpu_global
+                            << std::endl;
         }
 
         const long long ghosts_g   = logging::sum_global((long long)proteus_mpi::halo.n_ghosts);

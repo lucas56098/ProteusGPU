@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <utility>
 
 namespace proteus_mpi {
@@ -42,11 +41,9 @@ namespace proteus_mpi {
         GpuArray<int>          stack_full;
         size_t                 n_pending = 0;
 
-        // the used subset and the moved seeds
+        // the used subset
         GpuArray<unsigned char> used_bitmap;
-        GpuArray<int>           cells, moved, m_ghost;
-        GpuArray<uint64_t>      m_dest;
-        GpuArray<GhostAnswer>   m_out, m_in;
+        GpuArray<int>           cells;
 
         unsigned int* scan_scratch(size_t n) { return scan.fit(scan_scratch_size(n, _MPI_PACK_BLOCK_SIZE_)); }
 
@@ -54,11 +51,11 @@ namespace proteus_mpi {
             for (GpuArray<unsigned int>* a :
                  {&scan, &flag, &pos, &run_scratch, &q_offset, &hit_mask, &run_hit, &run_list, &hit_offset})
                 a->free();
-            for (GpuArray<uint64_t>* a : {&hits, &pending, &sent_alt, &m_dest})
+            for (GpuArray<uint64_t>* a : {&hits, &pending, &sent_alt})
                 a->free();
-            for (GpuArray<GhostAnswer>* a : {&hit_ans, &a_out, &a_in, &m_out, &m_in})
+            for (GpuArray<GhostAnswer>* a : {&hit_ans, &a_out, &a_in})
                 a->free();
-            for (GpuArray<int>* a : {&stack_full, &cells, &moved, &m_ghost})
+            for (GpuArray<int>* a : {&stack_full, &cells})
                 a->free();
             q_built.free();
             q_sorted.free();

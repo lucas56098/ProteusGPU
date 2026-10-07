@@ -3,6 +3,7 @@
 
 #include "cell.h"
 #include "geometry.h"
+#include "predicates.h"
 #include "voronoi.h"
 #include <cmath>
 #include <iostream>
@@ -22,12 +23,36 @@ namespace voronoi {
                                      double4_t        seed,
                                      double4_t        neighbor);
 
-    // (2 x farthest vertex)^2, capped well past any cell that fits the box
-    HD inline void store_security_d2(VMesh* mesh, uint64_t k, double r2_num, double r2_denom) {
+    // the determinant of the plane rows is off by at most about 20 roundings times the product of the row
+    // scales, the rounding of the planes included; below this bound, with a wide margin, its sign means nothing
+    constexpr double DET_REL_EPS = 1e-13;
+
+    // a point at exactly twice the distance of the farthest corner can still cut it in a tie, and corners are
+    // rounded; every test of how far a cell reaches keeps this margin
+    constexpr double REACH_SLACK = 1.0 + 1e-6;
+
+    // planes with w^2 above this times the product of their squared normals meet in a vertex the plane
+    // equations give to about 1e-12; an exact cell computes the others from the points
+    constexpr double WELL_POSED = 1e-8;
+
+    HD inline void copy_point(const double4_t& a, double* out) {
+        out[0] = a.x;
+        out[1] = a.y;
+#ifdef dim_3D
+        out[2] = a.z;
+#endif
+    }
+
+    // (2 x farthest vertex)^2 with the margin, capped well past any cell that fits the box
+    HD inline double security_d2_of(double r2_num, double r2_denom) {
         constexpr double d2_cap = 1e30;
-        double           d2     = (r2_denom > 0.0) ? 4.0 * r2_num / r2_denom : d2_cap;
+        double           d2     = (r2_denom > 0.0) ? 4.0 * REACH_SLACK * r2_num / r2_denom : d2_cap;
         if (!(d2 <= d2_cap)) d2 = d2_cap;
-        mesh->security_d2[k] = d2;
+        return d2;
+    }
+
+    HD inline void store_security_d2(VMesh* mesh, uint64_t k, double r2_num, double r2_denom) {
+        mesh->security_d2[k] = security_d2_of(r2_num, r2_denom);
     }
 
     // builds cell k: start from the box, cut with one neighbour after the other
@@ -95,9 +120,6 @@ namespace voronoi {
         }
     }
 
-    // a point closer to a corner than the seed is can still cut the cell; margin for rounding
-    constexpr double WALK_SLACK = 1.0 + 1e-6;
-
     // corners of the cell and their squared distance to the seed; false if a corner is not reliable
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD bool cell_corners(const BasicConvexCell<MAX_P, MAX_T, IDX, VERT>& cell,
@@ -145,9 +167,9 @@ namespace voronoi {
                                int               n_corner,
                                double            r2_max) {
         // every corner sphere lies inside the ball of twice the farthest corner
-        if (knn::dist2_box(lo, hi, seed) > 4.0 * r2_max * WALK_SLACK) return false;
+        if (knn::dist2_box(lo, hi, seed) > 4.0 * r2_max * REACH_SLACK) return false;
         for (int i = 0; i < n_corner; i++) {
-            if (!(knn::dist2_box(lo, hi, corner[i]) > corner_r2[i] * WALK_SLACK)) return true;
+            if (!(knn::dist2_box(lo, hi, corner[i]) > corner_r2[i] * REACH_SLACK)) return true;
         }
         return false;
     }
@@ -368,19 +390,23 @@ namespace voronoi {
 
     // starts as the box plus margin: the wall planes and their corners
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
-    HD BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::BasicConvexCell(int p_seed, double* p_pts, Status* p_status) {
+    HD BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::BasicConvexCell(int     p_seed,
+                                                                 double* p_pts,
+                                                                 Status* p_status,
+                                                                 bool    p_exact) {
         pts       = p_pts;
         status    = p_status;
         *status   = success;
+        exact     = p_exact;
         voro_seed = point_from_ptr(pts + DIMENSION * p_seed);
         far_num   = 0.0;
         far_denom = 1.0;
         far_valid = false;
 
+        // a later plane gets its point when it is added, the ring is set up by compute_boundary
         first_boundary = END_OF_LIST;
-        for (int i = 0; i < MAX_P; i++) {
-            boundary_next[i] = END_OF_LIST;
-            plane_vid[i]     = -1;
+        for (int i = 0; i < 2 * DIMENSION; i++) {
+            plane_vid[i] = -1;
         }
 
 #ifdef dim_2D
@@ -413,12 +439,13 @@ namespace voronoi {
         const int cur_v = new_halfplane(vid);
         if (*status == vertex_overflow) { return; }
 
-        const double4_t eqn = plane_for(cur_v);
+        double          eqn_scale;
+        const double4_t eqn = plane_for(cur_v, &eqn_scale);
         // park the vertices on the far side behind nb_t
         nb_r  = 0;
         int i = 0;
         while (i < nb_t) {
-            if (vert_is_in_conflict(triangle[i], eqn)) {
+            if (vert_is_in_conflict(triangle[i], cur_v, eqn, eqn_scale)) {
                 nb_t--;
                 VERT tmp       = triangle[i];
                 triangle[i]    = triangle[nb_t];
@@ -428,7 +455,7 @@ namespace voronoi {
                 i++;
             }
         }
-        if (*status == needs_exact_predicates) { return; }
+        if (*status != success) { return; }
 
         // plane cut nothing, drop it again; the vertices did not change
         if (nb_r == 0) {
@@ -459,7 +486,7 @@ namespace voronoi {
         } while (cir != first_boundary);
     }
 
-    // a point farther than 2 x the farthest vertex cannot cut the cell
+    // a point farther than 2 x the farthest vertex, past the margin, cannot cut the cell
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
     HD bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::is_security_radius_reached(double4_t last_neig) {
         if (!far_valid) {
@@ -469,7 +496,7 @@ namespace voronoi {
 
         const double4_t diff = minus4(last_neig, voro_seed);
         const double    d2   = dot3(diff, diff);
-        return (d2 * far_denom > 4.0 * far_num);
+        return (d2 * far_denom > 4.0 * REACH_SLACK * far_num);
     }
 
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
@@ -496,15 +523,15 @@ namespace voronoi {
         *out_denom = max_denom;
     }
 
-    // plane equation, computed on every use
+    // plane equation, computed on every use; scale is |n|_1 plus a bound on |w| and its rounding
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
-    HD double4_t BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::plane_for(int p) const {
+    HD double4_t BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::plane_for(int p, double* scale) const {
 
         // box walls, from -margin to 1 + margin
         if (p < 2 * DIMENSION) {
-            constexpr double eps   = 1e-14;
-            constexpr double w_min = CELL_BOX_MARGIN + eps;
-            constexpr double w_max = 1.0 + CELL_BOX_MARGIN + eps;
+            constexpr double w_min = CELL_WALL_LO;
+            constexpr double w_max = CELL_WALL_HI;
+            if (scale) *scale = 1.0 + ((p % 2 == 0) ? w_min : w_max);
             switch (p) {
             case 0:
                 return make_double4_t(1.0, 0.0, 0.0, w_min);
@@ -528,6 +555,10 @@ namespace voronoi {
         const double4_t dir  = minus4(voro_seed, B);
         const double4_t ave2 = plus4(voro_seed, B);
         const double    dot  = dot3(ave2, dir);
+        if (scale) {
+            *scale = fabs(dir.x) + fabs(dir.y) + fabs(dir.z) +
+                     0.5 * (fabs(ave2.x * dir.x) + fabs(ave2.y * dir.y) + fabs(ave2.z * dir.z));
+        }
         return make_double4_t(dir.x, dir.y, dir.z, -dot * 0.5);
     }
 
@@ -544,23 +575,27 @@ namespace voronoi {
 
     // which side of eqn the vertex is on
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>
-    HD bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::vert_is_in_conflict(VERT v, double4_t eqn) const {
-
-        const double4_t pi1 = plane_for(v.x);
-        const double4_t pi2 = plane_for(v.y);
-#ifdef dim_2D
-        const double det = det3x3(pi1.x, pi2.x, eqn.x, pi1.y, pi2.y, eqn.y, pi1.w, pi2.w, eqn.w);
-
-        const double maxx    = fmax(fmax(fabs(pi1.x), fabs(pi2.x)), fabs(eqn.x));
-        const double maxy    = fmax(fmax(fabs(pi1.y), fabs(pi2.y)), fabs(eqn.y));
-        const double maxw    = fmax(fmax(fabs(pi1.w), fabs(pi2.w)), fabs(eqn.w));
-        const double max_max = fmax(fmax(maxx, maxy), maxw);
-        double       eps     = 1e-14 * maxx * maxy * maxw;
-        eps *= max_max;
+    HD bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::vert_is_in_conflict(VERT      v,
+                                                                          int       plane,
+                                                                          double4_t eqn,
+                                                                          double    eqn_scale) const {
+#ifndef __CUDA_ARCH__
+        if (exact) return exact_conflict(v, plane);
 #else
-        const double4_t pi3 = plane_for(v.z);
+        (void)plane;
+#endif
 
-        const double det = det4x4(pi1.x,
+        double          s1, s2;
+        const double4_t pi1 = plane_for(v.x, &s1);
+        const double4_t pi2 = plane_for(v.y, &s2);
+#ifdef dim_2D
+        const double det   = det3x3(pi1.x, pi2.x, eqn.x, pi1.y, pi2.y, eqn.y, pi1.w, pi2.w, eqn.w);
+        const double bound = DET_REL_EPS * s1 * s2 * eqn_scale;
+#else
+        double          s3;
+        const double4_t pi3 = plane_for(v.z, &s3);
+
+        const double det   = det4x4(pi1.x,
                                   pi2.x,
                                   pi3.x,
                                   eqn.x,
@@ -576,18 +611,11 @@ namespace voronoi {
                                   pi2.w,
                                   pi3.w,
                                   eqn.w);
-
-        const double maxx = fmax(fmax(fabs(pi1.x), fabs(pi2.x)), fmax(fabs(pi3.x), fabs(eqn.x)));
-        const double maxy = fmax(fmax(fabs(pi1.y), fabs(pi2.y)), fmax(fabs(pi3.y), fabs(eqn.y)));
-        const double maxz = fmax(fmax(fabs(pi1.z), fabs(pi2.z)), fmax(fabs(pi3.z), fabs(eqn.z)));
-        double       eps  = 1e-12 * maxx * maxy * maxz;
-        double       min_max, max_max;
-        get_minmax3(min_max, max_max, maxx, maxy, maxz);
-        eps *= (max_max * max_max);
+        const double bound = DET_REL_EPS * s1 * s2 * s3 * eqn_scale;
 #endif
 
-        // eps grows with the size of the numbers, below it the sign means nothing
-        if (fabs(det) < eps) { *status = needs_exact_predicates; }
+        // too close to a tie for doubles: the CPU decides it exactly
+        if (!(fabs(det) > bound)) { *status = needs_exact_predicates; }
         return (det > 0.0);
     }
 
@@ -596,14 +624,14 @@ namespace voronoi {
     HD void BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::compute_boundary() {
 
 #ifdef dim_2D
-        for (int i = 0; i < MAX_P; i++) {
+        for (int i = 0; i < nb_v; i++) {
             boundary_next[i] = END_OF_LIST;
         }
         first_boundary = END_OF_LIST;
 
         // a plane seen once is an end of the hole
         int line_count[MAX_P];
-        for (int i = 0; i < MAX_P; i++) {
+        for (int i = 0; i < nb_v; i++) {
             line_count[i] = 0;
         }
         for (int r = 0; r < nb_r; r++) {
@@ -628,7 +656,7 @@ namespace voronoi {
         boundary_next[boundary_lines[0]] = boundary_lines[1];
         boundary_next[boundary_lines[1]] = boundary_lines[0];
 #else
-        for (int i = 0; i < MAX_P; i++) {
+        for (int i = 0; i < nb_v; i++) {
             boundary_next[i] = END_OF_LIST;
         }
         first_boundary = END_OF_LIST;
@@ -712,7 +740,10 @@ namespace voronoi {
         (void)k;
         const double4_t hi = plane_for(i);
         const double4_t hj = plane_for(j);
-        const double    rw = det2x2(hi.x, hi.y, hj.x, hj.y);
+        double          rw = det2x2(hi.x, hi.y, hj.x, hj.y);
+#ifndef __CUDA_ARCH__
+        if (exact) rw = exact_vertex_turns_left(i, j) ? 1.0 : -1.0;
+#endif
         if (rw > 0) {
             triangle[nb_t] = make_vert<VERT>(j, i);
         } else {
@@ -735,6 +766,11 @@ namespace voronoi {
         result.y = -det2x2(pi1.x, pi1.w, pi2.x, pi2.w);
         result.z = 0;
         result.w = det2x2(pi1.x, pi1.y, pi2.x, pi2.y);
+#ifndef __CUDA_ARCH__
+        if (exact && !(result.w * result.w > WELL_POSED * dot3(pi1, pi1) * dot3(pi2, pi2))) {
+            return exact_vertex_point(v);
+        }
+#endif
         if (persp_divide) { return make_double4_t(result.x / result.w, result.y / result.w, 0, 1); }
 #else
         const double4_t pi3 = plane_for(v.z);
@@ -742,6 +778,11 @@ namespace voronoi {
         result.y            = -det3x3(pi1.x, pi1.w, pi1.z, pi2.x, pi2.w, pi2.z, pi3.x, pi3.w, pi3.z);
         result.z            = -det3x3(pi1.x, pi1.y, pi1.w, pi2.x, pi2.y, pi2.w, pi3.x, pi3.y, pi3.w);
         result.w            = det3x3(pi1.x, pi1.y, pi1.z, pi2.x, pi2.y, pi2.z, pi3.x, pi3.y, pi3.z);
+#ifndef __CUDA_ARCH__
+        if (exact && !(result.w * result.w > WELL_POSED * dot3(pi1, pi1) * dot3(pi2, pi2) * dot3(pi3, pi3))) {
+            return exact_vertex_point(v);
+        }
+#endif
         if (persp_divide) {
             const double inv_w = 1.0 / result.w;
             return make_double4_t(result.x * inv_w, result.y * inv_w, result.z * inv_w, 1);
@@ -749,6 +790,74 @@ namespace voronoi {
 #endif
         return result;
     }
+
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    HD void BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::plane_point(int p, double* out) const {
+        copy_point(voro_seed, out);
+        if (p >= 2 * DIMENSION) {
+            const double* q = pts + DIMENSION * plane_vid[p];
+            for (int d = 0; d < DIMENSION; d++)
+                out[d] = q[d];
+            return;
+        }
+
+        // the mirror image across the wall: the low wall of an axis first, then the high one
+        const int axis = p / 2;
+        out[axis]      = (p % 2 == 0) ? -2.0 * CELL_WALL_LO - out[axis] : 2.0 * CELL_WALL_HI - out[axis];
+    }
+
+    // the vertex is the centre of the sphere through the seed and the points of its planes; the plane cuts
+    // it away if its point lies inside
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::exact_conflict(VERT v, int plane) const {
+        double pt[DIMENSION + 2][DIMENSION];
+        copy_point(voro_seed, pt[0]);
+        plane_point(v.x, pt[1]);
+        plane_point(v.y, pt[2]);
+#ifdef dim_3D
+        plane_point(v.z, pt[3]);
+#endif
+        plane_point(plane, pt[DIMENSION + 1]);
+#ifdef dim_2D
+        const double* p[3] = {pt[0], pt[1], pt[2]};
+#else
+        const double* p[4] = {pt[0], pt[1], pt[2], pt[3]};
+#endif
+        const int side = exact::in_circumsphere(p, pt[DIMENSION + 1]);
+        if (side < 0) *status = coincident_points;
+        return side == 1;
+    }
+
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    double4_t BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::exact_vertex_point(VERT v) const {
+        double pt[DIMENSION + 1][DIMENSION];
+        copy_point(voro_seed, pt[0]);
+        plane_point(v.x, pt[1]);
+        plane_point(v.y, pt[2]);
+#ifdef dim_2D
+        const double* p[3] = {pt[0], pt[1], pt[2]};
+#else
+        plane_point(v.z, pt[3]);
+        const double* p[4] = {pt[0], pt[1], pt[2], pt[3]};
+#endif
+        double c[3] = {0.0, 0.0, 0.0};
+        exact::circumcentre(p, c);
+        return make_double4_t(c[0], c[1], c[2], 1.0);
+    }
+
+#ifdef dim_2D
+    // the sign of det(n_i, n_j) of the plane normals n = seed - point: the orientation of the two points
+    // and the seed
+    template <int MAX_P, int MAX_T, typename IDX, typename VERT>
+    bool BasicConvexCell<MAX_P, MAX_T, IDX, VERT>::exact_vertex_turns_left(IDX i, IDX j) const {
+        double pt[3][DIMENSION];
+        plane_point(i, pt[0]);
+        plane_point(j, pt[1]);
+        copy_point(voro_seed, pt[2]);
+        const double* p[3] = {pt[0], pt[1], pt[2]};
+        return exact::orientation(p) > 0;
+    }
+#endif
 
     // vertices on plane p, ordered around the face
     template <int MAX_P, int MAX_T, typename IDX, typename VERT>

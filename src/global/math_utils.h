@@ -155,12 +155,6 @@ HD inline bool solve_weighted_lsq_3d(double      m00,
 }
 #endif
 
-// min and max of three values
-HD inline void get_minmax3(double& m, double& M, double x1, double x2, double x3) {
-    m = fmin(fmin(x1, x2), x3);
-    M = fmax(fmax(x1, x2), x3);
-}
-
 // shortest signed distance in the periodic box of size 1
 HD inline double wrap_periodic_delta(double d) {
     if (d > 0.5) d -= 1.0;

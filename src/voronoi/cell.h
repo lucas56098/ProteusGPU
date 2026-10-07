@@ -29,10 +29,15 @@ namespace voronoi {
     // the starting cell is the box plus this margin on every side; no cell reaches half a box from its seed
     constexpr double CELL_BOX_MARGIN = 0.5;
 
+    // its walls, a hair past the margin: at -CELL_WALL_LO and CELL_WALL_HI on every axis
+    constexpr double CELL_WALL_LO = CELL_BOX_MARGIN + 1e-14;
+    constexpr double CELL_WALL_HI = 1.0 + CELL_BOX_MARGIN + 1e-14;
+
     // a cell is a list of planes, a vertex is where DIMENSION planes meet
     // the first 2 x DIMENSION planes are the box walls, every later one is a bisector to a point
+    // an exact cell (CPU only) decides every cut with exact tests on the points and a fixed rule for ties
     template <int MAX_P, int MAX_T, typename IDX, typename VERT> struct BasicConvexCell {
-        HD BasicConvexCell(int p_seed, double* p_pts, Status* p_status);
+        HD BasicConvexCell(int p_seed, double* p_pts, Status* p_status, bool p_exact = false);
 
         static_assert(sizeof(decltype(VERT::x)) == sizeof(IDX), "VERT component width must equal IDX");
         static_assert((long long)MAX_P <= (long long)idx_max<IDX>(), "MAX_P does not fit in IDX");
@@ -43,6 +48,7 @@ namespace voronoi {
         double*   pts; // sorted point list, a plane is named by its point
         double4_t voro_seed;
         Status*   status;
+        bool      exact;
 
         IDX nb_v; // planes
         IDX nb_t; // vertices
@@ -60,13 +66,15 @@ namespace voronoi {
         IDX first_boundary; // ring of planes around the cut away vertices
         IDX boundary_next[MAX_P];
 
-        HD double4_t plane_for(int p) const;
+        // plane p as (n, w) with n . x + w >= 0 inside; scale, if given, bounds the size of the row
+        HD double4_t plane_for(int p, double* scale = nullptr) const;
 
         HD void clip_by_plane(int vid);
 
         HD int new_halfplane(int vid);
 
-        HD bool vert_is_in_conflict(VERT v, double4_t eqn) const;
+        // whether plane (with equation eqn and scale eqn_scale) cuts vertex v away
+        HD bool vert_is_in_conflict(VERT v, int plane, double4_t eqn, double eqn_scale) const;
 
         HD void compute_boundary();
 
@@ -80,6 +88,16 @@ namespace voronoi {
 
         // where the planes of v meet, as (x, y, z, w)
         HD double4_t compute_vertex_point(VERT v, bool persp_divide = true) const;
+
+        // the point whose bisector with the seed is plane p; for a wall the mirror image of the seed
+        HD void plane_point(int p, double* out) const;
+
+        // the exact versions, host only
+        bool      exact_conflict(VERT v, int plane) const;
+        double4_t exact_vertex_point(VERT v) const;
+#ifdef dim_2D
+        bool exact_vertex_turns_left(IDX i, IDX j) const;
+#endif
     };
 
     using ConvexCell = BasicConvexCell<_MAX_P_, _MAX_T_, uchar, VERT_TYPE>; // slow tier

@@ -9,7 +9,8 @@ For every snapshot in OUTPUT_DIR, with all rank files of one snapshot taken toge
   volume sum   the cell volumes add up to the box
   wall faces   no face lies on the box wall (neighbour -1)
   closed       every cell is closed: its area weighted face normals sum to zero
-  both sides   a face between two cells of one rank is seen from both sides, same area
+  both sides   a face between two cells of one rank is seen from both sides, same area up to
+               TOL_AREA times the surface of the cell
   scipy        every cell matches scipy.spatial.Voronoi of the same seeds in the periodic
                box: volume, centroid, and the area and normal of each face
 
@@ -188,13 +189,14 @@ def check_snapshot(files):
                 open_cells.append(f"rank {rk} cell {k}: |sum A n| / sum A = {closed:.3e}")
             for f in range(lo, hi):
                 if 0 <= nb[f] < n_loc:
-                    seen[(k, int(nb[f]))] = area[f]
-        for (k, j), a in seen.items():
-            b = seen.get((j, k))
-            if b is None:
+                    seen[(k, int(nb[f]))] = (area[f], surface)
+        # a face of a degenerate cell can have zero size, its area is then rounding on both sides
+        for (k, j), (a, surface) in seen.items():
+            other = seen.get((j, k))
+            if other is None:
                 one_sided.append(f"rank {rk}: face {k} -> {j} has no face {j} -> {k}")
-            elif abs(a - b) > TOL_AREA * max(a, b, 1e-300):
-                one_sided.append(f"rank {rk}: face {k} <-> {j} area {a!r} vs {b!r}")
+            elif abs(a - other[0]) > TOL_AREA * surface:
+                one_sided.append(f"rank {rk}: face {k} <-> {j} area {a!r} vs {other[0]!r}")
     worst["closed"] = worst_closed
     report("wall faces", walls)
     report("not closed", open_cells)
