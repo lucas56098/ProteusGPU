@@ -18,8 +18,12 @@ SortIncludes: CaseInsensitive
 IndentPPDirectives: None
 ReflowComments: true
 AlignConsecutiveAssignments: true
-AlignConsecutiveDeclarations: true
-AlignTrailingComments: true
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AlignFunctionDeclarations: false
+AlignTrailingComments: false
 BinPackArguments: false
 BinPackParameters: false
+AllowAllParametersOfDeclarationOnNextLine: false
+PenaltyReturnTypeOnItsOwnLine: 1000
 AllowShortLoopsOnASingleLine: false

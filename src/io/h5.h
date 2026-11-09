@@ -1,270 +1,187 @@
-#ifndef IO_H5_H
-#define IO_H5_H
+#pragma once
 
-// Wraps the HDF5 C API in handles that close themselves, plus typed read / write helpers.
+// the HDF5 C API as io uses it: handles that close themselves, and files all ranks open together (included by io.cu)
 
-#include "hdf5.h"
+#include "logging/logging.h"
+#include "mpi/mpi.h"
+
+#include <hdf5.h>
+
+#include <algorithm>
 #include <cstdint>
-#include <iostream>
+#include <string>
 #include <vector>
 
-namespace h5 {
+namespace io {
 
-    // hsize_t is an HDF5 typedef and not always uint64_t, only the width is fixed;
-    // so pass it by value here and never take a hsize_t* or hsize_t& in this interface
-    static_assert(sizeof(hsize_t) == sizeof(uint64_t), "hsize_t is expected to be 64 bits wide");
-
-    // ==========================================================
-    // handles
-    // ==========================================================
-
-    // owns one hid_t and closes it at the end of the scope; movable, not copyable
+    // an HDF5 object that closes itself at the end of its scope
     template <herr_t (*CLOSE)(hid_t)> class Handle {
       public:
-        Handle() : m_id(H5I_INVALID_HID) {}
-        explicit Handle(hid_t id) : m_id(id) {}
-        // exit() does not run destructors, so leave every h5 scope before aborting a run
-        ~Handle() { reset(); }
-
+        explicit Handle(hid_t id) : id(id) {}
+        ~Handle() {
+            if (id >= 0) CLOSE(id);
+        }
         Handle(const Handle&)            = delete;
         Handle& operator=(const Handle&) = delete;
 
-        Handle(Handle&& other) : m_id(other.m_id) { other.m_id = H5I_INVALID_HID; }
-        Handle& operator=(Handle&& other) {
-            if (this != &other) {
-                reset();
-                m_id       = other.m_id;
-                other.m_id = H5I_INVALID_HID;
-            }
-            return *this;
-        }
+        operator hid_t() const { return id; }
+        bool is_open() const { return id >= 0; }
 
-        operator hid_t() const { return m_id; }
-
-        bool valid() const { return m_id >= 0; }
-
-        void reset() {
-            if (m_id >= 0) { CLOSE(m_id); }
-            m_id = H5I_INVALID_HID;
+        void close() {
+            if (id >= 0) CLOSE(id);
+            id = -1;
         }
 
       private:
-        hid_t m_id;
+        hid_t id;
+    };
+    using File         = Handle<H5Fclose>;
+    using Group        = Handle<H5Gclose>;
+    using Dataset      = Handle<H5Dclose>;
+    using Space        = Handle<H5Sclose>;
+    using Attribute    = Handle<H5Aclose>;
+    using PropertyList = Handle<H5Pclose>;
+    using Datatype     = Handle<H5Tclose>;
+
+    // the block of rows of this rank in a dataset of n_all rows: n rows from first on
+    struct Rows {
+        long first;
+        long n;
+        long n_all;
     };
 
-    // one alias per HDF5 object kind
-    using File    = Handle<H5Fclose>;
-    using Group   = Handle<H5Gclose>;
-    using Space   = Handle<H5Sclose>;
-    using Dataset = Handle<H5Dclose>;
-    using Attr    = Handle<H5Aclose>;
-    using Plist   = Handle<H5Pclose>;
-    using Type    = Handle<H5Tclose>;
-
-    // C++ type -> H5T_NATIVE_* id
-    template <typename T> struct native;
-    template <> struct native<double> {
-        static hid_t id() { return H5T_NATIVE_DOUBLE; }
-    };
-    template <> struct native<int> {
-        static hid_t id() { return H5T_NATIVE_INT; }
-    };
-    template <> struct native<int64_t> {
-        static hid_t id() { return H5T_NATIVE_INT64; }
-    };
-
-    // checks that a dataset has the expected rank
-    inline bool check_rank(hid_t space, const char* name, int expected) {
-        const int ndims = H5Sget_simple_extent_ndims(space);
-        if (ndims != expected) {
-            std::cerr << "H5: Error! Dataset '" << name << "' has rank " << ndims << ", expected " << expected
-                      << std::endl;
-            return false;
-        }
-        return true;
-    }
-
-    // ==========================================================
-    // write
-    // ==========================================================
-
-    // writes one scalar attribute
-    template <typename T> inline bool write_attr(hid_t parent, const char* name, T value) {
-        const hid_t type = native<T>::id();
-        Space       space(H5Screate(H5S_SCALAR));
-        Attr        attr(H5Acreate(parent, name, type, space, H5P_DEFAULT, H5P_DEFAULT));
-        if (!attr.valid() || H5Awrite(attr, type, &value) < 0) {
-            std::cerr << "H5: Error! Could not write attribute '" << name << "'" << std::endl;
-            return false;
-        }
-        return true;
-    }
-
-    // creates a dataset of the given shape and writes it
-    template <typename T>
-    inline bool write_dataset(hid_t parent, const char* name, const T* data, int rank, const hsize_t* dims) {
-        const hid_t type = native<T>::id();
-        Space       space(H5Screate_simple(rank, dims, NULL));
-        Dataset     dset(H5Dcreate(parent, name, type, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
-        if (!dset.valid()) {
-            std::cerr << "H5: Error! Could not create dataset '" << name << "'" << std::endl;
-            return false;
-        }
-        if (H5Dwrite(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) < 0) {
-            std::cerr << "H5: Error! Could not write dataset '" << name << "'" << std::endl;
-            return false;
-        }
-        return true;
-    }
-
-    // writes n values
-    template <typename T> inline bool write_dataset_1d(hid_t parent, const char* name, const T* data, hsize_t n) {
-        const hsize_t dims[1] = {n};
-        return write_dataset(parent, name, data, 1, dims);
-    }
-
-    // writes n rows of dim values
-    template <typename T>
-    inline bool write_dataset_2d(hid_t parent, const char* name, const T* data, hsize_t n, hsize_t dim) {
-        const hsize_t dims[2] = {n, dim};
-        return write_dataset(parent, name, data, 2, dims);
-    }
-
-    // ==========================================================
-    // read
-    // ==========================================================
-
-    // reads one scalar attribute
-    template <typename T> inline bool read_attr(hid_t parent, const char* name, T& out) {
-        const hid_t type = native<T>::id();
-        Attr        attr(H5Aopen(parent, name, H5P_DEFAULT));
-        if (!attr.valid() || H5Aread(attr, type, &out) < 0) {
-            std::cerr << "H5: Error! Could not read attribute '" << name << "'" << std::endl;
-            return false;
-        }
-        return true;
-    }
-
-    // reads a whole 1D dataset into out (resized to the dataset size)
-    template <typename T> inline bool read_dataset_1d(hid_t parent, const char* name, std::vector<T>& out) {
-        const hid_t type = native<T>::id();
-        Dataset     dset(H5Dopen(parent, name, H5P_DEFAULT));
-        if (!dset.valid()) {
-            std::cerr << "H5: Error! Could not open dataset '" << name << "'" << std::endl;
-            return false;
-        }
-        Space space(H5Dget_space(dset));
-        if (!check_rank(space, name, 1)) { return false; }
-        hsize_t dim = 0;
-        H5Sget_simple_extent_dims(space, &dim, NULL);
-        out.resize(dim);
-        if (H5Dread(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data()) < 0) {
-            std::cerr << "H5: Error! Could not read dataset '" << name << "'" << std::endl;
-            return false;
-        }
-        return true;
-    }
-
-    // reads a whole 2D dataset into out as flat rows; out_rows gets the row count
-    template <typename T>
-    inline bool read_dataset_2d(hid_t parent, const char* name, std::vector<T>& out, uint64_t* out_rows = NULL) {
-        const hid_t type = native<T>::id();
-        Dataset     dset(H5Dopen(parent, name, H5P_DEFAULT));
-        if (!dset.valid()) {
-            std::cerr << "H5: Error! Could not open dataset '" << name << "'" << std::endl;
-            return false;
-        }
-        Space space(H5Dget_space(dset));
-        if (!check_rank(space, name, 2)) { return false; }
-        hsize_t dims[2] = {0, 0};
-        H5Sget_simple_extent_dims(space, dims, NULL);
-        out.resize(dims[0] * dims[1]);
-        if (H5Dread(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.data()) < 0) {
-            std::cerr << "H5: Error! Could not read dataset '" << name << "'" << std::endl;
-            return false;
-        }
-        if (out_rows) { *out_rows = (uint64_t)dims[0]; }
-        return true;
-    }
-
+    inline hid_t access_by_all_ranks() {
+        const hid_t properties = H5Pcreate(H5P_FILE_ACCESS);
 #ifdef USE_MPI
-
-    // ==========================================================
-    // parallel read (USE_MPI)
-    // ==========================================================
-
-    // reads rows [row_lo, row_lo + n_local) of a 1D dataset
-    template <typename T>
-    inline bool
-    read_hyperslab_1d(hid_t parent, const char* name, hsize_t row_lo, hsize_t n_local, std::vector<T>& out) {
-        const hid_t type = native<T>::id();
-        Dataset     dset(H5Dopen(parent, name, H5P_DEFAULT));
-        if (!dset.valid()) {
-            std::cerr << "H5: Error! Could not open dataset '" << name << "'" << std::endl;
-            return false;
-        }
-        Space filespace(H5Dget_space(dset));
-        if (!check_rank(filespace, name, 1)) { return false; }
-        hsize_t offset = row_lo;
-        hsize_t count  = n_local;
-
-        // a rank without rows still takes part, it just selects nothing
-        if (n_local > 0) {
-            H5Sselect_hyperslab(filespace, H5S_SELECT_SET, &offset, NULL, &count, NULL);
-        } else {
-            H5Sselect_none(filespace);
-        }
-        Space memspace(H5Screate_simple(1, &count, NULL));
-        if (n_local == 0) H5Sselect_none(memspace);
-
-        out.resize(n_local);
-
-        // all ranks read in one call
-        Plist dxpl(H5Pcreate(H5P_DATASET_XFER));
-        H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE);
-        return H5Dread(dset, type, memspace, filespace, dxpl, out.data()) >= 0;
+        H5Pset_fapl_mpio(properties, mpi::communicator(), MPI_INFO_NULL);
+#endif
+        return properties;
     }
 
-    // same for a 2D dataset (trailing dim must be expected_dim)
-    template <typename T>
-    inline bool read_hyperslab_2d(
-        hid_t parent, const char* name, hsize_t row_lo, hsize_t n_local, hsize_t expected_dim, std::vector<T>& out) {
-        const hid_t type = native<T>::id();
-        Dataset     dset(H5Dopen(parent, name, H5P_DEFAULT));
-        if (!dset.valid()) {
-            std::cerr << "H5: Error! Could not open dataset '" << name << "'" << std::endl;
-            return false;
-        }
-        Space filespace(H5Dget_space(dset));
-        if (!check_rank(filespace, name, 2)) { return false; }
-        hsize_t full_dims[2] = {0, 0};
-        H5Sget_simple_extent_dims(filespace, full_dims, NULL);
-        if (full_dims[1] != expected_dim) {
-            std::cerr << "H5: Error! Dataset '" << name << "' has trailing dim " << full_dims[1] << ", expected "
-                      << expected_dim << std::endl;
-            return false;
-        }
-
-        hsize_t offset[2] = {row_lo, 0};
-        hsize_t count[2]  = {n_local, expected_dim};
-        if (n_local > 0) {
-            H5Sselect_hyperslab(filespace, H5S_SELECT_SET, offset, NULL, count, NULL);
-        } else {
-            H5Sselect_none(filespace);
-        }
-        Space memspace(H5Screate_simple(2, count, NULL));
-        if (n_local == 0) H5Sselect_none(memspace);
-
-        out.resize(n_local * expected_dim);
-
-        // all ranks read in one call
-        Plist dxpl(H5Pcreate(H5P_DATASET_XFER));
-        H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE);
-        return H5Dread(dset, type, memspace, filespace, dxpl, out.data()) >= 0;
+    inline hid_t transfer_by_all_ranks() {
+        const hid_t properties = H5Pcreate(H5P_DATASET_XFER);
+#ifdef USE_MPI
+        H5Pset_dxpl_mpio(properties, H5FD_MPIO_COLLECTIVE);
+#endif
+        return properties;
     }
 
-#endif
+    // for reading; a missing file gives a handle that is not open; collective
+    inline hid_t open_by_all_ranks(const char* path) {
+        const PropertyList access(access_by_all_ranks());
+        return H5Fopen(path, H5F_ACC_RDONLY, access);
+    }
 
-} // namespace h5
+    // a new file, or one written over; collective
+    inline hid_t create_by_all_ranks(const std::string& path) {
+        const PropertyList access(access_by_all_ranks());
+        return H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, access);
+    }
 
-#endif
+    inline hid_t hdf5_type_of(const double*) {
+        return H5T_NATIVE_DOUBLE;
+    }
+    inline hid_t hdf5_type_of(const int*) {
+        return H5T_NATIVE_INT;
+    }
+    inline hid_t hdf5_type_of(const int64_t*) {
+        return H5T_NATIVE_INT64;
+    }
+
+    // number of rows of a dataset of columns numbers per row; stops the run if it is missing or has another shape
+    inline long rows_of(hid_t file, const char* path, const char* name, int columns) {
+        const Dataset dataset(H5Dopen(file, name, H5P_DEFAULT));
+        if (!dataset.is_open()) logging::stop_run("INPUT: %s has no %s", path, name);
+
+        const Space space(H5Dget_space(dataset));
+        hsize_t     shape[2]   = {0, 1};
+        const int   dimensions = H5Sget_simple_extent_ndims(space);
+        if (dimensions == 1 || dimensions == 2) H5Sget_simple_extent_dims(space, shape, nullptr);
+        if (!(dimensions == 1 || dimensions == 2) || shape[1] != (hsize_t)columns) {
+            logging::stop_run("INPUT: %s in %s has not %d number(s) per row", name, path, columns);
+        }
+        return (long)shape[0];
+    }
+
+    // one number of an object; false if it has none of that name
+    template <typename Number> bool read_attribute(hid_t object, const char* name, Number& value) {
+        const Attribute attribute(H5Aopen(object, name, H5P_DEFAULT));
+        return attribute.is_open() && H5Aread(attribute, hdf5_type_of(&value), &value) >= 0;
+    }
+
+    // the block of rows of this rank; collective
+    template <typename Number = double>
+    std::vector<Number> read_rows(hid_t file, const char* path, const char* name, const Rows& rows, int columns) {
+        const Dataset dataset(H5Dopen(file, name, H5P_DEFAULT));
+        const Space   in_file(H5Dget_space(dataset));
+        const hsize_t first[2]   = {(hsize_t)rows.first, 0};
+        const hsize_t count[2]   = {(hsize_t)rows.n, (hsize_t)columns};
+        const int     dimensions = H5Sget_simple_extent_ndims(in_file);
+        const Space   in_memory(H5Screate_simple(dimensions, count, nullptr));
+        if (rows.n > 0) {
+            H5Sselect_hyperslab(in_file, H5S_SELECT_SET, first, nullptr, count, nullptr);
+        } else {
+            H5Sselect_none(in_file);
+            H5Sselect_none(in_memory);
+        }
+
+        // a rank without rows still takes part, with a buffer of one row
+        std::vector<Number> values(rows.n * columns + columns);
+        const PropertyList  transfer(transfer_by_all_ranks());
+        if (H5Dread(dataset, hdf5_type_of(values.data()), in_memory, in_file, transfer, values.data()) < 0) {
+            logging::stop_run("INPUT: cannot read %s from %s", name, path);
+        }
+        values.resize(rows.n * columns);
+        return values;
+    }
+
+    // every rank writes the same number; collective
+    template <typename Number> void write_attribute(hid_t object, const char* name, Number value) {
+        const Space     space(H5Screate(H5S_SCALAR));
+        const Attribute attribute(H5Acreate2(object, name, hdf5_type_of(&value), space, H5P_DEFAULT, H5P_DEFAULT));
+        if (!attribute.is_open() || H5Awrite(attribute, hdf5_type_of(&value), &value) < 0) {
+            logging::stop_run("OUTPUT: cannot write the attribute %s", name);
+        }
+    }
+
+    // every rank writes the same text; collective
+    inline void write_text_attribute(hid_t object, const char* name, const std::string& text) {
+        const Datatype type(H5Tcopy(H5T_C_S1));
+        H5Tset_size(type, std::max<size_t>(text.size(), 1));
+        const Space     space(H5Screate(H5S_SCALAR));
+        const Attribute attribute(H5Acreate2(object, name, type, space, H5P_DEFAULT, H5P_DEFAULT));
+        if (!attribute.is_open() || H5Awrite(attribute, type, text.c_str()) < 0) {
+            logging::stop_run("OUTPUT: cannot write the attribute %s", name);
+        }
+    }
+
+    // a dataset of rows.n_all rows, one dimension for one column; this rank writes its block from values; collective
+    template <typename Number>
+    void write_rows(hid_t group, const char* name, const Number* values, const Rows& rows, int columns) {
+        const int     dimensions = (columns == 1) ? 1 : 2;
+        const hsize_t shape[2]   = {(hsize_t)rows.n_all, (hsize_t)columns};
+        const hsize_t first[2]   = {(hsize_t)rows.first, 0};
+        const hsize_t count[2]   = {(hsize_t)rows.n, (hsize_t)columns};
+        const Space   in_file(H5Screate_simple(dimensions, shape, nullptr));
+        const Dataset dataset(
+            H5Dcreate2(group, name, hdf5_type_of(values), in_file, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT));
+        if (!dataset.is_open()) logging::stop_run("OUTPUT: cannot make the dataset %s", name);
+
+        const Space in_memory(H5Screate_simple(dimensions, count, nullptr));
+        if (rows.n > 0) {
+            H5Sselect_hyperslab(in_file, H5S_SELECT_SET, first, nullptr, count, nullptr);
+        } else {
+            H5Sselect_none(in_file);
+            H5Sselect_none(in_memory);
+        }
+
+        // a rank without rows still takes part, with a buffer that is not null
+        const Number       nothing{};
+        const PropertyList transfer(transfer_by_all_ranks());
+        if (H5Dwrite(dataset, hdf5_type_of(values), in_memory, in_file, transfer, (rows.n > 0) ? values : &nothing) <
+            0) {
+            logging::stop_run("OUTPUT: cannot write the dataset %s", name);
+        }
+    }
+
+} // namespace io

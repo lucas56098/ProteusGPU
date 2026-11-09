@@ -1,0 +1,33 @@
+# One configuration per line: a name, then the switches of Config.sh it turns on.
+# tests/build_matrix.sh builds and tests each one.
+
+2d_cpu                        dim_2D
+2d_cpu_mpi                    dim_2D USE_MPI
+2d_cpu_openmp                 dim_2D USE_OPENMP
+2d_cpu_openmp_mpi             dim_2D USE_OPENMP USE_MPI
+2d_gpu                        dim_2D CUDA USE_OPENMP
+2d_gpu_mpi                    dim_2D CUDA USE_OPENMP USE_MPI
+
+3d_cpu                        dim_3D
+3d_cpu_mpi                    dim_3D USE_MPI
+3d_cpu_openmp                 dim_3D USE_OPENMP
+3d_cpu_openmp_mpi             dim_3D USE_OPENMP USE_MPI
+3d_gpu                        dim_3D CUDA USE_OPENMP
+3d_gpu_mpi                    dim_3D CUDA USE_OPENMP USE_MPI
+
+2d_gpu_fast_math              dim_2D CUDA CUDA_FAST_MATH USE_OPENMP
+3d_gpu_fast_math              dim_3D CUDA CUDA_FAST_MATH USE_OPENMP
+
+2d_cpu_individual             dim_2D USE_OPENMP INDIVIDUAL_TIMESTEPS
+3d_gpu_mpi_individual         dim_3D CUDA USE_OPENMP USE_MPI INDIVIDUAL_TIMESTEPS
+2d_cpu_moving                 dim_2D USE_OPENMP MOVING_MESH
+3d_gpu_mpi_moving             dim_3D CUDA USE_OPENMP USE_MPI MOVING_MESH
+2d_cpu_moving_individual      dim_2D USE_OPENMP MOVING_MESH INDIVIDUAL_TIMESTEPS
+3d_gpu_mpi_moving_individual  dim_3D CUDA USE_OPENMP USE_MPI MOVING_MESH INDIVIDUAL_TIMESTEPS
+2d_cpu_moving_volume          dim_2D USE_OPENMP MOVING_MESH INDIVIDUAL_TIMESTEPS REGULARIZE_MESH_VOLUME=0.7
+3d_gpu_mpi_moving_volume      dim_3D CUDA USE_OPENMP USE_MPI MOVING_MESH INDIVIDUAL_TIMESTEPS REGULARIZE_MESH_VOLUME=0.7
+
+2d_cpu_astro                  dim_2D USE_OPENMP ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+3d_gpu_mpi_astro_everything   dim_3D CUDA USE_OPENMP USE_MPI MOVING_MESH INDIVIDUAL_TIMESTEPS ASTRO_PHYSICS NFW HERNQUIST SMBH COOLING SF_FEEDBACK AGN_THERMAL AGN_KINETIC LIMITERS
+3d_gpu_mpi_gpu_aware          dim_3D CUDA USE_OPENMP USE_MPI GPU_AWARE_MPI
+3d_gpu_mpi_profiling          dim_3D CUDA USE_OPENMP USE_MPI MOVING_MESH INDIVIDUAL_TIMESTEPS ENABLE_PROFILING

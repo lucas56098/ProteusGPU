@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Proteus mesh check
 #
-# Runs each case for a few steps with OUTPUT_MESH and checks the mesh in every snapshot
+# Runs each case for a few steps with OUTPUT_DEBUG and checks the mesh in every snapshot
 # against its invariants and against scipy.spatial.Voronoi of the same seeds. The hydro
 # suites only see a wrong mesh through the flow it produces; this one looks at the cells.
+# Every build has a moving mesh and individual timesteps.
 
 set -uo pipefail
 
@@ -66,12 +67,6 @@ done
 cd "$REPO"
 [ -d "$CASES_DIR" ] || { echo "missing cases directory: $CASES_DIR" >&2; exit 2; }
 
-case "$(uname -s)" in
-    Linux)  SYSTYPE=Ubuntu ;;
-    Darwin) SYSTYPE=macOS ;;
-    *) echo "cannot guess SYSTYPE for $(uname -s)" >&2; exit 2 ;;
-esac
-
 CASES=()
 for d in "$CASES_DIR"/*/; do
     name="$(basename "$d")"
@@ -107,7 +102,7 @@ if [ "$CAP_MPI" = yes ]; then
     for spec in "mpi2 2 1 all 2" "mpi4 4 1 all 2" "mpi9 9 1 2dcpu 1"; do
         set -- $spec
         [ "$MAX_RANKS" -gt 0 ] && [ "$2" -gt "$MAX_RANKS" ] && continue
-        timeout 120 mpirun -np "$2" true >/dev/null 2>&1 && CONFIGS+=("$spec")
+        timeout 120 mpirun --oversubscribe -np "$2" true >/dev/null 2>&1 && CONFIGS+=("$spec")
     done
 fi
 
@@ -162,20 +157,22 @@ build_for() {   # dim backend use_mpi flags -> prints exec path, or nothing on f
     key="${dim}d_${backend}_mpi${use_mpi}_$(echo "$flags" | tr ' ' '_')"
     dir="$WORK/build_$key"
     [ -e "$dir/failed" ] && return 1
-    if [ -x "$dir/ProteusGPU" ]; then printf '%s' "$dir/ProteusGPU"; return 0; fi
+    if [ -x "$dir/Proteus" ]; then printf '%s' "$dir/Proteus"; return 0; fi
     cfg="$WORK/config_$key.sh"
     {
         printf 'dim_%sD\n' "$dim"
-        if [ "$backend" = gpu ]; then printf 'CUDA\n'; else printf 'CPU_DEBUG\n'; fi
+        [ "$backend" = gpu ] && printf 'CUDA\n'
         printf 'USE_OPENMP\n'
-        printf 'OUTPUT_MESH\n'
+        printf 'MOVING_MESH\n'
+        printf 'INDIVIDUAL_TIMESTEPS\n'
+        printf 'OUTPUT_DEBUG\n'
         [ "$use_mpi" -eq 1 ] && printf 'USE_MPI\n'
         for f in $flags; do printf '%s\n' "$f"; done
     } > "$cfg"
-    if timeout 2400 make -s "SYSTYPE=$SYSTYPE" "CONFIG=$cfg" \
-            "BUILD_DIR=$dir" "EXEC=$dir/ProteusGPU" >"$WORK/build_$key.log" 2>&1 \
-            && [ -x "$dir/ProteusGPU" ]; then
-        printf '%s' "$dir/ProteusGPU"
+    if timeout 2400 make -s "CONFIG=$cfg" \
+            "BUILD_DIR=$dir" "EXEC=$dir/Proteus" >"$WORK/build_$key.log" 2>&1 \
+            && [ -x "$dir/Proteus" ]; then
+        printf '%s' "$dir/Proteus"
         return 0
     fi
     mkdir -p "$dir"; touch "$dir/failed"
@@ -226,13 +223,11 @@ for case_name in "${CASES[@]}"; do
             fi
 
             # two snapshots: the first mesh, and the one after the last step
-            printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\nalloc_growth = 2.0\n' \
+            printf 'ic_file = %s\noutput_directory = %s/\ntime_end = %s\noutput_dt = %s\nCFL_frac = 0.3\nmemory_limit_in_gb = 2\n' \
                 "$ic" "$out" "$CASE_TIME_END" "$CASE_TIME_END" > "$out/param.txt"
-            printf 'rebalance_interval = 10\nimbalance_log_interval = 1000\nimbalance_threshold = 1.10\n' \
-                >> "$out/param.txt"
 
             if [ "$g_mpi" -eq 1 ]; then
-                launch=(mpirun --bind-to none -np "$g_ranks" "$exe" "$out/param.txt")
+                launch=(mpirun --oversubscribe --bind-to none -np "$g_ranks" "$exe" "$out/param.txt")
             else
                 launch=("$exe" "$out/param.txt")
             fi

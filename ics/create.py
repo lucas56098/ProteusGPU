@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Uniform medium at rest — the trivial test IC for ProteusGPU.
+Uniform medium at rest — the trivial test IC for Proteus.
 
 rho = 1, v = 0, energy = 1 everywhere, so nothing should happen: any drift is
 mesh or scheme noise rather than physics.

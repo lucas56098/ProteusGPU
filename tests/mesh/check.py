@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Checks the Voronoi mesh a run wrote with OUTPUT_MESH.
+Checks the Voronoi mesh a run wrote with OUTPUT_DEBUG.
 
 Usage: check.py OUTPUT_DIR
 
@@ -57,7 +57,7 @@ def snapshot_files(out_dir):
 def read_rank(path):
     with h5py.File(path, "r") as f:
         if "mesh/face_area" not in f:
-            raise SystemExit(f"{path}: no mesh/face_area, the run was not built with OUTPUT_MESH")
+            raise SystemExit(f"{path}: no mesh/face_area, the run was not built with OUTPUT_DEBUG")
         m = f["mesh"]
         return {
             "pos": m["pos"][:],

@@ -1,42 +1,43 @@
-# file types
+# build results
+build*/
+libs/
+Proteus
+ProteusGPU
+
+# editors and tools
+.vscode/
+.claude/
+__pycache__/
+venv/
+.DS_Store
+
+# run results
+output*/
+run*/
+verification*/
 *.hdf5
 *.log
 *.ncu-rep
 *.pdf
-*.txt
-*.md
-*.sh
 
-# folders
-build*/
-libs/
-output*/
-run*/
-.vscode
-.claude
-__pycache__/
-venv/
+# scratch and old work
+notes/
 src_*
 interactive/
+old_save/
+improving_the_output.md
 
-# files
-ProteusGPU
-.DS_Store
-
-# explicitly allowed
-!Config.sh
+# these file types stay out, apart from the ones allowed below
+*.md
+*.sh
+*.txt
 !README.md
 !AI-USAGE.md
-!ics/*.py
+!Config.sh
 !ics/param.txt
 !ics/cooling_table_*.txt
 !tests/*.sh
 !tests/*.txt
 !tests/convergence/**/*.sh
-!tests/convergence/**/*.py
 !tests/equality/**/*.sh
-!tests/equality/**/*.py
 !tests/mesh/**/*.sh
-!tests/mesh/**/*.py
-!tests/builds/
-!tests/builds/*.txt

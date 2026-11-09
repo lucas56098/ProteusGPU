@@ -51,7 +51,7 @@ def load(outdir):
         with h5py.File(path, "r") as f:
             time = float(f["header"].attrs["time"])
             if "volume" not in f["mesh"]:
-                raise KeyError(f"{path} has no mesh/volume -- build with OUTPUT_MESH")
+                raise KeyError(f"{path} has no mesh/volume -- build with OUTPUT_DEBUG")
             fields["pos"].append(f["mesh/pos"][...])
             fields["rho"].append(f["hydro/rho"][...])
             fields["vel"].append(f["hydro/vel"][...])

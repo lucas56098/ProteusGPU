@@ -1,7 +1,7 @@
-# Select your system type by uncommenting exactly one line.
-# If your system is not supported: add it here and the corresponding lines in the makefile
+# The machine to build on: uncomment exactly one line. Each one has a block in the Makefile.
 
-#SYSTYPE = Ubuntu
+SYSTYPE = Ubuntu
+#SYSTYPE = JUPITER
 #SYSTYPE = macOS
 #SYSTYPE = MPCDF
 #SYSTYPE = JUWELS

@@ -76,14 +76,14 @@ Dependencies: HDF5, CUDA (for GPU mode)
 1. After cloning the repo select your system in `Makefile.systype` (or add your own to the `Makefile`)
 2. Configure compilation flags in a `Config.sh` and build with
 ```bash
-make CONFIG=/path/to/Config.sh BUILD_DIR=/path/to/build/ EXEC=/path/to/ProteusGPU
+make CONFIG=/path/to/Config.sh BUILD_DIR=/path/to/build/ EXEC=/path/to/Proteus
 ```
 3. Use a `create.py` script for IC generation and specify simulation parameters in a `param.txt`
 4. Run the simulation with
 ```bash
-./ProteusGPU [./ics/param.txt] [restart_flag]
+./Proteus ics/param.txt [restart_flag]
 ```
-or using MPI with `mpirun`. If the `restart_flag` is set, the simulation continues from the last snapshot in the `output_folder`.
+or using MPI with `mpirun`. If the `restart_flag` is 1, the simulation continues from the last snapshot in `output_directory`.
 
 ---
 

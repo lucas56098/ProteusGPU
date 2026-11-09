@@ -1,489 +1,245 @@
-# parallel build is default
+# Builds Proteus given a Config.sh and the SYSTYPE in Makefile.systype.
+#
+#   make           the executable
+#   make test      builds and runs the test program of every module
+#   make check     checks the includes against the module table, and the format of every file
+#   make clean     removes the build folder and the executable
+#
+# CONFIG, BUILD_DIR and EXEC can be set on the command line, e.g. make CONFIG=other_config.sh
+
+CONFIG    ?= Config.sh
+BUILD_DIR ?= build
+EXEC      ?= Proteus
+
 MAKEFLAGS += -j
 
-# set config/build_dir/exec paths
-CONFIG ?= Config.sh
-BUILD_DIR ?= build
-EXEC ?= ProteusGPU
+# fist word of every line in CONFIG that doesnt start with #
+SWITCHES := $(shell awk '!/^[[:space:]]*#/ && NF {print $$1}' $(CONFIG))
+is_on     = $(filter $(1),$(SWITCHES))
 
-# load Config.sh options and convert them to -D flags
-SHELL := /bin/bash
-CONFIG_DEFINES := $(shell grep -v "^\#" $(CONFIG) | grep -v "^$$" | grep -v "^!" | awk 'NF {print "-D" $$1}')
-DEFINES :=
+# ==========================================================
+# machine setup
+# ==========================================================
 
-# set systype: SYSTYPE=<name> on the command line, else the one line uncommented in Makefile.systype
-# KNOWN_SYSTYPES lists the names of the ifeq ($(SYSTYPE),...) blocks further down, for the errors
-KNOWN_SYSTYPES = $(shell sed -n 's/^ifeq (\$$(SYSTYPE),\([A-Za-z0-9_]*\)).*/\1/p' $(firstword $(MAKEFILE_LIST)))
 ifndef SYSTYPE
-        -include Makefile.systype
-endif
-ifeq ($(strip $(SYSTYPE)),)
-        $(error No system selected. Uncomment one line in Makefile.systype, or run make SYSTYPE=<name>. Known systems: $(KNOWN_SYSTYPES))
+-include Makefile.systype
 endif
 
-# exact-match test for a Config.sh flag
-flag = $(patsubst -D%,%,$(filter -D$(1),$(CONFIG_DEFINES)))
-
-# check CUDA / PROFILING / MPI
-CUDA_ENABLED := $(call flag,CUDA)
-PROFILING_ENABLED := $(call flag,ENABLE_PROFILING)
-MPI_ENABLED := $(call flag,USE_MPI)
-GPU_AWARE_MPI_ENABLED := $(call flag,GPU_AWARE_MPI)
-FAST_MATH_ENABLED := $(call flag,CUDA_FAST_MATH)
-
-# require minimum CUDA version 12.0
-ifeq ($(CUDA_ENABLED),CUDA)
-CUDA_VER_NUM := $(shell nvcc --version 2>/dev/null | grep -oE 'release [0-9]+\.[0-9]+' | head -1 | awk '{split($$2,v,"."); print v[1]*100+v[2]}')
-ifeq ($(CUDA_VER_NUM),)
-$(warning Could not determine the CUDA version from nvcc; skipping the minimum-version check.)
-else
-ifeq ($(shell test $(CUDA_VER_NUM) -lt 1200 && echo old),old)
-$(error CUDA $(shell nvcc --version | grep -oE 'release [0-9.]+' | head -1) is too old: Proteus requires 12.0 or newer)
-endif
-endif
-endif
-
-# CUDA_FAST_MATH only affects nvcc flags
-ifeq ($(FAST_MATH_ENABLED),CUDA_FAST_MATH)
-ifneq ($(CUDA_ENABLED),CUDA)
-$(error CUDA_FAST_MATH requires CUDA in Config.sh)
-endif
-endif
-
-# GPU_AWARE_MPI requires both CUDA and USE_MPI — fail fast at the head node, not at runtime.
-ifeq ($(GPU_AWARE_MPI_ENABLED),GPU_AWARE_MPI)
-ifneq ($(CUDA_ENABLED),CUDA)
-$(error GPU_AWARE_MPI requires CUDA in Config.sh)
-endif
-ifneq ($(MPI_ENABLED),USE_MPI)
-$(error GPU_AWARE_MPI requires USE_MPI in Config.sh)
-endif
-endif
-
-# ============================================================
-# CUDA mode: nvcc compiler flags
-# ============================================================
-ifeq ($(CUDA_ENABLED),CUDA)
-
-CXXFLAGS = --compiler-options -Wall,-Wextra,-Wno-unknown-pragmas -std=c++14
-CXXFLAGS += --expt-relaxed-constexpr
-# parallel_for passes an HD lambda to a kernel template; nvcc calls those extended lambdas
-CXXFLAGS += --extended-lambda
-CXXFLAGS += -dc -O3
-
-# Floating-point strictness. CUDA_FAST_MATH trades IEEE calculations for speed
-ifeq ($(FAST_MATH_ENABLED),CUDA_FAST_MATH)
-	CXXFLAGS += --prec-div=false --prec-sqrt=false --ftz=true --fmad=true
-else
-	CXXFLAGS += --prec-div=true --prec-sqrt=true --ftz=false --fmad=false
-endif
-
-LDFLAGS =
-BUILD_MODE_MESSAGE = CUDA RELEASE
-
-# the exact predicates need every product and sum rounded on its own
-NO_FP_CONTRACT = --compiler-options -ffp-contract=off
-
-# optionally enable openmp
-ifneq (,$(call flag,USE_OPENMP))
-	CXXFLAGS += --compiler-options -fopenmp
-	LDFLAGS += --compiler-options -fopenmp
-	OPENMP_MESSAGE = OpenMP enabled
-else
-	OPENMP_MESSAGE = OpenMP disabled
-endif
-
-CUDA_MESSAGE = CUDA enabled
-
-
-# ============================================================
-# CPU_DEBUG mode: host compiler flags (g++/clang++)
-# ============================================================
-else
-
-CXXFLAGS = -Wall -Wextra -std=c++14 -O3
-LDFLAGS =
-BUILD_MODE_MESSAGE = RELEASE
-
-# the exact predicates need every product and sum rounded on its own
-NO_FP_CONTRACT = -ffp-contract=off
-
-# g++ does not recognize .cu extension — treat as C++
-CXXFLAGS += -x c++
-
-# optionally enable openmp
-ifneq (,$(call flag,USE_OPENMP))
-	CXXFLAGS += -fopenmp
-	LDFLAGS += -fopenmp
-	OPENMP_MESSAGE = OpenMP enabled
-else
-	OPENMP_MESSAGE = OpenMP disabled
-endif
-
-CUDA_MESSAGE = CUDA disabled (CPU_DEBUG)
-
-endif # CUDA_ENABLED
-
-
-# Opt-in -Werror (WERROR=1), used by tests/build_matrix.sh
-ifeq ($(WERROR),1)
-ifeq ($(CUDA_ENABLED),CUDA)
-	CXXFLAGS += --compiler-options -Werror -Werror all-warnings
-else
-	CXXFLAGS += -Werror
-endif
-endif
-
-CXXFLAGS += -MMD -MP
-INCLUDES = -Isrc -Isrc/global
-
-# ============================================================
-# Directories and object files
-# ============================================================
-SRC_DIR = src
-GLOBAL_DIR = $(SRC_DIR)/global
-IO_DIR = $(SRC_DIR)/io
-KNN_DIR = $(SRC_DIR)/knn
-BEGRUN_DIR = $(SRC_DIR)/begrun
-VORONOI_DIR = $(SRC_DIR)/voronoi
-HYDRO_DIR = $(SRC_DIR)/hydro
-GRADIENTS_DIR = $(SRC_DIR)/gradients
-PROFILER_DIR = $(SRC_DIR)/profiler
-MPI_DIR = $(SRC_DIR)/mpi
-ASTRO_DIR = $(SRC_DIR)/astro
-
-MAIN_OBJ = $(BUILD_DIR)/main.o
-GLOBAL_OBJ = $(BUILD_DIR)/globals.o $(BUILD_DIR)/log.o
-IO_OBJ = $(BUILD_DIR)/input.o $(BUILD_DIR)/output.o
-KNN_OBJ = $(BUILD_DIR)/knn.o
-BEGRUN_OBJ = $(BUILD_DIR)/begrun.o
-VORONOI_OBJ = $(BUILD_DIR)/voronoi.o $(BUILD_DIR)/moving.o $(BUILD_DIR)/predicates.o
-HYDRO_OBJ = $(BUILD_DIR)/finite_volume_solver.o
-GRADIENTS_OBJ = $(BUILD_DIR)/gradients.o
-PROFILER_OBJ = $(BUILD_DIR)/profiler.o
-MPI_OBJ = $(BUILD_DIR)/mpi_compat.o $(BUILD_DIR)/decomp.o $(BUILD_DIR)/exchange.o $(BUILD_DIR)/halo.o $(BUILD_DIR)/migrate.o
-ASTRO_OBJ = $(BUILD_DIR)/sources.o $(BUILD_DIR)/gravity.o $(BUILD_DIR)/cooling.o $(BUILD_DIR)/stars.o $(BUILD_DIR)/agn.o $(BUILD_DIR)/limiters.o
-OBJECTS = $(MAIN_OBJ) $(GLOBAL_OBJ) $(IO_OBJ) $(KNN_OBJ) $(BEGRUN_OBJ) $(VORONOI_OBJ) $(HYDRO_OBJ) $(GRADIENTS_OBJ) $(PROFILER_OBJ) $(MPI_OBJ) $(ASTRO_OBJ)
-
-# name of executable
-TARGET = $(EXEC)
-
-# ============================================================
-# Systypes
-# ============================================================
+# Ubuntu Machine
 ifeq ($(SYSTYPE),Ubuntu)
-# requires hdf5 installed. USE_MPI builds need parallel HDF5 — see notes below.
-	CXX_RELEASE = g++
-ifeq ($(MPI_ENABLED),USE_MPI)
-# parallel HDF5 from apt: sudo apt install libhdf5-openmpi-dev
-	HDF5_CFLAGS ?= -I/usr/include/hdf5/openmpi
-	HDF5_LIBS ?= -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi -lhdf5
-else
-	HDF5_CFLAGS ?= -I/usr/include/hdf5/serial
-	HDF5_LIBS ?= -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5
-endif
-	CUDA_ARCH ?= sm_89
+    HOST_CXX              := g++
+    MPI_CXX               := mpicxx
+    GPU_ARCH              := sm_89
+    HDF5_SERIAL_INCLUDE   := -I/usr/include/hdf5/serial
+    HDF5_SERIAL_LIBRARY   := -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5
+    HDF5_PARALLEL_INCLUDE := -I/usr/include/hdf5/openmpi
+    HDF5_PARALLEL_LIBRARY := -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi -lhdf5
 endif
 
+# Jupiter BOOSTER (JSC): 4xGH200 chips per node (sm_90)
+#       module load GCC ParaStationMPI CUDA HDF5 (has GPU aware MPI + parallel HDF5)
+ifeq ($(SYSTYPE),JUPITER)
+    HOST_CXX              := g++
+    MPI_CXX               := mpicxx
+    GPU_ARCH              := sm_90
+    HDF5_SERIAL_INCLUDE   := -I$(EBROOTHDF5)/include
+    HDF5_SERIAL_LIBRARY   := -L$(EBROOTHDF5)/lib -lhdf5
+    HDF5_PARALLEL_INCLUDE := -I$(EBROOTHDF5)/include
+    HDF5_PARALLEL_LIBRARY := -L$(EBROOTHDF5)/lib -lhdf5
+endif
+
+# macOS: CPU only, with g++-15 as apple clang has no OpenMP
+#       brew install hdf5 (and hdf5-mpi for USE_MPI, its serial keg stays in the Cellar when unlinked)
 ifeq ($(SYSTYPE),macOS)
-# requires hdf5 installed via homebrew and g++-15 as compiler (apple clang does not support openmp...)
-# also only CPU_DEBUG works here of course.
-# Parallel-HDF5 (brew install hdf5-mpi) is required for USE_MPI builds — it provides
-# the MPI-IO file driver used by the parallel IC read. Non-MPI builds use the serial hdf5
-# keg (still kept by Homebrew under /opt/homebrew/Cellar/hdf5 even when unlinked in
-# favour of hdf5-mpi).
-	CXX_RELEASE = g++-15
-ifeq ($(MPI_ENABLED),USE_MPI)
-	HDF5_PREFIX := /opt/homebrew/opt/hdf5-mpi
-else
-	HDF5_PREFIX := $(shell test -d /opt/homebrew/opt/hdf5 && echo /opt/homebrew/opt/hdf5 || ls -d /opt/homebrew/Cellar/hdf5/*/ 2>/dev/null | head -n1)
-endif
-	HDF5_CFLAGS ?= -I$(HDF5_PREFIX)/include
-	HDF5_LIBS ?= -L$(HDF5_PREFIX)/lib -lhdf5
+    HOST_CXX              := g++-15
+    MPI_CXX               := mpicxx
+    GPU_ARCH              :=
+    HDF5_SERIAL_PREFIX    := $(shell test -d /opt/homebrew/opt/hdf5 && echo /opt/homebrew/opt/hdf5 || ls -d /opt/homebrew/Cellar/hdf5/*/ 2>/dev/null | head -n1)
+    HDF5_SERIAL_INCLUDE   := -I$(HDF5_SERIAL_PREFIX)/include
+    HDF5_SERIAL_LIBRARY   := -L$(HDF5_SERIAL_PREFIX)/lib -lhdf5
+    HDF5_PARALLEL_INCLUDE := -I/opt/homebrew/opt/hdf5-mpi/include
+    HDF5_PARALLEL_LIBRARY := -L/opt/homebrew/opt/hdf5-mpi/lib -lhdf5
 endif
 
+# MPCDF and BinAC2 (A100); USE_MPI needs a parallel HDF5 module, e.g. VERA: hdf5-mpi/1.12.2
+#       VERA: module load gcc/15 hdf5-serial/1.12.2 cuda/13.0
+#       BinAC2: module load compiler/gnu/14.2 lib/hdf5/1.12-gnu-14.2 devel/cuda/13.0
 ifeq ($(SYSTYPE),MPCDF)
-# USE_MPI builds need a parallel HDF5 module (the IC read uses MPI-IO). The -serial
-# modules below only work for non-MPI builds; for multi-rank runs swap to the matching
-# MPI-built HDF5 (e.g. VERA: hdf5-mpi/1.12.2 instead of hdf5-serial/1.12.2).
-# VERA (A100): module load gcc/15 hdf5-serial/1.12.2 cuda/13.0
-# BinAC2 (A100): module load compiler/gnu/14.2 lib/hdf5/1.12-gnu-14.2 devel/cuda/13.0
-	CXX_RELEASE = g++
-    HDF5_CFLAGS ?= -I${HDF5_HOME}/include
-    HDF5_LIBS ?= -L${HDF5_HOME}/lib -lhdf5
-	CUDA_ARCH ?= sm_80
+    HOST_CXX              := g++
+    MPI_CXX               := mpicxx
+    GPU_ARCH              := sm_80
+    HDF5_SERIAL_INCLUDE   := -I$(HDF5_HOME)/include
+    HDF5_SERIAL_LIBRARY   := -L$(HDF5_HOME)/lib -lhdf5
+    HDF5_PARALLEL_INCLUDE := -I$(HDF5_HOME)/include
+    HDF5_PARALLEL_LIBRARY := -L$(HDF5_HOME)/lib -lhdf5
 endif
 
+# JUWELS Booster (A100)
+#       module load GCC/14.3.0 ParaStationMPI/5.13.0-1 CUDA/13 HDF5/1.14.6 (has GPU aware MPI)
+#       without GPU aware MPI: module swap MPI-settings/CUDA MPI-settings/UCX
 ifeq ($(SYSTYPE),JUWELS)
-# JUWELS Booster (A100):
-# to run the GPU-aware MPI version load (auto loads PSP_CUDA=1)
-# 	module load GCC/14.3.0
-#	module load ParaStationMPI/5.13.0-1
-# 	module load CUDA/13
-# 	module load HDF5/1.14.6
-# to turn off GPU-aware MPI do (unsets PSP_CUDA)
-# 	module swap MPI-settings/CUDA MPI-settings/UCX
-
-	CXX_RELEASE = g++
-    HDF5_CFLAGS ?= -I${EBROOTHDF5}/include
-    HDF5_LIBS ?= -L${EBROOTHDF5}/lib -lhdf5
-    CUDA_ARCH ?= sm_80
-
+    HOST_CXX              := g++
+    MPI_CXX               := mpicxx
+    GPU_ARCH              := sm_80
+    HDF5_SERIAL_INCLUDE   := -I$(EBROOTHDF5)/include
+    HDF5_SERIAL_LIBRARY   := -L$(EBROOTHDF5)/lib -lhdf5
+    HDF5_PARALLEL_INCLUDE := -I$(EBROOTHDF5)/include
+    HDF5_PARALLEL_LIBRARY := -L$(EBROOTHDF5)/lib -lhdf5
 endif
 
+# HoreKa FTP (GH200)
+#       module load HDF5/1.14.5-gompi-2024a OpenMPI/5.0.3-NVHPC-24.9-CUDA-12.6.0 (has GPU aware MPI)
 ifeq ($(SYSTYPE),HorekaGH200)
-# HoreKa FTP (GH200):
-# to run GPU-aware MPI version load
-# 	module load HDF5/1.14.5-gompi-2024a
-# 	module load OpenMPI/5.0.3-NVHPC-24.9-CUDA-12.6.0
-
-	CXX_RELEASE = g++
-	HDF5_CFLAGS ?= -I${EBROOTHDF5}/include
-	HDF5_LIBS ?= -L${EBROOTHDF5}/lib -lhdf5
-	CUDA_ARCH ?= sm_90
-
+    HOST_CXX              := g++
+    MPI_CXX               := mpicxx
+    GPU_ARCH              := sm_90
+    HDF5_SERIAL_INCLUDE   := -I$(EBROOTHDF5)/include
+    HDF5_SERIAL_LIBRARY   := -L$(EBROOTHDF5)/lib -lhdf5
+    HDF5_PARALLEL_INCLUDE := -I$(EBROOTHDF5)/include
+    HDF5_PARALLEL_LIBRARY := -L$(EBROOTHDF5)/lib -lhdf5
 endif
 
-####################################################################################
-# ADD YOUR SYSTEM TYPE, COMPILER AND HDF5 PATHS HERE IF NOT SUPPORTED
-# ifeq ($(SYSTYPE),YourSystype)
-# ...
-# endif
-####################################################################################
+#########################################
+# INCLUDE YOUR SYSTYPE HERE
+#
+#   ifeq ($(SYSTYPE),YourSystype)
+#       HOST_CXX              :=
+#       MPI_CXX               :=
+#       GPU_ARCH              :=
+#       HDF5_SERIAL_INCLUDE   :=
+#       HDF5_SERIAL_LIBRARY   :=
+#       HDF5_PARALLEL_INCLUDE :=
+#       HDF5_PARALLEL_LIBRARY :=
+#   endif
+#
+#########################################
 
-# every block above sets CXX_RELEASE, so an empty one means SYSTYPE matched none of them
-ifeq ($(strip $(CXX_RELEASE)),)
-        $(error Unknown SYSTYPE "$(SYSTYPE)". Known systems: $(KNOWN_SYSTYPES). A new system needs its own block in the Makefile, next to the others)
+ifeq ($(HOST_CXX),)
+    $(error Unknown SYSTYPE "$(SYSTYPE)". Add a block for it to the Makefile)
 endif
 
-# HDF5
-CXXFLAGS += $(HDF5_CFLAGS)
-LDFLAGS += $(HDF5_LIBS)
 
-# ============================================================
-# capture git commit for banner (only Makefile + src/ count as dirty)
-# ============================================================
-GIT_DIRTY_PATHS := Makefile src
+# ==========================================================
+# compiler and flags
+# ==========================================================
 
-# short commit hash
-GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null)
-
-# -dirty if tracked changes in Makefile/src or untracked files in src/
-GIT_DIRTY := $(shell { ! git diff-index --quiet HEAD -- $(GIT_DIRTY_PATHS) 2>/dev/null || [ -n "$$(git ls-files --others --exclude-standard -- src 2>/dev/null)" ]; } && echo -dirty)
-
-GIT_COMMIT := $(GIT_HASH)$(GIT_DIRTY)
-ifeq ($(GIT_COMMIT),)
-	GIT_COMMIT := unknown
-endif
-override DEFINES += '-DGIT_COMMIT="$(GIT_COMMIT)"'
-
-# +adds/-dels diffstat over the same paths (untracked src/ files counted as adds)
-ifeq ($(GIT_DIRTY),-dirty)
-	GIT_DIFFSTAT := $(shell { git diff HEAD --numstat -- $(GIT_DIRTY_PATHS) 2>/dev/null; git ls-files --others --exclude-standard -- src 2>/dev/null | while IFS= read -r f; do printf "%d\t0\n" "$$(wc -l < "$$f")"; done; } | awk '{a+=$$1; d+=$$2} END {printf "+%d -%d", a+0, d+0}')
-	override DEFINES += '-DGIT_DIFFSTAT="$(GIT_DIFFSTAT)"'
-endif
-
-# add config defines to compilation flags
-CXXFLAGS += $(CONFIG_DEFINES) $(DEFINES)
-
-# ============================================================
-#  set up CUDA/MPI compilers
-# ============================================================
-ifeq ($(CUDA_ENABLED),CUDA)
-        CXX = nvcc
-        CXXFLAGS += -arch=$(CUDA_ARCH)
+# with MPI the host compiler is called through the MPI wrapper, and HDF5 is the parallel one
+ifneq ($(call is_on,USE_MPI),)
+    HOST := $(MPI_CXX)
+    export OMPI_CXX  := $(HOST_CXX)
+    export MPICH_CXX := $(HOST_CXX)
+    HDF5_INCLUDE := $(HDF5_PARALLEL_INCLUDE)
+    HDF5_LIBRARY := $(HDF5_PARALLEL_LIBRARY)
 else
-        CXX = ${CXX_RELEASE}
+    HOST := $(HOST_CXX)
+    HDF5_INCLUDE := $(HDF5_SERIAL_INCLUDE)
+    HDF5_LIBRARY := $(HDF5_SERIAL_LIBRARY)
 endif
 
-# optional: use MPI; route host compiler thorugh mpicxx
-ifeq ($(MPI_ENABLED),USE_MPI)
-        MPICXX ?= mpicxx
-        export OMPI_CXX := $(CXX_RELEASE)
-        export MPICH_CXX := $(CXX_RELEASE)
+# the same arithmetic on CPU and GPU; on the host: no contraction into fused multiply-add
+HOST_FLAGS := -O3 -Wall -Wextra -Werror -ffp-contract=off
+ifneq ($(call is_on,USE_OPENMP),)
+    HOST_FLAGS += -fopenmp
+endif
 
-        # the MPI C++ bindings were deprecated in MPI-2.2 and removed in MPI-3, and
-        # OpenMPI 4's copy does not survive -Wcast-function-type. We use the C API only.
-        CXXFLAGS += -DOMPI_SKIP_MPICXX -DMPICH_SKIP_MPICXX
-
-        ifeq ($(CUDA_ENABLED),CUDA)
-                CXXFLAGS += -ccbin $(MPICXX)
-                LDFLAGS  += -ccbin $(MPICXX)
-        else
-                CXX = $(MPICXX)
-        endif
-        ifeq ($(GPU_AWARE_MPI_ENABLED),GPU_AWARE_MPI)
-                MPI_MESSAGE = MPI enabled (GPU-aware path)
-        else
-                MPI_MESSAGE = MPI enabled (host-staged path)
-        endif
+# on the GPU: no fused multiply-add, exact division and square root, no flushing of tiny numbers to zero; with
+# CUDA_FAST_MATH all of these for speed. The host compiler reads .cu files as C++ only when told so with -x c++.
+ifneq ($(call is_on,CUDA_FAST_MATH),)
+    ifeq ($(call is_on,CUDA),)
+        $(error Config.sh: CUDA_FAST_MATH needs CUDA)
+    endif
+    GPU_MATH := --fmad=true --prec-div=false --prec-sqrt=false --ftz=true
 else
-        MPI_MESSAGE = MPI disabled
+    GPU_MATH := --fmad=false --prec-div=true --prec-sqrt=true --ftz=false
 endif
-
-ifeq ($(PROFILING_ENABLED),ENABLE_PROFILING)
-        PROFILING_MESSAGE = timers enabled (writes profile.hdf5)
+ifneq ($(call is_on,CUDA),)
+    CXX         := nvcc
+    GPU_FLAGS   := -arch=$(GPU_ARCH) -ccbin $(HOST) $(GPU_MATH)
+    CXXFLAGS    := -std=c++17 $(GPU_FLAGS) --extended-lambda -Werror all-warnings $(addprefix -Xcompiler ,$(HOST_FLAGS))
+    LDFLAGS     := $(GPU_FLAGS) $(addprefix -Xcompiler ,$(HOST_FLAGS))
+    SOURCE_LANG :=
 else
-        PROFILING_MESSAGE = timers compiled out
+    CXX         := $(HOST)
+    CXXFLAGS    := -std=c++17 $(HOST_FLAGS)
+    LDFLAGS     := $(HOST_FLAGS)
+    SOURCE_LANG := -x c++
 endif
 
+DEFINES := $(addprefix -D,$(SWITCHES))
 
-# ============================================================
-# Default target: build executable and print build summary
-# ============================================================
-all: $(TARGET)
-	@echo "=========================================="
-	@echo "Build complete! Executable: $(TARGET)"
-	@echo "SYSTYPE: $(SYSTYPE)"
-	@echo "Compiler: $(CXX)"
-	@echo "Mode: $(BUILD_MODE_MESSAGE)"
-	@echo "GPU: $(CUDA_MESSAGE)"
-	@echo "OpenMP: $(OPENMP_MESSAGE)"
-	@echo "MPI: $(MPI_MESSAGE)"
-	@echo "Profiling: $(PROFILING_MESSAGE)"
-	@echo "=========================================="
-ifeq ($(MPI_ENABLED),USE_MPI)
-	@echo "Run with: mpirun -np [nranks] ./$(TARGET) [param.txt] [restart flag]"
-else
-	@echo "Run with: ./$(TARGET) [param.txt] [restart flag]"
+# compiles one .cu file into an object, and lists the headers it includes in a .d file next to it
+COMPILE = $(CXX) $(CXXFLAGS) $(DEFINES) -Isrc $(HDF5_INCLUDE) -MMD -MP -MF $(@:.o=.d)
+
+# sources: every .cu file in src/, one object each
+SOURCES := $(shell find src -name '*.cu')
+OBJECTS := $(patsubst src/%.cu,$(BUILD_DIR)/%.o,$(SOURCES))
+
+# tests: one program test_<module> per folder tests/<module>/
+TEST_MODULES  := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard tests/*/*.cu)))))
+TEST_PROGRAMS := $(addprefix $(BUILD_DIR)/tests/test_,$(TEST_MODULES))
+TEST_OBJECTS  := $(patsubst tests/%.cu,$(BUILD_DIR)/tests/%.o,$(wildcard tests/*.cu tests/*/*.cu))
+TEST_SHARED   := $(BUILD_DIR)/tests/main.o $(filter-out $(BUILD_DIR)/main.o,$(OBJECTS))
+
+# to check includes against module table, and clang-format
+CLANG_FORMAT ?= clang-format
+FORMATTED    := $(filter-out tests/doctest.h,$(shell find src tests -name '*.cu' -o -name '*.h'))
+
+# ==========================================================
+# targets
+# ==========================================================
+
+.PHONY: all test check clean FORCE
+
+all: $(EXEC)
+
+$(EXEC): $(OBJECTS)
+	$(CXX) $(LDFLAGS) $^ $(HDF5_LIBRARY) -o $@
+	@echo "Built $(EXEC) on $(SYSTYPE) with: $(SWITCHES)"
+
+test: $(TEST_PROGRAMS)
+	@for program in $^; do echo "== $$program"; $$program || exit 1; done
+
+# the link rule of one test program; written out below for every module
+define test_program
+$(BUILD_DIR)/tests/test_$(1): $(patsubst tests/%.cu,$(BUILD_DIR)/tests/%.o,$(wildcard tests/$(1)/*.cu)) $(TEST_SHARED)
+	$$(CXX) $$(LDFLAGS) $$^ $$(HDF5_LIBRARY) -o $$@
+endef
+$(foreach module,$(TEST_MODULES),$(eval $(call test_program,$(module))))
+
+# the check of src/ must pass
+check:
+	python3 tests/check_dependencies.py src
+	python3 tests/check_dependencies.py --self-test tests/dependencies_bad/src
+	$(CLANG_FORMAT) --dry-run --Werror $(FORMATTED)
+	@echo "format check: every file is formatted"
+
+# the commit in the hello message; only Makefile and src count as changes. begrun.o is built again when it changes
+GIT_PATHS  := Makefile src
+GIT_HASH   := $(shell git rev-parse --short HEAD 2>/dev/null)
+GIT_DIRTY  := $(shell { ! git diff-index --quiet HEAD -- $(GIT_PATHS) 2>/dev/null || [ -n "$$(git ls-files --others --exclude-standard -- src 2>/dev/null)" ]; } && echo -dirty)
+GIT_COMMIT := $(if $(GIT_HASH),$(GIT_HASH)$(GIT_DIRTY),unknown)
+$(BUILD_DIR)/begrun/begrun.o: DEFINES += '-DGIT_COMMIT="$(GIT_COMMIT)"'
+ifneq ($(GIT_DIRTY),)
+    GIT_DIFFSTAT := $(shell { git diff HEAD --numstat -- $(GIT_PATHS) 2>/dev/null; git ls-files --others --exclude-standard -- src 2>/dev/null | while IFS= read -r f; do printf "%d\t0\n" "$$(wc -l < "$$f")"; done; } | awk '{a+=$$1; d+=$$2} END {printf "+%d -%d", a+0, d+0}')
+    $(BUILD_DIR)/begrun/begrun.o: DEFINES += '-DGIT_DIFFSTAT="$(GIT_DIFFSTAT)"'
 endif
 
-# ============================================================
-# Linking
-# ============================================================
-ifeq ($(CUDA_ENABLED),CUDA)
-# CUDA: two-step link (device link + host link)
-$(TARGET): $(OBJECTS) | $(BUILD_DIR)
-	$(CXX) -arch=$(CUDA_ARCH) -dlink $(OBJECTS) -o $(BUILD_DIR)/dlink.o $(LDFLAGS)
-	$(CXX) -arch=$(CUDA_ARCH) $(OBJECTS) $(BUILD_DIR)/dlink.o -o $@ $(LDFLAGS) -lcudart
-else
-# CPU_DEBUG: single-step link with host compiler
-$(TARGET): $(OBJECTS) | $(BUILD_DIR)
-	$(CXX) $(OBJECTS) -o $@ $(LDFLAGS)
-endif
+$(BUILD_DIR)/begrun/begrun.o: $(BUILD_DIR)/commit_of_build
+$(BUILD_DIR)/commit_of_build: FORCE
+	@mkdir -p $(dir $@)
+	@echo '$(GIT_COMMIT) $(GIT_DIFFSTAT)' | cmp -s - $@ || echo '$(GIT_COMMIT) $(GIT_DIFFSTAT)' > $@
 
-# ============================================================
-# Compile sources
-# ============================================================
+FORCE:
 
-# main entry point
-$(BUILD_DIR)/main.o: $(SRC_DIR)/main.cu | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD_DIR)/%.o: src/%.cu $(CONFIG) Makefile
+	@mkdir -p $(dir $@)
+	$(COMPILE) $(SOURCE_LANG) -c $< -o $@
 
-# global state and logging
-$(BUILD_DIR)/globals.o: $(GLOBAL_DIR)/globals.cu $(GLOBAL_DIR)/globals.h $(GLOBAL_DIR)/units.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD_DIR)/tests/%.o: tests/%.cu $(CONFIG) Makefile
+	@mkdir -p $(dir $@)
+	$(COMPILE) -Itests $(SOURCE_LANG) -c $< -o $@
 
-$(BUILD_DIR)/log.o: $(GLOBAL_DIR)/log.cu $(GLOBAL_DIR)/log.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+-include $(OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d)
 
-# I/O (HDF5 read/write)
-$(BUILD_DIR)/input.o: $(IO_DIR)/input.cu $(IO_DIR)/input.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/output.o: $(IO_DIR)/output.cu $(IO_DIR)/output.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-# k-nearest-neighbour search
-$(BUILD_DIR)/knn.o: $(KNN_DIR)/knn.cu $(KNN_DIR)/knn.h $(KNN_DIR)/keys.h $(KNN_DIR)/tree.cu | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-# simulation initialization
-$(BUILD_DIR)/begrun.o: $(BEGRUN_DIR)/begrun.cu $(BEGRUN_DIR)/begrun.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-# voronoi mesh construction
-$(BUILD_DIR)/voronoi.o: $(VORONOI_DIR)/voronoi.cu $(VORONOI_DIR)/voronoi.h $(VORONOI_DIR)/internal.h $(VORONOI_DIR)/alloc.cu $(VORONOI_DIR)/build.cu $(VORONOI_DIR)/cell.cu $(VORONOI_DIR)/cell.h $(VORONOI_DIR)/fallback.cu $(VORONOI_DIR)/geometry.cu $(VORONOI_DIR)/geometry.h $(VORONOI_DIR)/reach.cu $(VORONOI_DIR)/predicates.h $(MPI_DIR)/halo.h $(MPI_DIR)/decomp.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/predicates.o: $(VORONOI_DIR)/predicates.cu $(VORONOI_DIR)/predicates.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(NO_FP_CONTRACT) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/moving.o: $(VORONOI_DIR)/moving.cu $(VORONOI_DIR)/voronoi.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-# finite-volume hydro solver (incl. Riemann solver)
-$(BUILD_DIR)/finite_volume_solver.o: $(HYDRO_DIR)/finite_volume_solver.cu $(HYDRO_DIR)/finite_volume_solver.h $(HYDRO_DIR)/riemann.cu $(HYDRO_DIR)/riemann.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-# gradient estimation
-$(BUILD_DIR)/gradients.o: $(GRADIENTS_DIR)/gradients.cu $(GRADIENTS_DIR)/gradients.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-# profiler
-$(BUILD_DIR)/profiler.o: $(PROFILER_DIR)/profiler.cu $(PROFILER_DIR)/profiler.h \
-    $(PROFILER_DIR)/timers.cu $(PROFILER_DIR)/report.cu $(PROFILER_DIR)/profile_log.cu | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-# MPI: init, domain decomposition, halo exchange, particle migration
-$(BUILD_DIR)/mpi_compat.o: $(MPI_DIR)/mpi_compat.cu $(MPI_DIR)/mpi_compat.h $(MPI_DIR)/decomp.h $(PROFILER_DIR)/profiler.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/sources.o: $(ASTRO_DIR)/sources.cu $(ASTRO_DIR)/sources.h $(ASTRO_DIR)/gravity.h $(ASTRO_DIR)/cooling.h $(ASTRO_DIR)/stars.h $(ASTRO_DIR)/agn.h $(ASTRO_DIR)/limiters.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/stars.o: $(ASTRO_DIR)/stars.cu $(ASTRO_DIR)/stars.h $(ASTRO_DIR)/astro_constants.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/agn.o: $(ASTRO_DIR)/agn.cu $(ASTRO_DIR)/agn.h $(ASTRO_DIR)/astro_constants.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/gravity.o: $(ASTRO_DIR)/gravity.cu $(ASTRO_DIR)/gravity.h $(ASTRO_DIR)/astro_constants.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/cooling.o: $(ASTRO_DIR)/cooling.cu $(ASTRO_DIR)/cooling.h $(ASTRO_DIR)/astro_constants.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/limiters.o: $(ASTRO_DIR)/limiters.cu $(ASTRO_DIR)/limiters.h $(ASTRO_DIR)/astro_constants.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/decomp.o: $(MPI_DIR)/decomp.cu $(MPI_DIR)/decomp.h $(MPI_DIR)/exchange.h $(KNN_DIR)/keys.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/exchange.o: $(MPI_DIR)/exchange.cu $(MPI_DIR)/exchange.h $(MPI_DIR)/decomp.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/halo.o: $(MPI_DIR)/halo.cu $(MPI_DIR)/halo.h $(MPI_DIR)/halo_requests.cu $(MPI_DIR)/halo_exchange.cu \
-    $(MPI_DIR)/exchange.h $(MPI_DIR)/decomp.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-$(BUILD_DIR)/migrate.o: $(MPI_DIR)/migrate.cu $(MPI_DIR)/migrate.h $(MPI_DIR)/decomp.h $(MPI_DIR)/exchange.h $(MPI_DIR)/mpi_compat.h | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
-
-# ============================================================
-# Utility targets
-# ============================================================
-
-# rebuild everything when the compile configuration changes
-CONFIG_STAMP = $(BUILD_DIR)/config.stamp
-
-$(CONFIG_STAMP): $(CONFIG) | $(BUILD_DIR)
-	@printf '%s\n%s\n%s\n' '$(CONFIG_DEFINES)' '$(CXX)' '$(CUDA_ARCH)' > $@.tmp
-	@if [ -f $@ ] && cmp -s $@.tmp $@; then \
-	    rm -f $@.tmp; \
-	else \
-	    if [ -f $@ ]; then echo "Build configuration changed -> full rebuild"; fi; \
-	    mv -f $@.tmp $@; \
-	fi
-
-$(OBJECTS): $(CONFIG_STAMP)
-
-# create build directory if missing
-$(BUILD_DIR):
-	@mkdir -p $(BUILD_DIR)
-
-# optional: also run the programm
-run: $(TARGET)
-	@echo "Running application..."
-	@./$(TARGET)
-
-# pull in auto-generated header dependencies (.d files from -MMD -MP)
--include $(OBJECTS:.o=.d)
-
-# clean build artifacts
 clean:
-	@echo "Cleaning build files..."
-	@rm -f $(OBJECTS) $(BUILD_DIR)/dlink.o $(TARGET)
-	@rm -rf $(BUILD_DIR)/*.o $(BUILD_DIR)/*.d
-	@rm -f $(CONFIG_STAMP)
+	rm -rf $(BUILD_DIR) $(EXEC)

@@ -1,129 +1,45 @@
-#ifndef HYDRO_GRADIENTS_H
-#define HYDRO_GRADIENTS_H
+#pragma once
 
-// Gradients of the primitive variables, one set per cell.
+// Limited gradients of the primitive variables, and the state of a cell predicted to a point and a time.
 
-#include "../global/allvars.h"
-#include "../voronoi/voronoi.h"
-#include <cmath>
-#include <cstdlib>
+#include "gas/gas.h"
+#include "mesh/mesh.h"
+#include "timesteps/timesteps.h"
 
 namespace gradients {
 
-    // cells with growth headroom, plus one entry per MPI ghost
-    inline void allocate_grad(size_t n, PrimGradients* g) {
-        const size_t ext = (size_t)mpi::max_n_local((int)n);
-        g->rho           = gpu_alloc<POINT_TYPE>(ext);
-        g->vx            = gpu_alloc<POINT_TYPE>(ext);
-        g->vy            = gpu_alloc<POINT_TYPE>(ext);
-#ifdef dim_3D
-        g->vz = gpu_alloc<POINT_TYPE>(ext);
-#endif
-        g->P      = gpu_alloc<POINT_TYPE>(ext);
-        g->anchor = gpu_alloc<POINT_TYPE>(ext);
-        g->n      = n;
+    // the gradients of one cell; anchor, the centroid relative to the seed, is where they were taken
+    struct Gradient {
+        Vec density;
+        Vec velocity[config::dim]; // velocity[d]: gradient of component d
+        Vec pressure;
+        Vec anchor;
+    };
 
-        gpu_advise_gpu_preferred(g->rho, ext * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(g->vx, ext * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(g->vy, ext * sizeof(POINT_TYPE));
-#ifdef dim_3D
-        gpu_advise_gpu_preferred(g->vz, ext * sizeof(POINT_TYPE));
-#endif
-        gpu_advise_gpu_preferred(g->P, ext * sizeof(POINT_TYPE));
-        gpu_advise_gpu_preferred(g->anchor, ext * sizeof(POINT_TYPE));
+    // one array per variable, for kernels
+    struct GradientPointers {
+        Vec* density;
+        Vec* velocity[config::dim];
+        Vec* pressure;
+        Vec* anchor;
+    };
 
-        const int gc = mpi::n_mpi_capacity;
-        if (gc > 0) {
-            g->rho_g = gpu_alloc<POINT_TYPE>(gc);
-            g->vx_g  = gpu_alloc<POINT_TYPE>(gc);
-            g->vy_g  = gpu_alloc<POINT_TYPE>(gc);
-#ifdef dim_3D
-            g->vz_g = gpu_alloc<POINT_TYPE>(gc);
-#endif
-            g->P_g      = gpu_alloc<POINT_TYPE>(gc);
-            g->anchor_g = gpu_alloc<POINT_TYPE>(gc);
-            gpu_advise_gpu_preferred(g->rho_g, gc * sizeof(POINT_TYPE));
-            gpu_advise_gpu_preferred(g->vx_g, gc * sizeof(POINT_TYPE));
-            gpu_advise_gpu_preferred(g->vy_g, gc * sizeof(POINT_TYPE));
-#ifdef dim_3D
-            gpu_advise_gpu_preferred(g->vz_g, gc * sizeof(POINT_TYPE));
-#endif
-            gpu_advise_gpu_preferred(g->P_g, gc * sizeof(POINT_TYPE));
-            gpu_advise_gpu_preferred(g->anchor_g, gc * sizeof(POINT_TYPE));
-        } else {
-            g->rho_g = nullptr;
-            g->vx_g  = nullptr;
-            g->vy_g  = nullptr;
-#ifdef dim_3D
-            g->vz_g = nullptr;
-#endif
-            g->P_g      = nullptr;
-            g->anchor_g = nullptr;
-        }
-    }
+    HD inline Gradient load(const GradientPointers& gradients, int cell);
+    HD inline void store(const GradientPointers& gradients, int cell, const Gradient& value);
 
-    inline void free_grad(PrimGradients* g) {
-        gpu_free(g->rho);
-        gpu_free(g->vx);
-        gpu_free(g->vy);
-#ifdef dim_3D
-        gpu_free(g->vz);
-#endif
-        gpu_free(g->P);
-        gpu_free(g->anchor);
-        g->rho = nullptr;
-        g->vx  = nullptr;
-        g->vy  = nullptr;
-#ifdef dim_3D
-        g->vz = nullptr;
-#endif
-        g->P      = nullptr;
-        g->anchor = nullptr;
-        g->n      = 0;
+    // limited least-squares gradient of every cell of the list; state holds the cells first, then the ghost cells
+    void compute_gradients(const mesh::MeshPointers&      mesh,
+                           const gas::PrimitivePointers&  state,
+                           const Vec*                     mesh_velocity,
+                           const timesteps::StepPointers& steps,
+                           const mesh::CellList&          cells,
+                           const GradientPointers&        gradients);
 
-        if (g->rho_g) gpu_free(g->rho_g);
-        if (g->vx_g) gpu_free(g->vx_g);
-        if (g->vy_g) gpu_free(g->vy_g);
-#ifdef dim_3D
-        if (g->vz_g) gpu_free(g->vz_g);
-#endif
-        if (g->P_g) gpu_free(g->P_g);
-        if (g->anchor_g) gpu_free(g->anchor_g);
-        g->rho_g = nullptr;
-        g->vx_g  = nullptr;
-        g->vy_g  = nullptr;
-#ifdef dim_3D
-        g->vz_g = nullptr;
-#endif
-        g->P_g      = nullptr;
-        g->anchor_g = nullptr;
-    }
-
-    inline void grad_grow_ghosts(PrimGradients* g, int new_cap) {
-        if (g->rho_g) gpu_free(g->rho_g);
-        if (g->vx_g) gpu_free(g->vx_g);
-        if (g->vy_g) gpu_free(g->vy_g);
-#ifdef dim_3D
-        if (g->vz_g) gpu_free(g->vz_g);
-#endif
-        if (g->P_g) gpu_free(g->P_g);
-        if (g->anchor_g) gpu_free(g->anchor_g);
-        g->rho_g = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
-        g->vx_g  = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
-        g->vy_g  = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
-#ifdef dim_3D
-        g->vz_g = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
-#endif
-        g->P_g      = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
-        g->anchor_g = (new_cap > 0) ? gpu_alloc<POINT_TYPE>(new_cap) : nullptr;
-    }
-
-    // gradient of every cell, limited so the reconstruction stays in range
-    void compute_prim_gradients(const VMesh* mesh, const hydro::primvars* primvar, PrimGradients* grads);
-
-    // how rho, v and P change in time, from the gradients; along the flow with a moving mesh
-    HD void time_gradient(hydro::prim state_i, double P_i, PrimGradient grad_i, PrimRates* dWdt);
+    // state at r from the anchor, dt later, to first order; w itself if density or pressure would not stay positive;
+    // on a moving mesh r also carries the motion of the gas over dt
+    HD inline gas::Primitive predicted(const gas::Primitive& w, const Gradient& gradient, const Vec& r, double dt);
 
 } // namespace gradients
 
-#endif
+// how load, store and predicted work
+#include "prediction.h"

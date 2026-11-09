@@ -4,6 +4,10 @@
 Takes no tolerance: the point of this suite is that every configuration produces identical
 bits, so "close" is a failure. Exits non-zero on any difference, and also on an empty
 comparison -- a run that wrote nothing must not read as a pass.
+
+The cells are compared in the order of their mesh/id, and the faces of a cell in their order,
+each neighbour as its id; so runs on different numbers of ranks compare cell by cell. What
+depends on the number of ranks by its nature is left out: header/nranks and mesh/face_offset.
 """
 import sys
 import glob
@@ -12,8 +16,8 @@ import os
 import h5py
 import numpy as np
 
-SKIP_ATTRS_UNDER = "header/profiler"
 MAX_REPORTED = 12
+DIFFERS_WITH_THE_RANKS = ("header@nranks", "mesh/face_offset")
 
 
 def snapshots(d):
@@ -37,10 +41,36 @@ def attr_dtype(obj, key):
         return str(np.asarray(obj.attrs[key]).dtype)
 
 
-def contents(path, with_values=True, value_names=()):
-    """Flatten one HDF5 file. Without with_values, only the datasets in value_names keep values.
+def in_order_of_ids(datasets):
+    """The cells sorted by mesh/id and the faces in the order of their cells; face_neighbor as ids."""
+    if "mesh/id" not in datasets:
+        return datasets
+    ids = datasets["mesh/id"][2]
+    order = np.argsort(ids, kind="stable")
+    face_index = None
+    if "mesh/face_offset" in datasets:
+        first = datasets["mesh/face_offset"][2][:-1][order]
+        count = datasets["mesh/n_faces"][2][order]
+        start_in_order = np.cumsum(count) - count
+        face_index = np.repeat(first - start_in_order, count) + np.arange(count.sum())
+    ordered = {}
+    for name, (dtype, shape, values) in datasets.items():
+        if name in DIFFERS_WITH_THE_RANKS:
+            continue
+        if name.startswith("mesh/face_"):
+            values = values[face_index]
+            if name == "mesh/face_neighbor":
+                values = ids[values]
+        elif len(shape) > 0 and shape[0] == len(ids):
+            values = values[order]
+        ordered[name] = (dtype, values.shape, values)
+    return ordered
 
-    datasets: {name: (dtype, shape, values or None)}
+
+def contents(path):
+    """Flatten one HDF5 file, the cells in the order of their ids.
+
+    datasets: {name: (dtype, shape, values)}
     attrs:    {"owner@key": (dtype, shape, bytes)}
     groups:   {name}
     """
@@ -48,9 +78,9 @@ def contents(path, with_values=True, value_names=()):
     with h5py.File(path, "r") as f:
 
         def take_attrs(name, obj):
-            if name.startswith(SKIP_ATTRS_UNDER):
-                return
             for k in obj.attrs:
+                if f"{name}@{k}" in DIFFERS_WITH_THE_RANKS:
+                    continue
                 v = obj.attrs[k]
                 attrs[f"{name}@{k}"] = (attr_dtype(obj, k), np.shape(v), attr_value(v))
 
@@ -58,14 +88,13 @@ def contents(path, with_values=True, value_names=()):
 
         def visit(name, obj):
             if isinstance(obj, h5py.Dataset):
-                keep = with_values or name in value_names
-                datasets[name] = (str(obj.dtype), obj.shape, obj[()] if keep else None)
+                datasets[name] = (str(obj.dtype), obj.shape, obj[()])
             else:
                 groups.add(name)
             take_attrs(name, obj)
 
         f.visititems(visit)
-    return datasets, attrs, groups
+    return in_order_of_ids(datasets), attrs, groups
 
 
 def describe_value_diff(label, x, y):
@@ -79,11 +108,11 @@ def describe_value_diff(label, x, y):
     return f"{label}  {n} values differ"
 
 
-def compare_files(fa, fb, with_values, bad, value_names=()):
+def compare_files(fa, fb, bad):
     """Append one line to `bad` per difference. Returns how many things were checked."""
     tag = os.path.basename(fa)
-    da, aa, ga = contents(fa, with_values, value_names)
-    db, ab, gb = contents(fb, with_values, value_names)
+    da, aa, ga = contents(fa)
+    db, ab, gb = contents(fb)
 
     for what, sa, sb in (("datasets", set(da), set(db)),
                          ("attributes", set(aa), set(ab)),
@@ -99,7 +128,7 @@ def compare_files(fa, fb, with_values, bad, value_names=()):
             bad.append(f"{tag}:{k}  dtype {ta} vs {tb}")
         elif sha != shb:
             bad.append(f"{tag}:{k}  shape {sha} vs {shb}")
-        elif xa is not None and not np.array_equal(xa, xb):
+        elif not np.array_equal(xa, xb):
             bad.append(describe_value_diff(f"{tag}:{k}", xa, xb))
 
     for k in sorted(aa):
@@ -115,12 +144,10 @@ def compare_files(fa, fb, with_values, bad, value_names=()):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    do_profile = "--profile" in sys.argv[1:]
-    if len(args) != 2:
-        print("usage: compare.py <ref_dir> <new_dir> [--profile]", file=sys.stderr)
+    if len(sys.argv) != 3:
+        print("usage: compare.py <ref_dir> <new_dir>", file=sys.stderr)
         return 2
-    a_dir, b_dir = args
+    a_dir, b_dir = sys.argv[1:]
 
     a_snaps, b_snaps = snapshots(a_dir), snapshots(b_dir)
     if not a_snaps or not b_snaps:
@@ -133,26 +160,12 @@ def main():
     n_checked = 0
     bad = []
     for fa, fb in zip(a_snaps, b_snaps):
-        n_checked += compare_files(fa, fb, True, bad)
+        n_checked += compare_files(fa, fb, bad)
 
     # only a real emptiness, not a structural mismatch that already recorded its finding
     if not n_checked and not bad:
         print("snapshots contained nothing to compare")
         return 1
-
-    n_prof = 0
-    if do_profile:
-        pa, pb = os.path.join(a_dir, "profile.hdf5"), os.path.join(b_dir, "profile.hdf5")
-        if not (os.path.exists(pa) and os.path.exists(pb)):
-            print("--profile given but profile.hdf5 is missing "
-                  f"(ref {os.path.exists(pa)}, new {os.path.exists(pb)}) -- "
-                  "is ENABLE_PROFILING set for these builds?")
-            return 1
-        # structure plus which timer sits at which index; the timings stay out, they are wall clock
-        n_prof = compare_files(pa, pb, False, bad, value_names=("timer_names", "timer_kinds"))
-        if not n_prof and not bad:
-            print("profile.hdf5 contained nothing to compare")
-            return 1
 
     if bad:
         print(f"{len(bad)} difference(s):")
@@ -162,10 +175,7 @@ def main():
             print(f"  ... and {len(bad) - MAX_REPORTED} more")
         return 1
 
-    msg = f"{n_checked} datasets+attributes over {len(a_snaps)} snapshots, bitwise identical"
-    if do_profile:
-        msg += f"; profile.hdf5 structure matches ({n_prof} objects)"
-    print(msg)
+    print(f"{n_checked} datasets+attributes over {len(a_snaps)} snapshots, bitwise identical")
     return 0
 
 

@@ -1,47 +1,38 @@
-name: Build and dry run
+name: Build and test
 
 on:
   push:
-    branches: [ main, cleanup ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, cleanup ]
+    branches: [ main ]
 
 jobs:
-  format:
+  check:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install clang-format-21
+      - name: Install clang-format 21
         run: |
           . /etc/os-release
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
           echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-21 main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
           sudo apt-get install -y clang-format-21
 
-      - name: Check formatting
-        run: clang-format-21 --dry-run --Werror $(git ls-files '*.cu' '*.h')
+      - name: Includes and format
+        run: make check CLANG_FORMAT=clang-format-21
 
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-
-      - name: Install HDF5 and MPI
+      - name: Install MPI and HDF5
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev libhdf5-openmpi-dev openmpi-bin
+          sudo apt-get install -y openmpi-bin libopenmpi-dev libhdf5-dev libhdf5-openmpi-dev
 
-      - name: Compile matrix
-        run: ./tests/build_matrix.sh
-
-      - name: Run executable (dry-run mode)
-        run: |
-          make SYSTYPE=Ubuntu DEFINES=-DDRY_RUN
-          ./ProteusGPU
+      - name: Build and test every configuration without CUDA
+        run: tests/build_matrix.sh --cpu
