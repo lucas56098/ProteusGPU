@@ -137,6 +137,7 @@ namespace mesh {
     }
 
     void Mesh::print_builds(const ghosts::Ghosts& ghosts) {
+        const timers::Scope         timer("LOG");
         const ghosts::GhostPointers ghost = ghosts.pointers();
         const BuildsSinceLog&       since = work.since_log;
         long long number[5] = {since.n_cells, since.slow, since.exact, ghost.n_ghost_seeds, ghost.n_ghost_cells};

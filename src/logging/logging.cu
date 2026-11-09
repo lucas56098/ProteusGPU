@@ -55,6 +55,13 @@ namespace logging {
         text_is_aligned = true;
     }
 
+    std::string hours_minutes_seconds(double seconds) {
+        const long long total = (long long)(std::max(seconds, 0.0) + 0.5);
+        char            text[64];
+        std::snprintf(text, sizeof text, "%02lld:%02lld:%02lld", total / 3600, (total % 3600) / 60, total % 60);
+        return std::string(text);
+    }
+
     void stop_run(const char* format, ...) {
         va_list args;
         va_start(args, format);

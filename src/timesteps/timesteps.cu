@@ -4,10 +4,12 @@
 
 #include "logging/logging.h"
 #include "mpi/mpi.h"
+#include "timers/timers.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 
 namespace timesteps {
 
@@ -43,6 +45,19 @@ namespace timesteps {
                                             device::Array<int>&       next_need,
                                             CellSteps&                steps);
         void steps_from_needs(const mesh::CellList& active, int tick, CellSteps& steps);
+        void print_top_step(const TopStep&   top,
+                            const Sync&      sync,
+                            int              step,
+                            double           seconds_left,
+                            const CellSteps& steps,
+                            int              n_cells);
+        BinRange bins_of(const mesh::CellList& list, const CellSteps& steps);
+        void print_fluxes(const mesh::MeshPointers& mesh,
+                          const StepPointers&       at_sync,
+                          Half                      half,
+                          const mesh::CellList&     with_faces,
+                          const BinRange&           bins);
+        std::string text_of_bins(const BinRange& bins);
 
         HD int ticks_of_bin(int bin) {
             return TICKS_PER_TOP_STEP >> bin;
@@ -226,6 +241,47 @@ namespace timesteps {
         return StepPointers{sync.tick, tick_length, steps.start.data(), steps.planned_end.data(), steps.end.data()};
     }
 
+    void TopStep::print_begin_of_steps(const Sync&               sync,
+                                       int                       step,
+                                       double                    seconds_left,
+                                       const mesh::MeshPointers& mesh,
+                                       const mesh::CellList&     active,
+                                       const mesh::CellList&     with_faces,
+                                       const CellSteps&          steps) {
+        const timers::Scope timer("LOG");
+        if (sync.ends_top_step) {
+            print_top_step(*this, sync, step, seconds_left, steps, mesh.n_cells);
+        } else {
+            logging::print("%s", "");
+        }
+        bins_that_begin = bins_of(active, steps);
+        print_fluxes(mesh, pointers(sync, steps), Half::first, with_faces, bins_that_begin);
+    }
+
+    // with individual timesteps only
+    void TopStep::print_sync(const Sync& sync, const mesh::CellList& active, const CellSteps& steps) {
+        if constexpr (!config::individual_timesteps) return;
+
+        const timers::Scope timer("LOG");
+        bins_that_end    = bins_of(active, steps);
+        const int finest = bins_that_begin.finest;
+        logging::print_labelled("SIM",
+                                "Sync %d/%d  t = %g (active: bin %s, %lld cells)",
+                                sync.tick >> (FINEST_BIN - finest),
+                                1 << finest,
+                                sync.time,
+                                text_of_bins(bins_that_end).c_str(),
+                                mpi::sum_over_ranks((long long)active.n));
+    }
+
+    void TopStep::print_end_of_steps(const Sync&               sync,
+                                     const mesh::MeshPointers& mesh,
+                                     const mesh::CellList&     with_faces,
+                                     const CellSteps&          steps) const {
+        const timers::Scope timer("LOG");
+        print_fluxes(mesh, pointers(sync, steps), Half::second, with_faces, bins_that_end);
+    }
+
     // counted bin after bin, up to the finest one used, so that the counts need no atomics
     void TopStep::print_cells_per_bin(const CellSteps& steps, int n_cells) const {
         if constexpr (!config::individual_timesteps) return;
@@ -248,8 +304,9 @@ namespace timesteps {
     void TopStep::print_syncs_and_steps(int n_cells) const {
         if constexpr (!config::individual_timesteps) return;
 
-        const long long steps_of_cells = mpi::sum_over_ranks(n_cell_steps);
-        const long long all_cells      = mpi::sum_over_ranks((long long)n_cells);
+        const timers::Scope timer("LOG");
+        const long long     steps_of_cells = mpi::sum_over_ranks(n_cell_steps);
+        const long long     all_cells      = mpi::sum_over_ranks((long long)n_cells);
         logging::print(
             "\nTIMESTEPS: %d syncs, %.4g steps per cell", n_syncs, (double)steps_of_cells / (double)all_cells);
     }
@@ -257,15 +314,6 @@ namespace timesteps {
     void work_of_cells(const CellSteps& steps, int n_cells, long* work) {
         const int* bin = steps.bin.data();
         device::parallel_for(n_cells, [=] HD(long cell) { work[cell] = 2 * (1l << bin[cell]) + 1; });
-    }
-
-    BinRange bins_of(const mesh::CellList& list, const CellSteps& steps) {
-        if constexpr (!config::individual_timesteps) return BinRange{0, 0};
-
-        const int* bin      = steps.bin.data();
-        const int  coarsest = mpi::min_over_ranks(device::min(list.n, [=] HD(long i) { return bin[list[(int)i]]; }));
-        const int  finest   = mpi::max_over_ranks(device::max(list.n, [=] HD(long i) { return bin[list[(int)i]]; }));
-        return BinRange{coarsest, finest};
     }
 
     namespace {
@@ -414,6 +462,71 @@ namespace timesteps {
                 planned_end[cell] = tick + ticks_of_bin(bin[cell]);
                 end[cell]         = planned_end[cell];
             });
+        }
+
+        // with individual timesteps also a line above it and the cells of every bin; collective
+        void print_top_step(const TopStep&   top,
+                            const Sync&      sync,
+                            int              step,
+                            double           seconds_left,
+                            const CellSteps& steps,
+                            int              n_cells) {
+            const std::string eta = logging::hours_minutes_seconds(seconds_left);
+            if constexpr (config::individual_timesteps) {
+                logging::print("\n%s\n", LINE_BETWEEN_TOP_STEPS);
+                logging::print("SIM: Top-Step %d  t = %g  dt = %g  ETA = %s",
+                               step,
+                               sync.time,
+                               top.length_of_this_top_step(),
+                               eta.c_str());
+                top.print_cells_per_bin(steps, n_cells);
+            } else {
+                logging::print("\nSIM: Step %d  t = %g  dt = %g  ETA = %s",
+                               step,
+                               sync.time,
+                               top.length_of_this_top_step(),
+                               eta.c_str());
+            }
+        }
+
+        // the coarsest and finest bin of the cells of the list, over all ranks; collective
+        BinRange bins_of(const mesh::CellList& list, const CellSteps& steps) {
+            if constexpr (!config::individual_timesteps) return BinRange{0, 0};
+
+            const int* bin     = steps.bin.data();
+            const int coarsest = mpi::min_over_ranks(device::min(list.n, [=] HD(long i) { return bin[list[(int)i]]; }));
+            const int finest   = mpi::max_over_ranks(device::max(list.n, [=] HD(long i) { return bin[list[(int)i]]; }));
+            return BinRange{coarsest, finest};
+        }
+
+        // counts the faces of the list that get a flux in this half, each from both sides; collective
+        void print_fluxes(const mesh::MeshPointers& mesh,
+                          const StepPointers&       at_sync,
+                          Half                      half,
+                          const mesh::CellList&     with_faces,
+                          const BinRange&           bins) {
+            const long long here     = device::sum(with_faces.n, [=] HD(long i) {
+                const int cell  = with_faces[(int)i];
+                const int first = mesh.first_face[cell];
+                long long n     = 0;
+                for (int face = first; face < first + mesh.n_faces[cell]; face++) {
+                    if (face_share(at_sync, cell, mesh.neighbour[face], half).time != 0.0) n++;
+                }
+                return n;
+            });
+            const long long n_fluxes = mpi::sum_over_ranks(here);
+            const char*     label    = (half == Half::first) ? "START" : "FINISH";
+            if constexpr (config::individual_timesteps) {
+                logging::print_labelled(label, "%lld fluxes (bin %s)", n_fluxes, text_of_bins(bins).c_str());
+            } else {
+                logging::print_labelled(label, "%lld fluxes", n_fluxes);
+            }
+        }
+
+        // "2" for one bin, "0-2" for several
+        std::string text_of_bins(const BinRange& bins) {
+            if (bins.coarsest == bins.finest) return std::to_string(bins.finest);
+            return std::to_string(bins.coarsest) + "-" + std::to_string(bins.finest);
         }
 
     } // namespace

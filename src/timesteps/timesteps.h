@@ -18,6 +18,10 @@ namespace timesteps {
     // a top step begins with this many finer bins free, so that a cell whose CFL step shrinks can still go finer
     constexpr int BINS_KEPT_FREE = 3;
 
+    // the line in the log between two top steps
+    constexpr const char* LINE_BETWEEN_TOP_STEPS =
+        "==========================================================================";
+
     // a tick where at least one step ends; at the end of a top step begin_steps moves it to tick 0 of the next
     struct Sync {
         int    tick; // in the current top step
@@ -60,6 +64,12 @@ namespace timesteps {
             function(steps.needed_bin);
         }
     }
+
+    // the coarsest and finest bin of some cells
+    struct BinRange {
+        int coarsest;
+        int finest;
+    };
 
     // a sync that ends a top step, where every cell begins its first step
     Sync first_sync(double start_time);
@@ -115,6 +125,24 @@ namespace timesteps {
         // what kernels need at a sync
         StepPointers pointers(const Sync& sync, const CellSteps& steps) const;
 
+        // START in the log: a new top step or an empty line, then the first halves of the fluxes; collective
+        void print_begin_of_steps(const Sync&               sync,
+                                  int                       step,
+                                  double                    seconds_left,
+                                  const mesh::MeshPointers& mesh,
+                                  const mesh::CellList&     active,
+                                  const mesh::CellList&     with_faces,
+                                  const CellSteps&          steps);
+
+        // TIME in the log: where the sync lies in the top step, and its active cells; collective
+        void print_sync(const Sync& sync, const mesh::CellList& active, const CellSteps& steps);
+
+        // FINISH in the log: the second halves of the fluxes; collective
+        void print_end_of_steps(const Sync&               sync,
+                                const mesh::MeshPointers& mesh,
+                                const mesh::CellList&     with_faces,
+                                const CellSteps&          steps) const;
+
         // one line in the log with the cells of every bin, over all ranks; collective
         void print_cells_per_bin(const CellSteps& steps, int n_cells) const;
 
@@ -133,6 +161,10 @@ namespace timesteps {
         int       n_syncs      = 0;
         long long n_cell_steps = 0;
 
+        // of the active cells at the last START and TIME, for the log
+        BinRange bins_that_begin{0, 0};
+        BinRange bins_that_end{0, 0};
+
         device::Array<int>  active{"timesteps: active cells", 0};
         device::Array<int>  with_faces{"timesteps: cells whose faces open or close", 0};
         device::Array<bool> has_faces{"timesteps: marks of the cells whose faces open or close", 0};
@@ -143,14 +175,6 @@ namespace timesteps {
 
     // work of every cell in the top step, in half cell steps: the steps of its last bin, and half a step for the build
     void work_of_cells(const CellSteps& steps, int n_cells, long* work);
-
-    struct BinRange {
-        int coarsest;
-        int finest;
-    };
-
-    // the coarsest and finest bin of the cells of the list, over all ranks; collective
-    BinRange bins_of(const mesh::CellList& list, const CellSteps& steps);
 
     // share of the face between cell and neighbour in this half of its flux
     HD inline FaceShare face_share(const StepPointers& steps, int cell, int neighbour, Half half);

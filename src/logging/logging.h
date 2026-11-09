@@ -2,6 +2,8 @@
 
 // Printing messages and stopping the run; a message starts with the part of the run it is about, e.g. "VORONOI: ...".
 
+#include <string>
+
 namespace logging {
 
     // print from the rank that calls it; the caller puts the rank in the message
@@ -15,6 +17,9 @@ namespace logging {
 
     // from now on the text of labelled lines starts in one column
     void align_labelled_text();
+
+    // as hh:mm:ss, rounded to a second; below zero as zero
+    std::string hours_minutes_seconds(double seconds);
 
     [[noreturn]] void stop_run(const char* format, ...) __attribute__((format(printf, 1, 2)));
 

@@ -21,8 +21,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
-#include <string>
 
 namespace integrator {
 
@@ -32,20 +30,6 @@ namespace integrator {
         struct CellsOfSync {
             mesh::CellList active;
             mesh::CellList with_faces;
-        };
-
-        using Clock = std::chrono::steady_clock;
-
-        constexpr const char* LINE_BETWEEN_TOP_STEPS =
-            "==========================================================================";
-
-        // what the log keeps from one sync to the next
-        struct LogOfRun {
-            Clock::time_point   start_of_run;
-            double              start_time;
-            double              time_end;
-            timesteps::BinRange bins_that_begin; // of the active cells at the last START
-            timesteps::BinRange bins_that_end; // of the active cells at the last TIME
         };
 
         void begin_steps(simulation::Simulation& sim, const CellsOfSync& of_sync);
@@ -92,29 +76,7 @@ namespace integrator {
                                 cells::Cells&             cells);
         void end_steps(simulation::Simulation& sim, CellsOfSync& of_sync);
         void write_snapshot_if_due(simulation::Simulation& sim);
-        void print_begin_of_steps(const timesteps::Sync&    sync,
-                                  const timesteps::TopStep& top,
-                                  int                       step,
-                                  const mesh::Mesh&         mesh,
-                                  const CellsOfSync&        of_sync,
-                                  const cells::Cells&       cells,
-                                  LogOfRun&                 of_run);
-        void print_top_step(const timesteps::Sync&    sync,
-                            const timesteps::TopStep& top,
-                            int                       step,
-                            const cells::Cells&       cells,
-                            const LogOfRun&           of_run);
-        void print_sync(const timesteps::Sync&      sync,
-                        const mesh::CellList&       active,
-                        const timesteps::CellSteps& steps,
-                        LogOfRun&                   of_run);
-        void print_fluxes(const mesh::Mesh&              mesh,
-                          const timesteps::StepPointers& at_sync,
-                          timesteps::Half                half,
-                          const mesh::CellList&          with_faces,
-                          const timesteps::BinRange&     bins);
-        std::string text_of_bins(const timesteps::BinRange& bins);
-        std::string hours_minutes_seconds(double seconds);
+        double seconds_left(const simulation::Simulation& sim);
 
     } // namespace
 
@@ -125,7 +87,6 @@ namespace integrator {
         // one pass per sync; every cell is active at the first one
         CellsOfSync        of_sync{mesh::every_cell(sim.mesh.pointers()), mesh::every_cell(sim.mesh.pointers())};
         device::Array<Vec> seeds("integrator: seeds at the sync", 0);
-        LogOfRun           of_run{sim.start_of_run, sim.start_time, sim.parameters.time_end, {0, 0}, {0, 0}};
         logging::align_labelled_text();
         {
             const timers::Scope timer("LOOP");
@@ -133,51 +94,38 @@ namespace integrator {
 
                 // START
                 begin_steps(sim, of_sync);
-                {
-                    const timers::Scope timer("LOG");
-                    print_begin_of_steps(sim.sync, sim.top, sim.step, sim.mesh, of_sync, sim.cells, of_run);
-                }
+                sim.top.print_begin_of_steps(sim.sync,
+                                             sim.step,
+                                             seconds_left(sim),
+                                             sim.mesh.pointers(),
+                                             of_sync.active,
+                                             of_sync.with_faces,
+                                             sim.cells.steps);
 
                 // TIME
                 of_sync.active = go_to_next_sync(sim);
-                {
-                    const timers::Scope timer("LOG");
-                    print_sync(sim.sync, of_sync.active, sim.cells.steps, of_run);
-                }
+                sim.top.print_sync(sim.sync, of_sync.active, sim.cells.steps);
 
                 // MESH
                 move_mesh(sim, of_sync.active, seeds);
-                if constexpr (config::moving_mesh) {
-                    const timers::Scope timer("LOG");
-                    sim.mesh.print_builds(sim.ghosts);
-                }
+                if constexpr (config::moving_mesh) sim.mesh.print_builds(sim.ghosts);
 
                 // FINISH
                 end_steps(sim, of_sync);
-                {
-                    const timers::Scope timer("LOG");
-                    print_fluxes(sim.mesh,
-                                 sim.top.pointers(sim.sync, sim.cells.steps),
-                                 timesteps::Half::second,
-                                 of_sync.with_faces,
-                                 of_run.bins_that_end);
-                }
+                sim.top.print_end_of_steps(sim.sync, sim.mesh.pointers(), of_sync.with_faces, sim.cells.steps);
 
                 if (sim.sync.ends_top_step) {
 
                     sim.step++;
                     if constexpr (config::profiling) timers::record_top_step(sim.step, sim.sync.time);
-                    {
-                        const timers::Scope timer("LOG");
-                        sim.top.print_syncs_and_steps(sim.cells.n_cells);
-                    }
+                    sim.top.print_syncs_and_steps(sim.cells.n_cells);
 
                     // OUTPUT
                     write_snapshot_if_due(sim);
                 }
             }
         }
-        if constexpr (config::individual_timesteps) logging::print("\n%s", LINE_BETWEEN_TOP_STEPS);
+        if constexpr (config::individual_timesteps) logging::print("\n%s", timesteps::LINE_BETWEEN_TOP_STEPS);
         if constexpr (config::profiling)
             io::write_profile(sim.parameters.output_directory, sim.profile, timers::profile_of_run());
         logging::print("\nHYDRO: Finished after %d steps at t = %g", sim.step, sim.sync.time);
@@ -538,113 +486,13 @@ namespace integrator {
             sim.snapshots.next_time += parameters.output_dt;
         }
 
-        // ==========================================================
-        // the log
-        // ==========================================================
-
-        // the lines of a new top step, else an empty line, then the fluxes; collective
-        void print_begin_of_steps(const timesteps::Sync&    sync,
-                                  const timesteps::TopStep& top,
-                                  int                       step,
-                                  const mesh::Mesh&         mesh,
-                                  const CellsOfSync&        of_sync,
-                                  const cells::Cells&       cells,
-                                  LogOfRun&                 of_run) {
-            if (sync.ends_top_step) {
-                print_top_step(sync, top, step, cells, of_run);
-            } else {
-                logging::print("%s", "");
-            }
-            of_run.bins_that_begin = timesteps::bins_of(of_sync.active, cells.steps);
-            print_fluxes(mesh,
-                         top.pointers(sync, cells.steps),
-                         timesteps::Half::first,
-                         of_sync.with_faces,
-                         of_run.bins_that_begin);
-        }
-
-        // with individual timesteps also a line above it and the cells of every bin; collective
-        void print_top_step(const timesteps::Sync&    sync,
-                            const timesteps::TopStep& top,
-                            int                       step,
-                            const cells::Cells&       cells,
-                            const LogOfRun&           of_run) {
-            const double      elapsed = std::chrono::duration<double>(Clock::now() - of_run.start_of_run).count();
-            const double      left    = (sync.time > of_run.start_time)
-                                            ? elapsed * (of_run.time_end - sync.time) / (sync.time - of_run.start_time)
-                                            : 0.0;
-            const std::string eta     = hours_minutes_seconds(left);
-            if constexpr (config::individual_timesteps) {
-                logging::print("\n%s\n", LINE_BETWEEN_TOP_STEPS);
-                logging::print("SIM: Top-Step %d  t = %g  dt = %g  ETA = %s",
-                               step,
-                               sync.time,
-                               top.length_of_this_top_step(),
-                               eta.c_str());
-                top.print_cells_per_bin(cells.steps, cells.n_cells);
-            } else {
-                logging::print("\nSIM: Step %d  t = %g  dt = %g  ETA = %s",
-                               step,
-                               sync.time,
-                               top.length_of_this_top_step(),
-                               eta.c_str());
-            }
-        }
-
-        // with individual timesteps: where the sync lies in the top step, and its active cells; collective
-        void print_sync(const timesteps::Sync&      sync,
-                        const mesh::CellList&       active,
-                        const timesteps::CellSteps& steps,
-                        LogOfRun&                   of_run) {
-            if constexpr (!config::individual_timesteps) return;
-
-            of_run.bins_that_end = timesteps::bins_of(active, steps);
-            const int finest     = of_run.bins_that_begin.finest;
-            logging::print_labelled("SIM",
-                                    "Sync %d/%d  t = %g (active: bin %s, %lld cells)",
-                                    sync.tick >> (timesteps::FINEST_BIN - finest),
-                                    1 << finest,
-                                    sync.time,
-                                    text_of_bins(of_run.bins_that_end).c_str(),
-                                    mpi::sum_over_ranks((long long)active.n));
-        }
-
-        // counts the faces of the list that get a flux in this half, each from both sides; collective
-        void print_fluxes(const mesh::Mesh&              mesh,
-                          const timesteps::StepPointers& at_sync,
-                          timesteps::Half                half,
-                          const mesh::CellList&          with_faces,
-                          const timesteps::BinRange&     bins) {
-            const mesh::MeshPointers on_mesh  = mesh.pointers();
-            const long long          here     = device::sum(with_faces.n, [=] HD(long i) {
-                const int cell  = with_faces[(int)i];
-                const int first = on_mesh.first_face[cell];
-                long long n     = 0;
-                for (int face = first; face < first + on_mesh.n_faces[cell]; face++) {
-                    if (timesteps::face_share(at_sync, cell, on_mesh.neighbour[face], half).time != 0.0) n++;
-                }
-                return n;
-            });
-            const long long          n_fluxes = mpi::sum_over_ranks(here);
-            const char*              label    = (half == timesteps::Half::first) ? "START" : "FINISH";
-            if constexpr (config::individual_timesteps) {
-                logging::print_labelled(label, "%lld fluxes (bin %s)", n_fluxes, text_of_bins(bins).c_str());
-            } else {
-                logging::print_labelled(label, "%lld fluxes", n_fluxes);
-            }
-        }
-
-        // "2" for one bin, "0-2" for several
-        std::string text_of_bins(const timesteps::BinRange& bins) {
-            if (bins.coarsest == bins.finest) return std::to_string(bins.finest);
-            return std::to_string(bins.coarsest) + "-" + std::to_string(bins.finest);
-        }
-
-        std::string hours_minutes_seconds(double seconds) {
-            const long long total = (long long)(std::max(seconds, 0.0) + 0.5);
-            char            text[64];
-            std::snprintf(text, sizeof text, "%02lld:%02lld:%02lld", total / 3600, (total % 3600) / 60, total % 60);
-            return std::string(text);
+        // from how fast the run went so far; 0 as long as no time has passed
+        double seconds_left(const simulation::Simulation& sim) {
+            const double elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - sim.start_of_run).count();
+            return (sim.sync.time > sim.start_time)
+                       ? elapsed * (sim.parameters.time_end - sim.sync.time) / (sim.sync.time - sim.start_time)
+                       : 0.0;
         }
 
     } // namespace
