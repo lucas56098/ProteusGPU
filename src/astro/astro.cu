@@ -5,22 +5,17 @@
 #include "logging/logging.h"
 #include "mpi/mpi.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <vector>
 
 namespace astro {
 
     namespace {
 
-        // a cell that feeds the black hole
-        struct ColdCell {
-            long   id;
-            double mass;
-        };
+        // a cold mass counts as a whole number of parts, the largest one as at least this power of two of them
+        constexpr int BITS_BELOW_THE_LARGEST_COLD_MASS = 34;
 
-        double cold_mass_summed_by_id(int n_cold, const int* cold_cell, const long* id, const double* cold_mass);
+        double cold_mass_summed_over_ranks(int n_cells, const double* cold_mass);
         void print_agn(double time, double cold_mass, const SourcePointers& of, const CodeUnits& units);
         HD double shortened_cfl_step(const Agn&            agn,
                                      const Vec&            position,
@@ -86,7 +81,6 @@ namespace astro {
     }
 
     void Sources::prepare(const timesteps::Sync&        sync,
-                          const long*                   id,
                           const Vec*                    position,
                           const gas::PrimitivePointers& state,
                           const mesh::MeshPointers&     mesh) {
@@ -100,10 +94,7 @@ namespace astro {
             const bool    feeds = feeds_the_black_hole(agn, from_centre(position[cell]), gas);
             cold[cell]          = feeds ? gas.density * mesh.volume[cell] : 0.0;
         });
-        device::Array<int> cold_cell("astro: cells that feed the black hole", mesh.n_cells);
-        const int          n_cold =
-            device::indices_where(mesh.n_cells, [=] HD(int c) { return cold[c] > 0.0; }, cold_cell.data());
-        cold_mass_near_the_centre = cold_mass_summed_by_id(n_cold, cold_cell.data(), id, cold);
+        cold_mass_near_the_centre = cold_mass_summed_over_ranks(mesh.n_cells, cold);
 
         const bool fires = cold_mass_near_the_centre > 0.0;
         agn_switched     = fires && !agn_fired && !sync.ends_top_step;
@@ -164,21 +155,15 @@ namespace astro {
 
     namespace {
 
-        // the cold cells of all ranks go to every rank, so the sum is in id order on any number of ranks; collective
-        double cold_mass_summed_by_id(int n_cold, const int* cold_cell, const long* id, const double* cold_mass) {
-            std::vector<ColdCell> mine(n_cold);
-            for (int i = 0; i < n_cold; i++)
-                mine[i] = ColdCell{id[cold_cell[i]], cold_mass[cold_cell[i]]};
-            const std::vector<char> bytes =
-                mpi::gather_items_from_all_ranks(mine.data(), (int)mine.size(), (int)sizeof(ColdCell));
-            std::vector<ColdCell> all(bytes.size() / sizeof(ColdCell));
-            std::copy(bytes.begin(), bytes.end(), reinterpret_cast<char*>(all.data()));
-            std::sort(all.begin(), all.end(), [](const ColdCell& a, const ColdCell& b) { return a.id < b.id; });
+        // a sum of whole numbers does not depend on their order, so it is the same on any number of ranks; collective
+        double cold_mass_summed_over_ranks(int n_cells, const double* cold_mass) {
+            const double largest = mpi::max_over_ranks(device::max(n_cells, [=] HD(long c) { return cold_mass[c]; }));
+            if (!(largest > 0.0)) return 0.0;
 
-            double sum = 0.0;
-            for (const ColdCell& cell : all)
-                sum += cell.mass;
-            return sum;
+            const int       exponent = std::ilogb(largest) - BITS_BELOW_THE_LARGEST_COLD_MASS;
+            const long long here =
+                device::sum(n_cells, [=] HD(long c) { return (long long)floor(ldexp(cold_mass[c], -exponent) + 0.5); });
+            return std::ldexp((double)mpi::sum_over_ranks(here), exponent);
         }
 
         void print_agn(double time, double cold_mass, const SourcePointers& of, const CodeUnits& units) {

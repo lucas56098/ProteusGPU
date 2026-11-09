@@ -54,6 +54,8 @@ namespace io {
         const hid_t properties = H5Pcreate(H5P_FILE_ACCESS);
 #ifdef USE_MPI
         H5Pset_fapl_mpio(properties, mpi::communicator(), MPI_INFO_NULL);
+        H5Pset_all_coll_metadata_ops(properties, true);
+        H5Pset_coll_metadata_write(properties, true);
 #endif
         return properties;
     }

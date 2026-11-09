@@ -43,15 +43,19 @@ namespace device {
         template <typename Integer> Integer offsets_and_total(long n, const Integer* counts, Integer* offsets) {
             if (n <= 0) return 0;
 #ifdef CUDA
-            // CUB first says how much temporary memory it needs
-            size_t temporary_bytes = 0;
-            stop_on_cuda_error(cub::DeviceScan::ExclusiveSum(nullptr, temporary_bytes, counts, offsets, n),
-                               "offsets_from_counts");
-            void* temporary = allocate_temporary((long)temporary_bytes);
-            stop_on_cuda_error(cub::DeviceScan::ExclusiveSum(temporary, temporary_bytes, counts, offsets, n),
-                               "offsets_from_counts");
-            wait_for_gpu("offsets_from_counts");
-            free_temporary(temporary, (long)temporary_bytes);
+            {
+                const timers::Scope timer("GPU", timers::Type::gpu);
+
+                // CUB first says how much temporary memory it needs
+                size_t temporary_bytes = 0;
+                stop_on_cuda_error(cub::DeviceScan::ExclusiveSum(nullptr, temporary_bytes, counts, offsets, n),
+                                   "offsets_from_counts");
+                void* temporary = allocate_temporary((long)temporary_bytes);
+                stop_on_cuda_error(cub::DeviceScan::ExclusiveSum(temporary, temporary_bytes, counts, offsets, n),
+                                   "offsets_from_counts");
+                wait_for_gpu("offsets_from_counts");
+                free_temporary(temporary, (long)temporary_bytes);
+            }
 #else
             std::exclusive_scan(counts, counts + n, offsets, Integer(0));
 #endif
@@ -84,7 +88,8 @@ namespace device {
                        uint64_t*       sorted_keys,
                        Integer*        sorted_values) {
 #ifdef CUDA
-            size_t temporary_bytes = 0;
+            const timers::Scope timer("GPU", timers::Type::gpu);
+            size_t              temporary_bytes = 0;
             stop_on_cuda_error(
                 cub::DeviceRadixSort::SortPairs(nullptr, temporary_bytes, keys, sorted_keys, values, sorted_values, n),
                 "sort_by_key");

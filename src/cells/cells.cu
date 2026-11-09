@@ -108,13 +108,13 @@ namespace cells {
         });
     }
 
-    void copy_primitive_variables_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts, const mesh::CellList& changed) {
-        ghosts.copy_changed_to_ghost_cells(
-            cells.n_cells, changed.cell, changed.n, [&](auto function) { for_each_primitive_field(cells, function); });
+    void copy_primitive_variables_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts, const mesh::CellList& active) {
+        ghosts.copy_active_to_ghost_cells(
+            active.is_every_cell(), cells.n_cells, [&](auto function) { for_each_primitive_field(cells, function); });
     }
 
-    void copy_gradients_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts, const mesh::CellList& changed) {
-        ghosts.copy_changed_to_ghost_cells(cells.n_cells, changed.cell, changed.n, [&](auto function) {
+    void copy_gradients_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts, const mesh::CellList& active) {
+        ghosts.copy_active_to_ghost_cells(active.is_every_cell(), cells.n_cells, [&](auto function) {
             for_each_gradient_field(cells, function);
             for_each_seed_field(cells, function);
         });
@@ -122,6 +122,15 @@ namespace cells {
 
     void copy_everything_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts) {
         ghosts.copy_to_ghost_cells(cells.n_cells, [&](auto function) {
+            for_each_primitive_field(cells, function);
+            for_each_gradient_field(cells, function);
+            for_each_seed_field(cells, function);
+            for_each_step_field(cells, function);
+        });
+    }
+
+    void copy_everything_to_new_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts) {
+        ghosts.copy_to_new_ghost_cells([&](auto function) {
             for_each_primitive_field(cells, function);
             for_each_gradient_field(cells, function);
             for_each_seed_field(cells, function);

@@ -131,17 +131,13 @@ namespace timesteps {
                                   double                    seconds_left,
                                   const mesh::MeshPointers& mesh,
                                   const mesh::CellList&     active,
-                                  const mesh::CellList&     with_faces,
                                   const CellSteps&          steps);
 
         // TIME in the log: where the sync lies in the top step, and its active cells; collective
         void print_sync(const Sync& sync, const mesh::CellList& active, const CellSteps& steps);
 
-        // FINISH in the log: the second halves of the fluxes; collective
-        void print_end_of_steps(const Sync&               sync,
-                                const mesh::MeshPointers& mesh,
-                                const mesh::CellList&     with_faces,
-                                const CellSteps&          steps) const;
+        // FINISH in the log: the second halves of the fluxes
+        void print_end_of_steps() const;
 
         // one line in the log with the cells of every bin, over all ranks; collective
         void print_cells_per_bin(const CellSteps& steps, int n_cells) const;

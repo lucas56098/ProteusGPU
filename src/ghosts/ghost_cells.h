@@ -2,8 +2,6 @@
 
 // how the copies to the ghost cells pack, send and unpack the values (included by ghosts.h)
 
-#include "mpi/mpi.h"
-
 namespace ghosts {
 
     // one item per cell sent, its fields at fixed offsets; item i goes to ghost_cell_place_by_owner[i]
@@ -20,7 +18,7 @@ namespace ghosts {
         });
 
         device::exchange_items(
-            values_sent.data(), cells_for_rank.data(), values_received.data(), ghost_cells_of_rank.data(), item_bytes);
+            values_sent.data(), cells_to_askers, values_received.data(), ghost_cells_from_owners, item_bytes);
 
         offset = 0;
         for_each_field([&](auto& field) {
@@ -30,31 +28,56 @@ namespace ghosts {
         });
     }
 
-    // one item per changed cell sent: its place, then its fields at fixed offsets
+    // the answer to what the new ghost cells asked for: their owners send in the order they were asked
+    template <typename FieldList> void Ghosts::copy_to_new_ghost_cells(FieldList for_each_field) {
+        int item_bytes = 0;
+        for_each_field([&](auto& field) { item_bytes += (int)sizeof(field[0]); });
+        values_sent.grow_to_at_least((long)new_to_askers.total * item_bytes);
+        values_received.grow_to_at_least((long)new_from_owners.total * item_bytes);
+
+        int offset = 0;
+        for_each_field([&](auto& field) {
+            device::pack_into_items(
+                field, cell_of_new_asked.data(), new_to_askers.total, item_bytes, offset, values_sent);
+            offset += (int)sizeof(field[0]);
+        });
+
+        device::exchange_items(values_sent.data(), new_to_askers, values_received.data(), new_from_owners, item_bytes);
+
+        offset = 0;
+        for_each_field([&](auto& field) {
+            device::unpack_from_items_at(
+                values_received, new_from_owners.total, item_bytes, offset, place_of_new_ghost_cell.data(), field);
+            offset += (int)sizeof(field[0]);
+        });
+    }
+
+    // the counts are known on both sides: an active cell and its ghost cells end their step at the same tick
     template <typename FieldList>
-    void Ghosts::copy_changed_to_ghost_cells(int n_cells, const int* changed, int n_changed, FieldList for_each_field) {
-        if (changed == nullptr) {
+    void Ghosts::copy_active_to_ghost_cells(bool every_cell_is_active, int n_cells, FieldList for_each_field) {
+        if (every_cell_is_active) {
             copy_to_ghost_cells(n_cells, for_each_field);
             return;
         }
-        int item_bytes = (int)sizeof(int);
+        int item_bytes = 0;
         for_each_field([&](auto& field) { item_bytes += (int)sizeof(field[0]); });
-        const int n_items = start_items_of_changed_cells(changed, n_changed, item_bytes);
+        values_sent.grow_to_at_least((long)n_active_cells_sent * item_bytes);
+        values_received.grow_to_at_least((long)n_active_ghost_cells * item_bytes);
 
-        int offset = (int)sizeof(int);
+        int offset = 0;
         for_each_field([&](auto& field) {
-            device::pack_into_items(field, changed_cell_sent.data(), n_items, item_bytes, offset, values_sent);
+            device::pack_into_items(
+                field, active_cell_sent.data(), n_active_cells_sent, item_bytes, offset, values_sent);
             offset += (int)sizeof(field[0]);
         });
 
         device::exchange_items(
-            values_sent.data(), changed_for_rank.data(), values_received.data(), changed_from_rank.data(), item_bytes);
+            values_sent.data(), active_to_askers, values_received.data(), active_from_owners, item_bytes);
 
-        find_ghost_cells_of_items_that_came(item_bytes);
-        offset = (int)sizeof(int);
+        offset = 0;
         for_each_field([&](auto& field) {
             device::unpack_from_items_at(
-                values_received, n_changed_received, item_bytes, offset, ghost_cell_of_changed.data(), field);
+                values_received, n_active_ghost_cells, item_bytes, offset, active_ghost_cell.data(), field);
             offset += (int)sizeof(field[0]);
         });
     }

@@ -12,7 +12,6 @@ namespace migration {
         this->n_cells     = n_cells;
         leaving_order.grow_to_at_least(n_cells);
         send_count.grow_to_at_least(n_ranks);
-        receive_count.grow_to_at_least(n_ranks);
 
         // the leaving cells by destination, equal keys keeping their order
         int* leaving = leaving_order.data();
@@ -40,10 +39,9 @@ namespace migration {
         device::indices_where(n_leaving, [=] HD(int i) { return destination[n_staying + i] == here; }, to_filler);
         device::parallel_for(n_places, [=] HD(long i) { to_filler[i] += n_staying; });
 
-        mpi::exchange_counts(send_count.data(), receive_count.data());
-        n_arriving = 0;
-        for (int r = 0; r < n_ranks; r++)
-            n_arriving += receive_count[r];
+        to = mpi::blocks_of_counts(send_count.data(), n_ranks);
+        mpi::counts_from_any_rank(to, 0, from);
+        n_arriving = from.total;
     }
 
     int Plan::n_cells_after() const {

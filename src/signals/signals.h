@@ -29,9 +29,10 @@ namespace signals {
         double shortest;
     };
 
-    // with several ranks: a pair is a cell of the list and a rank it is searched on
+    // with several ranks: a pair is a cell of the list and a rank it is searched on; a tree over the ranks finds the
+    // pairs: node i has the children 2 i and 2 i + 1, and node n_ranks + r is rank r
     struct BetweenRanks {
-        device::Array<BoundsOfRank> of_rank{"signals: bounds of every rank", 0};
+        device::Array<BoundsOfRank> of_node{"signals: bounds of the ranks below every node", 0};
         device::Array<int>          n_pairs_of_entry{"signals: ranks of every cell of the list", 0};
         device::Array<int>          first_pair{"signals: first pair of every cell of the list", 0};
         device::Array<int>          entry_of_pair{"signals: cell of the list of every pair", 0};
@@ -39,7 +40,6 @@ namespace signals {
         device::Array<int>          pair_in_order{"signals: the pairs by rank", 0};
         device::Array<double>       time_of_pair{"signals: the time found for every pair", 0};
         device::Array<int>          send_count{"signals: queries for every rank", 0};
-        device::Array<int>          receive_count{"signals: queries from every rank", 0};
         device::Array<Query>        sent{"signals: queries sent", 0};
         device::Array<Query>        received{"signals: queries received", 0};
     };

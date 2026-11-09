@@ -52,11 +52,7 @@ namespace timesteps {
                             const CellSteps& steps,
                             int              n_cells);
         BinRange bins_of(const mesh::CellList& list, const CellSteps& steps);
-        void print_fluxes(const mesh::MeshPointers& mesh,
-                          const StepPointers&       at_sync,
-                          Half                      half,
-                          const mesh::CellList&     with_faces,
-                          const BinRange&           bins);
+        void print_fluxes(Half half, const BinRange& bins);
         std::string text_of_bins(const BinRange& bins);
 
         HD int ticks_of_bin(int bin) {
@@ -92,11 +88,12 @@ namespace timesteps {
         n_cell_steps += active.n;
 
         if constexpr (config::individual_timesteps) {
+            if (!active.is_every_cell()) ghosts.find_active_cells(steps.end.data(), sync.tick);
             needs_from_cfl_steps(active, cfl_step, this->length, steps);
             limit_needs_by_face_neighbours(active, mesh, ghosts, next_need, steps);
             steps_from_needs(active, sync.tick, steps);
-            ghosts.copy_changed_to_ghost_cells(
-                mesh.n_cells, active.cell, active.n, [&](auto function) { for_each_field(steps, function); });
+            ghosts.copy_active_to_ghost_cells(
+                active.is_every_cell(), mesh.n_cells, [&](auto function) { for_each_field(steps, function); });
         }
     }
 
@@ -149,7 +146,7 @@ namespace timesteps {
 
         const long long all = mpi::sum_over_ranks((long long)n_ended);
         if (all == 0) return;
-        ghosts.copy_changed_to_ghost_cells(mesh.n_cells, ended, n_ended, [&](auto function) { function(steps.end); });
+        ghosts.copy_to_ghost_cells(mesh.n_cells, [&](auto function) { function(steps.end); });
         logging::print("TIMESTEPS: a source switched on at t = %.10g, %lld cells end their step now", sync.time, all);
     }
 
@@ -246,7 +243,6 @@ namespace timesteps {
                                        double                    seconds_left,
                                        const mesh::MeshPointers& mesh,
                                        const mesh::CellList&     active,
-                                       const mesh::CellList&     with_faces,
                                        const CellSteps&          steps) {
         const timers::Scope timer("LOG");
         if (sync.ends_top_step) {
@@ -255,7 +251,7 @@ namespace timesteps {
             logging::print("%s", "");
         }
         bins_that_begin = bins_of(active, steps);
-        print_fluxes(mesh, pointers(sync, steps), Half::first, with_faces, bins_that_begin);
+        print_fluxes(Half::first, bins_that_begin);
     }
 
     // with individual timesteps only
@@ -274,12 +270,9 @@ namespace timesteps {
                                 mpi::sum_over_ranks((long long)active.n));
     }
 
-    void TopStep::print_end_of_steps(const Sync&               sync,
-                                     const mesh::MeshPointers& mesh,
-                                     const mesh::CellList&     with_faces,
-                                     const CellSteps&          steps) const {
+    void TopStep::print_end_of_steps() const {
         const timers::Scope timer("LOG");
-        print_fluxes(mesh, pointers(sync, steps), Half::second, with_faces, bins_that_end);
+        print_fluxes(Half::second, bins_that_end);
     }
 
     // counted bin after bin, up to the finest one used, so that the counts need no atomics
@@ -401,7 +394,7 @@ namespace timesteps {
             return bin;
         }
 
-        // the run stops if a CFL step is below the finest bin or not a number; collective
+        // the run stops if a CFL step is below the finest bin or not a number
         void needs_from_cfl_steps(const mesh::CellList& active,
                                   const double*         cfl_step,
                                   double                top_length,
@@ -412,15 +405,15 @@ namespace timesteps {
                 needed_bin[cell] = bin_for_step(top_length, cfl_step[cell]);
             });
 
-            const long long too_fine = mpi::sum_over_ranks(
-                device::sum(active.n, [=] HD(long i) { return (long long)(needed_bin[active[(int)i]] > FINEST_BIN); }));
+            const long long too_fine =
+                device::sum(active.n, [=] HD(long i) { return (long long)(needed_bin[active[(int)i]] > FINEST_BIN); });
             if (too_fine > 0) {
-                logging::stop_run(
-                    "TIMESTEPS: %lld cells have a CFL step below the top step of %g / 2^%d, or one that is "
-                    "not a number; the run stops",
-                    too_fine,
-                    top_length,
-                    FINEST_BIN);
+                logging::stop_run("TIMESTEPS: %lld cells of this rank have a CFL step below the top step of %g / 2^%d, "
+                                  "or one that is "
+                                  "not a number; the run stops",
+                                  too_fine,
+                                  top_length,
+                                  FINEST_BIN);
             }
         }
 
@@ -436,8 +429,8 @@ namespace timesteps {
 
             long long n_changed = 1;
             while (n_changed > 0) {
-                ghosts.copy_changed_to_ghost_cells(
-                    mesh.n_cells, active.cell, active.n, [&](auto function) { function(steps.needed_bin); });
+                ghosts.copy_active_to_ghost_cells(
+                    active.is_every_cell(), mesh.n_cells, [&](auto function) { function(steps.needed_bin); });
                 device::parallel_for(active.n, [=] HD(long i) {
                     const int cell    = active[(int)i];
                     const int limited = largest_need_of_face_neighbours(mesh, needed_bin, cell) - 1;
@@ -499,27 +492,12 @@ namespace timesteps {
             return BinRange{coarsest, finest};
         }
 
-        // counts the faces of the list that get a flux in this half, each from both sides; collective
-        void print_fluxes(const mesh::MeshPointers& mesh,
-                          const StepPointers&       at_sync,
-                          Half                      half,
-                          const mesh::CellList&     with_faces,
-                          const BinRange&           bins) {
-            const long long here     = device::sum(with_faces.n, [=] HD(long i) {
-                const int cell  = with_faces[(int)i];
-                const int first = mesh.first_face[cell];
-                long long n     = 0;
-                for (int face = first; face < first + mesh.n_faces[cell]; face++) {
-                    if (face_share(at_sync, cell, mesh.neighbour[face], half).time != 0.0) n++;
-                }
-                return n;
-            });
-            const long long n_fluxes = mpi::sum_over_ranks(here);
-            const char*     label    = (half == Half::first) ? "START" : "FINISH";
+        void print_fluxes(Half half, const BinRange& bins) {
+            const char* label = (half == Half::first) ? "START" : "FINISH";
             if constexpr (config::individual_timesteps) {
-                logging::print_labelled(label, "%lld fluxes (bin %s)", n_fluxes, text_of_bins(bins).c_str());
+                logging::print_labelled(label, "Computed fluxes (bin %s)", text_of_bins(bins).c_str());
             } else {
-                logging::print_labelled(label, "%lld fluxes", n_fluxes);
+                logging::print_labelled(label, "Computed fluxes");
             }
         }
 

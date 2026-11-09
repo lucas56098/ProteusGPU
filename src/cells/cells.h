@@ -64,13 +64,16 @@ namespace cells {
     // moving mesh with individual timesteps: seeds[c] and seeds[n_cells + ghost_cell] at the sync, without shifts
     void seeds_at_sync(Cells& cells, int n_ghost_cells, const timesteps::StepPointers& steps, Vec* seeds);
 
-    // the changed cells into their ghost cells, the gradients together with the seeds;
-    // all ranks pass every cell, or all pass a list; collective
-    void copy_primitive_variables_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts, const mesh::CellList& changed);
-    void copy_gradients_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts, const mesh::CellList& changed);
+    // the active cells into their ghost cells, the gradients together with the seeds;
+    // all ranks pass every cell, or all pass a list after ghosts.find_active_cells; collective
+    void copy_primitive_variables_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts, const mesh::CellList& active);
+    void copy_gradients_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts, const mesh::CellList& active);
 
-    // the four groups of every cell into every ghost cell, in one exchange; for new ghost cells; collective
+    // the four groups of every cell into every ghost cell, in one exchange; collective
     void copy_everything_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts);
+
+    // the same, but only into the ghost cells of the last ghosts.give_ghost_cells_to; collective
+    void copy_everything_to_new_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts);
 
 } // namespace cells
 

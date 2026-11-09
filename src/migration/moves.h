@@ -27,7 +27,7 @@ namespace migration {
         });
 
         device::Array<char> arriving("migration: the cells that come", (long)n_arriving * item_bytes);
-        device::exchange_items(leaving.data(), send_count.data(), arriving.data(), receive_count.data(), item_bytes);
+        device::exchange_items(leaving.data(), to, arriving.data(), from, item_bytes);
 
         offset = 0;
         for_each_field([&](auto& field) {

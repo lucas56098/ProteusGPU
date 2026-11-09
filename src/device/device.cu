@@ -5,14 +5,11 @@
 #include "logging/logging.h"
 #include "mpi/mpi.h"
 
-#ifdef CUDA_PROFILING
-#include <nvtx3/nvToolsExt.h>
-#endif
-
 #ifdef USE_OPENMP
 #include <omp.h>
 #endif
 
+#include <algorithm>
 #include <climits>
 #include <cstdlib>
 #include <cstring>
@@ -39,8 +36,12 @@ namespace device {
         void warn_if_limit_above(double bytes_of_rank, const char* what);
         void count_new_bytes(const char* name, long bytes);
         long bytes_held();
+        void copy_block_of_this_rank(const void*        send,
+                                     const mpi::Blocks& out,
+                                     void*              receive,
+                                     const mpi::Blocks& in,
+                                     int                item_bytes);
 #if defined(CUDA) && !defined(GPU_AWARE_MPI)
-        long bytes_of_items(const int* count, int item_bytes);
         void move_bytes(const void* memory, long bytes, int location_type, const char* what);
 #endif
 
@@ -116,6 +117,7 @@ namespace device {
     void copy_bytes(void* to, const void* from, long bytes) {
         if (bytes <= 0) return;
 #ifdef CUDA
+        const timers::Scope timer("GPU", timers::Type::gpu);
         stop_on_cuda_error(cudaMemcpy(to, from, bytes, cudaMemcpyDefault), "copying an array");
 #else
         std::memcpy(to, from, bytes);
@@ -157,36 +159,23 @@ namespace device {
     }
 
     // without GPU_AWARE_MPI, the items go to the host for MPI and back to the GPU after
-    void exchange_items(const void* send,
-                        const int*  send_count,
-                        void*       receive,
-                        const int*  receive_count,
-                        int         item_bytes) {
+    void exchange_items(const void*        send,
+                        const mpi::Blocks& out,
+                        void*              receive,
+                        const mpi::Blocks& in,
+                        int                item_bytes) {
+        copy_block_of_this_rank(send, out, receive, in, item_bytes);
 #if defined(CUDA) && !defined(GPU_AWARE_MPI)
         if (mpi::nranks() > 1) {
-            move_bytes(send, bytes_of_items(send_count, item_bytes), cudaMemLocationTypeHost, "items to send");
-            move_bytes(receive, bytes_of_items(receive_count, item_bytes), cudaMemLocationTypeHost, "items to receive");
+            move_bytes(send, (long)out.total * item_bytes, cudaMemLocationTypeHost, "items to send");
+            move_bytes(receive, (long)in.total * item_bytes, cudaMemLocationTypeHost, "items to receive");
         }
-        mpi::exchange_items(send, send_count, receive, receive_count, item_bytes);
+        mpi::exchange_items(send, out, receive, in, item_bytes);
         if (mpi::nranks() > 1) {
-            move_bytes(receive, bytes_of_items(receive_count, item_bytes), cudaMemLocationTypeDevice, "items received");
+            move_bytes(receive, (long)in.total * item_bytes, cudaMemLocationTypeDevice, "items received");
         }
 #else
-        mpi::exchange_items(send, send_count, receive, receive_count, item_bytes);
-#endif
-    }
-
-    void begin_named_range(const char* name) {
-#ifdef CUDA_PROFILING
-        nvtxRangePushA(name);
-#else
-        (void)name;
-#endif
-    }
-
-    void end_named_range() {
-#ifdef CUDA_PROFILING
-        nvtxRangePop();
+        mpi::exchange_items(send, out, receive, in, item_bytes);
 #endif
     }
 
@@ -278,19 +267,33 @@ namespace device {
 #endif
         }
 
-#if defined(CUDA) && !defined(GPU_AWARE_MPI)
-        long bytes_of_items(const int* count, int item_bytes) {
-            long items = 0;
-            for (int r = 0; r < mpi::nranks(); r++)
-                items += count[r];
-            return items * item_bytes;
+        // periodic copies of a rank's own cells are the only blocks a rank has with itself
+        void copy_block_of_this_rank(const void*        send,
+                                     const mpi::Blocks& out,
+                                     void*              receive,
+                                     const mpi::Blocks& in,
+                                     int                item_bytes) {
+            const int  here   = mpi::rank();
+            const auto in_out = std::lower_bound(out.ranks.begin(), out.ranks.end(), here);
+            const auto in_in  = std::lower_bound(in.ranks.begin(), in.ranks.end(), here);
+            const bool in_both =
+                in_out != out.ranks.end() && *in_out == here && in_in != in.ranks.end() && *in_in == here;
+            if (!in_both) return;
+
+            const long from = out.first[in_out - out.ranks.begin()];
+            const long to   = in.first[in_in - in.ranks.begin()];
+            copy_bytes(static_cast<char*>(receive) + to * item_bytes,
+                       static_cast<const char*>(send) + from * item_bytes,
+                       (long)out.counts[in_out - out.ranks.begin()] * item_bytes);
         }
 
+#if defined(CUDA) && !defined(GPU_AWARE_MPI)
         // moves bytes to host or GPU in one go, not page by page as MPI touches them
         void move_bytes(const void* memory, long bytes, int location_type, const char* what) {
             if (bytes <= 0) return;
-            cudaMemLocation to = {};
-            to.type            = (cudaMemLocationType)location_type;
+            const timers::Scope timer("GPU", timers::Type::gpu);
+            cudaMemLocation     to = {};
+            to.type                = (cudaMemLocationType)location_type;
             if (to.type == cudaMemLocationTypeDevice) stop_on_cuda_error(cudaGetDevice(&to.id), "finding the GPU");
             stop_on_cuda_error(cudaMemPrefetchAsync(memory, bytes, to, 0, 0), what);
             if (to.type == cudaMemLocationTypeHost) stop_on_cuda_error(cudaDeviceSynchronize(), what);

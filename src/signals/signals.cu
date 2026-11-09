@@ -19,6 +19,9 @@ namespace signals {
         // margin on the bound of a box, so that rounding never skips a cell that would reach the cell sooner
         constexpr double BOUND_SAFETY = 1e-10;
 
+        constexpr int ROOT_OF_RANK_TREE      = 1;
+        constexpr int MAX_DEPTH_OF_RANK_TREE = 64;
+
         void put_cells_in_tree_order(const ngbtree::TreePointers&  tree,
                                      const int*                    point,
                                      int                           n_cells,
@@ -43,6 +46,14 @@ namespace signals {
                                 const Bounds*                 bounds_of_node,
                                 Query*                        query,
                                 BetweenRanks&                 between);
+        void fill_tree_over_ranks(const BoundsOfRank& mine, int n_ranks, device::Array<BoundsOfRank>& of_node);
+        template <typename Function>
+        HD void for_each_rank_that_might_reach(const Query&        query,
+                                               const BoundsOfRank* of_node,
+                                               int                 n_ranks,
+                                               int                 here,
+                                               Function            function);
+        HD BoundsOfRank both_ranks(const BoundsOfRank& a, const BoundsOfRank& b);
         HD Bounds bounds_of_point(const Vec& velocity, double sound);
         HD Bounds combined(const Bounds& a, const Bounds& b);
         HD double sound_speed_of(const gas::Primitive& w);
@@ -97,7 +108,7 @@ namespace signals {
             });
         }
         if (mpi::nranks() > 1) {
-            const timers::Scope timer("OTHER_RANKS", timers::Type::communication);
+            const timers::Scope timer("OTHER_RANKS");
             search_other_ranks(
                 cells, tree, on_mesh, state, velocity_in_tree, sound_in_tree, bounds_of_node, query, between_ranks);
         }
@@ -186,18 +197,9 @@ namespace signals {
                     const gas::Primitive w = gas::load(state, (int)i);
                     return BoundsOfRank{seed[i], seed[i], bounds_of_point(w.velocity, sound_speed_of(w))};
                 },
-                [=] HD(const BoundsOfRank& a, const BoundsOfRank& b) {
-                    BoundsOfRank both{a.box_min, a.box_max, combined(a.bounds, b.bounds)};
-                    for (int d = 0; d < config::dim; d++) {
-                        both.box_min[d] = fmin(a.box_min[d], b.box_min[d]);
-                        both.box_max[d] = fmax(a.box_max[d], b.box_max[d]);
-                    }
-                    return both;
-                });
-            const std::vector<char> all = mpi::gather_items_from_all_ranks(&mine, 1, sizeof(BoundsOfRank));
-            between.of_rank.grow_to_at_least(n_ranks);
-            std::memcpy(between.of_rank.data(), all.data(), sizeof(BoundsOfRank) * n_ranks);
-            const BoundsOfRank* of_rank = between.of_rank.data();
+                [=] HD(const BoundsOfRank& a, const BoundsOfRank& b) { return both_ranks(a, b); });
+            fill_tree_over_ranks(mine, n_ranks, between.of_node);
+            const BoundsOfRank* of_node = between.of_node.data();
 
             // the pairs of a cell of the list and a rank; sent in the order of the ranks
             between.n_pairs_of_entry.grow_to_at_least(cells.n);
@@ -205,11 +207,7 @@ namespace signals {
             int* n_pairs_of_entry = between.n_pairs_of_entry.data();
             device::parallel_for(cells.n, [=] HD(long i) {
                 int n = 0;
-                for (int rank = 0; rank < n_ranks; rank++) {
-                    const BoundsOfRank& r = of_rank[rank];
-                    if (rank != here && time_at_least(query[i], r.box_min, r.box_max, r.bounds) < query[i].shortest)
-                        n++;
-                }
+                for_each_rank_that_might_reach(query[i], of_node, n_ranks, here, [&](int) { n++; });
                 n_pairs_of_entry[i] = n;
             });
             const int n_pairs = device::offsets_from_counts(cells.n, n_pairs_of_entry, between.first_pair.data());
@@ -223,21 +221,17 @@ namespace signals {
             const int* first_pair    = between.first_pair.data();
             device::parallel_for(cells.n, [=] HD(long i) {
                 int pair = first_pair[i];
-                for (int rank = 0; rank < n_ranks; rank++) {
-                    const BoundsOfRank& r = of_rank[rank];
-                    if (rank == here || !(time_at_least(query[i], r.box_min, r.box_max, r.bounds) < query[i].shortest))
-                        continue;
+                for_each_rank_that_might_reach(query[i], of_node, n_ranks, here, [&](int rank) {
                     entry_of_pair[pair] = (int)i;
                     key_of_pair[pair]   = (uint64_t)rank * (uint64_t)n_pairs + (uint64_t)pair;
                     pair_in_order[pair] = pair;
                     pair++;
-                }
+                });
             });
             device::sort_by_key(n_pairs, key_of_pair, pair_in_order);
 
             // the queries out, the searches, and back
             between.send_count.grow_to_at_least(n_ranks);
-            between.receive_count.grow_to_at_least(n_ranks);
             between.sent.grow_to_at_least(n_pairs);
             int* send_count = between.send_count.data();
             for (int rank = 0; rank < n_ranks; rank++)
@@ -247,18 +241,17 @@ namespace signals {
                 sent[k] = query[entry_of_pair[pair_in_order[k]]];
                 device::atomic_add(&send_count[key_of_pair[k] / (uint64_t)n_pairs], 1);
             });
-            mpi::exchange_counts(send_count, between.receive_count.data());
-            int n_received = 0;
-            for (int rank = 0; rank < n_ranks; rank++)
-                n_received += between.receive_count.data()[rank];
-            between.received.grow_to_at_least(n_received);
+            const mpi::Blocks to = mpi::blocks_of_counts(send_count, n_ranks);
+            mpi::Blocks       from;
+            mpi::counts_from_any_rank(to, 0, from);
+            between.received.grow_to_at_least(from.total);
             Query* received = between.received.data();
-            device::exchange_items(sent, send_count, received, between.receive_count.data(), sizeof(Query));
-            device::parallel_for<THREADS_PER_BLOCK, MIN_BLOCKS_PER_MULTIPROCESSOR>(n_received, [=] HD(long k) {
+            device::exchange_items(sent, to, received, from, sizeof(Query));
+            device::parallel_for<THREADS_PER_BLOCK, MIN_BLOCKS_PER_MULTIPROCESSOR>(from.total, [=] HD(long k) {
                 received[k].shortest =
                     shortest_time(received[k], tree, velocity_in_tree, sound_in_tree, bounds_of_node);
             });
-            device::exchange_items(received, between.receive_count.data(), sent, send_count, sizeof(Query));
+            device::exchange_items(received, from, sent, to, sizeof(Query));
 
             // the shortest time of every cell of the list over its pairs
             double* time_of_pair = between.time_of_pair.data();
@@ -267,6 +260,50 @@ namespace signals {
                 for (int pair = first_pair[i]; pair < first_pair[i] + n_pairs_of_entry[i]; pair++)
                     query[i].shortest = fmin(query[i].shortest, time_of_pair[pair]);
             });
+        }
+
+        // on every rank the same numbers, from the ranks up to the root; ranks next to each other are neighbours on the
+        // Hilbert curve, so the nodes stay small; collective
+        void fill_tree_over_ranks(const BoundsOfRank& mine, int n_ranks, device::Array<BoundsOfRank>& of_node) {
+            std::vector<BoundsOfRank> nodes(2 * n_ranks);
+            mpi::gather_one_item_from_all_ranks(&mine, (int)sizeof(BoundsOfRank), nodes.data() + n_ranks);
+            for (int node = n_ranks - 1; node >= ROOT_OF_RANK_TREE; node--)
+                nodes[node] = both_ranks(nodes[2 * node], nodes[2 * node + 1]);
+
+            of_node.grow_to_at_least(2 * n_ranks);
+            std::memcpy(of_node.data(), nodes.data(), sizeof(BoundsOfRank) * 2 * n_ranks);
+        }
+
+        // a node holds its ranks, so no rank below a node that cannot reach the cell sooner can reach it sooner either
+        template <typename Function>
+        HD void for_each_rank_that_might_reach(const Query&        query,
+                                               const BoundsOfRank* of_node,
+                                               int                 n_ranks,
+                                               int                 here,
+                                               Function            function) {
+            int waiting[MAX_DEPTH_OF_RANK_TREE];
+            int n_waiting        = 0;
+            waiting[n_waiting++] = ROOT_OF_RANK_TREE;
+            while (n_waiting > 0) {
+                const int           node = waiting[--n_waiting];
+                const BoundsOfRank& r    = of_node[node];
+                if (!(time_at_least(query, r.box_min, r.box_max, r.bounds) < query.shortest)) continue;
+                if (node >= n_ranks) {
+                    if (node - n_ranks != here) function(node - n_ranks);
+                    continue;
+                }
+                waiting[n_waiting++] = 2 * node + 1;
+                waiting[n_waiting++] = 2 * node;
+            }
+        }
+
+        HD BoundsOfRank both_ranks(const BoundsOfRank& a, const BoundsOfRank& b) {
+            BoundsOfRank both{a.box_min, a.box_max, combined(a.bounds, b.bounds)};
+            for (int d = 0; d < config::dim; d++) {
+                both.box_min[d] = fmin(a.box_min[d], b.box_min[d]);
+                both.box_max[d] = fmax(a.box_max[d], b.box_max[d]);
+            }
+            return both;
         }
 
         HD Bounds bounds_of_point(const Vec& velocity, double sound) {

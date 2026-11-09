@@ -3,7 +3,6 @@
 #include "hydro/hydro.h"
 
 #include "logging/logging.h"
-#include "mpi/mpi.h"
 
 #include <cmath>
 
@@ -122,14 +121,13 @@ namespace hydro {
                                        a.not_a_number + b.not_a_number};
             });
 
-        long long count[3] = {here.density_not_positive, here.energy_not_positive, here.not_a_number};
-        mpi::sum_over_ranks(count, 3);
-        if (count[0] + count[1] + count[2] == 0) return;
-        logging::stop_run(
-            "HYDRO: unphysical cells: %lld with density <= 0, %lld with energy <= 0, %lld with a NaN; the run stops",
-            count[0],
-            count[1],
-            count[2]);
+        if (here.density_not_positive + here.energy_not_positive + here.not_a_number == 0) return;
+        logging::stop_run("HYDRO: unphysical cells on this rank: %lld with density <= 0, %lld with energy <= 0, %lld "
+                          "with a NaN; the run "
+                          "stops",
+                          here.density_not_positive,
+                          here.energy_not_positive,
+                          here.not_a_number);
     }
 
     namespace {

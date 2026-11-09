@@ -50,14 +50,32 @@ namespace mpi {
     // every rank gets the items of all ranks, as bytes; collective
     std::vector<char> gather_items_from_all_ranks(const void* items, int n, int item_bytes);
 
-    // every rank tells every other rank how many items it will send; collective
-    void exchange_counts(const int* send_count, int* receive_count);
+    // every rank gets one item of every rank, that of rank r at all_items + r * item_bytes; collective
+    void gather_one_item_from_all_ranks(const void* item, int item_bytes, void* all_items);
 
-    // exchanges the items between the ranks; collective
-    void exchange_items(const void* send,
-                        const int*  send_count,
-                        void*       receive,
-                        const int*  receive_count,
-                        int         item_bytes);
+    // blocks of items for or from other ranks, by rising rank: block b holds counts[b] items from first[b] on
+    struct Blocks {
+        std::vector<int> ranks;
+        std::vector<int> counts;
+        std::vector<int> first;
+        int              total = 0;
+
+        void clear();
+        void add(int rank, int count);
+    };
+
+    // the blocks of the ranks r with count[r] > 0
+    Blocks blocks_of_counts(const int* count, int n_ranks);
+
+    // every rank learns how many items come, from ranks it does not know; returns the sum of to_sum; collective
+    long long counts_from_any_rank(const Blocks& out, long long to_sum, Blocks& in);
+
+    // the same when the senders are known, by rising rank: each of them sends a count, also 0, and each rank of out
+    // gets one; no other rank takes part
+    void counts_from_known_ranks(const Blocks& out, const std::vector<int>& senders, Blocks& in);
+
+    // the items of out go to their ranks and those of in come in; only ranks with items take part; leaves out the
+    // block of this rank (device::exchange_items copies that one)
+    void exchange_items(const void* send, const Blocks& out, void* receive, const Blocks& in, int item_bytes);
 
 } // namespace mpi

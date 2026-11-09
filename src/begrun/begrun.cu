@@ -7,6 +7,7 @@
 #include "io/io.h"
 #include "logging/logging.h"
 #include "mpi/mpi.h"
+#include "profile/profile.h"
 #include "timers/timers.h"
 
 #include <chrono>
@@ -44,11 +45,11 @@ namespace begrun {
                        mpi::sum_over_ranks((long long)sim.cells.n_cells));
 
         {
-            const timers::Scope timer("CUTS", timers::Type::communication);
+            const timers::Scope timer("CUTS");
             sim.domain.cut_by_number_of_cells(sim.cells.position.data(), sim.cells.n_cells);
         }
         {
-            const timers::Scope timer("MIGRATE", timers::Type::communication);
+            const timers::Scope timer("MIGRATE");
             cells::move_to_owners(sim.cells, sim.domain);
         }
         if (mpi::nranks() > 1) {
@@ -106,7 +107,7 @@ namespace begrun {
     }
 
     void endrun(const simulation::Simulation& sim) {
-        timers::print_summary();
+        profile::print_summary();
         device::print_max_memory_usage();
         logging::print("MAIN: Done. (Total runtime = %g s)",
                        std::chrono::duration<double>(std::chrono::steady_clock::now() - sim.start_of_run).count());

@@ -28,11 +28,12 @@ FORBIDDEN_MARK = "// forbidden"
 # the modules from the bottom up: layer, module, what it may use
 MODULE_TABLE = [
     ("core", "config", ""),
-    ("core", "mpi", "config"),
+    ("core", "timers", "config"),
+    ("core", "mpi", "config, timers"),
     ("core", "logging", "mpi"),
     ("core", "math", "config"),
-    ("core", "device", "logging"),
-    ("core", "timers", "mpi, logging, device"),
+    ("core", "device", "logging, timers"),
+    ("core", "profile", "timers, mpi, logging, device"),
     ("libraries", "seed", "math"),
     ("libraries", "keys", "math"),
     ("libraries", "ngbtree", "keys, device"),

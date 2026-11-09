@@ -3,10 +3,15 @@
 // Memory and loops on CPU and GPU; the only module with CUDA code (besides HD in config).
 
 #include "config/config.h"
+#include "timers/timers.h"
 
 #include <cstdint>
 #include <type_traits>
 #include <utility>
+
+namespace mpi {
+    struct Blocks;
+}
 
 namespace device {
 
@@ -132,16 +137,8 @@ namespace device {
                               const int*          index,
                               Array<ElementType>& field);
 
-    // mpi::exchange_items for items in array memory
-    void exchange_items(const void* send,
-                        const int*  send_count,
-                        void*       receive,
-                        const int*  receive_count,
-                        int         item_bytes);
-
-    // named ranges for Nsight Systems (only with CUDA_PROFILING)
-    void begin_named_range(const char* name);
-    void end_named_range();
+    // mpi::exchange_items for items in array memory, and the block of this rank as a copy
+    void exchange_items(const void* send, const mpi::Blocks& out, void* receive, const mpi::Blocks& in, int item_bytes);
 
 } // namespace device
 

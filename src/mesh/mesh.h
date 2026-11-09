@@ -35,6 +35,7 @@ namespace mesh {
         int        n;
         const int* cell;
         HD int operator[](int i) const { return cell ? cell[i] : i; }
+        bool is_every_cell() const { return cell == nullptr; }
     };
 
     inline CellList every_cell(const MeshPointers& mesh) {

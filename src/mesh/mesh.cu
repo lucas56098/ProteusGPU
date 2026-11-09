@@ -85,7 +85,7 @@ namespace mesh {
             every, n_cells, domain, 0.0, false, ghosts, seed, volume, centroid_from_seed, faces, work);
 
         {
-            const timers::Scope timer("GHOST_CELLS", timers::Type::communication);
+            const timers::Scope timer("GHOST_CELLS");
             n_ghost_cells = give_ghost_cells_to_ghost_seeds_of_faces(
                 every, n_cells, ghosts, faces, seed, volume, centroid_from_seed);
         }
@@ -115,8 +115,6 @@ namespace mesh {
                           const domain::Domain& domain,
                           double                drift_margin,
                           ghosts::Ghosts&       ghosts) {
-        if (!mpi::on_any_rank(cells.n > 0)) return;
-
         Vec* seed = this->seed.data();
         device::parallel_for(n_cells, [=] HD(long c) { seed[c] = seeds[c]; });
         ghosts.move_to(seeds, n_cells);
@@ -126,7 +124,7 @@ namespace mesh {
         const CellsPerTier per_tier = build_cells_in_rounds(
             cells, n_cells, domain, drift_margin, true, ghosts, this->seed, volume, centroid_from_seed, faces, work);
         {
-            const timers::Scope timer("GHOST_CELLS", timers::Type::communication);
+            const timers::Scope timer("GHOST_CELLS");
             n_ghost_cells = give_ghost_cells_to_ghost_seeds_of_faces(
                 cells, n_cells, ghosts, faces, this->seed, volume, centroid_from_seed);
         }
@@ -298,7 +296,7 @@ namespace mesh {
                 make_first_guess(cells, n_cells, drift_margin, domain, work);
             }
             {
-                const timers::Scope timer("GHOST_SEEDS", timers::Type::communication);
+                const timers::Scope timer("GHOST_SEEDS");
                 ask_for_balls(n_cells, domain, drift_margin, seed, ghosts, work);
             }
 
@@ -319,7 +317,7 @@ namespace mesh {
                         n_cells, domain, drift_margin, ghosts, seed, volume, centroid_from_seed, faces, work));
                 }
                 n_rounds++;
-                const timers::Scope timer("GHOST_SEEDS", timers::Type::communication);
+                const timers::Scope timer("GHOST_SEEDS");
                 const long long     n_asked = ask_for_balls(n_cells, domain, drift_margin, seed, ghosts, work);
                 asked                       = n_asked > 0;
                 if (asked) print_request_round(n_asked, ghosts, work.since_log);
@@ -374,8 +372,6 @@ namespace mesh {
             int*      asking   = work.list.data();
             const int n_asking = device::indices_where(
                 n_cells, [=] HD(int c) { return progress[c] == Progress::asks_for_more_points; }, asking);
-            const long long n_asked = mpi::sum_over_ranks((long long)n_asking);
-            if (n_asked == 0) return 0;
             stop_if_a_ball_cannot_grow(n_asking, work);
 
             work.ball_center.grow_to_at_least(n_asking);
@@ -389,7 +385,8 @@ namespace mesh {
                 center[i] = cell_seed[asking[i]];
                 radius[i] = next[asking[i]];
             });
-            ghosts.add_cells_in_balls(center, radius, n_asking, drift_margin, domain, work.tree, n_cells);
+            const long long n_asked =
+                ghosts.add_cells_in_balls(center, radius, n_asking, drift_margin, domain, work.tree, n_cells);
 
             // now they know every point in their balls
             device::parallel_for(n_asking, [=] HD(long i) {

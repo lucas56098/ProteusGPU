@@ -44,6 +44,7 @@ namespace device {
     template <typename Function> void parallel_for(long n, Function function) {
         if (n <= 0) return;
 #ifdef CUDA
+        const timers::Scope timer("GPU", timers::Type::gpu);
         call_function_per_gpu_thread<<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(n, function);
         wait_for_gpu("parallel_for");
 #else
@@ -67,6 +68,7 @@ namespace device {
     void parallel_for(long n, Function function) {
         if (n <= 0) return;
 #ifdef CUDA
+        const timers::Scope timer("GPU", timers::Type::gpu);
         call_function_per_gpu_thread_with_occupancy<THREADS_PER_BLOCK, MIN_BLOCKS_PER_MULTIPROCESSOR>
             <<<(n + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(n, function);
         wait_for_gpu("parallel_for with a given occupancy");
@@ -156,6 +158,7 @@ namespace device {
                           Result*         results) {
         const long n_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
 #ifdef CUDA
+        const timers::Scope timer("GPU", timers::Type::gpu);
         reduce_one_block_per_gpu_block<<<n_blocks, BLOCK_SIZE>>>(n, start, value_of_index, combine, results);
         wait_for_gpu("reduce");
 #else

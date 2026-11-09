@@ -13,7 +13,7 @@
 #include "logging/logging.h"
 #include "mesh/mesh.h"
 #include "mesh_motion/mesh_motion.h"
-#include "mpi/mpi.h"
+#include "profile/profile.h"
 #include "signals/signals.h"
 #include "simulation/simulation.h"
 #include "timers/timers.h"
@@ -94,13 +94,8 @@ namespace integrator {
 
                 // START
                 begin_steps(sim, of_sync);
-                sim.top.print_begin_of_steps(sim.sync,
-                                             sim.step,
-                                             seconds_left(sim),
-                                             sim.mesh.pointers(),
-                                             of_sync.active,
-                                             of_sync.with_faces,
-                                             sim.cells.steps);
+                sim.top.print_begin_of_steps(
+                    sim.sync, sim.step, seconds_left(sim), sim.mesh.pointers(), of_sync.active, sim.cells.steps);
 
                 // TIME
                 of_sync.active = go_to_next_sync(sim);
@@ -112,7 +107,7 @@ namespace integrator {
 
                 // FINISH
                 end_steps(sim, of_sync);
-                sim.top.print_end_of_steps(sim.sync, sim.mesh.pointers(), of_sync.with_faces, sim.cells.steps);
+                sim.top.print_end_of_steps();
 
                 if (sim.sync.ends_top_step) {
 
@@ -127,7 +122,7 @@ namespace integrator {
         }
         if constexpr (config::individual_timesteps) logging::print("\n%s", timesteps::LINE_BETWEEN_TOP_STEPS);
         if constexpr (config::profiling)
-            io::write_profile(sim.parameters.output_directory, sim.profile, timers::profile_of_run());
+            io::write_profile(sim.parameters.output_directory, sim.profile, profile::profile_of_run());
         logging::print("\nHYDRO: Finished after %d steps at t = %g", sim.step, sim.sync.time);
 
         begrun::endrun(sim);
@@ -152,7 +147,7 @@ namespace integrator {
             const double stop_time = std::min(sim.snapshots.next_time, sim.parameters.time_end);
             {
                 const timers::Scope timer("AGN_PREPARE");
-                sim.sources.prepare(sim.sync, sim.cells.id.data(), sim.cells.position.data(), state, on_mesh);
+                sim.sources.prepare(sim.sync, sim.cells.position.data(), state, on_mesh);
             }
             find_cfl_steps(sim.parameters,
                            active,
@@ -180,7 +175,7 @@ namespace integrator {
 
             // the neighbours on other ranks get the primitive variables before the gradients
             {
-                const timers::Scope timer("GHOST_CELLS", timers::Type::communication);
+                const timers::Scope timer("GHOST_CELLS");
                 cells::copy_primitive_variables_to_ghost_cells(sim.cells, sim.ghosts, active);
             }
             {
@@ -198,7 +193,7 @@ namespace integrator {
 
             // the neighbours on other ranks get the gradients and mesh velocities before the fluxes
             {
-                const timers::Scope timer("GHOST_CELLS", timers::Type::communication);
+                const timers::Scope timer("GHOST_CELLS");
                 cells::copy_gradients_to_ghost_cells(sim.cells, sim.ghosts, active);
             }
             {
@@ -295,11 +290,11 @@ namespace integrator {
 
             double imbalance_before = 0.0;
             {
-                const timers::Scope timer("CUTS", timers::Type::communication);
+                const timers::Scope timer("CUTS");
                 imbalance_before = cut_again_if_unbalanced(sim.domain, sim.cells);
             }
             {
-                const timers::Scope timer("MIGRATE", timers::Type::communication);
+                const timers::Scope timer("MIGRATE");
                 cells::move_to_owners(sim.cells, sim.domain);
             }
             if (imbalance_before > 0.0) {
@@ -321,7 +316,7 @@ namespace integrator {
             cells::make_room_for(sim.cells, sim.cells.n_cells, on_mesh.n_ghost_cells);
             active = mesh::every_cell(on_mesh);
             {
-                const timers::Scope timer("GHOST_CELLS", timers::Type::communication);
+                const timers::Scope timer("GHOST_CELLS");
                 cells::copy_everything_to_ghost_cells(sim.cells, sim.ghosts);
             }
         }
@@ -371,7 +366,7 @@ namespace integrator {
             build_cells_of_list(ending, sync, top, drift_margin, domain, ghosts, mesh, seeds, cells);
             mesh::CellList neighbours;
             {
-                const timers::Scope timer("NEIGHBOURS", timers::Type::communication);
+                const timers::Scope timer("NEIGHBOURS");
                 neighbours = mesh.neighbours_not_built(ending, ghosts);
             }
             build_cells_of_list(neighbours, sync, top, drift_margin, domain, ghosts, mesh, seeds, cells);
@@ -380,7 +375,7 @@ namespace integrator {
             return ending;
         }
 
-        // builds the cells of the list; when ghost cells came with it, refills all ghost cells and seeds; collective
+        // builds the cells of the list; ghost cells that came with it get their values and seeds; collective
         void build_cells_of_list(const mesh::CellList&     list,
                                  const timesteps::Sync&    sync,
                                  const timesteps::TopStep& top,
@@ -396,12 +391,11 @@ namespace integrator {
                 mesh.build_list(seeds.data(), cells.n_cells, list, domain, drift_margin, ghosts);
             }
             const int n_ghost_cells = mesh.pointers().n_ghost_cells;
-            if (!mpi::on_any_rank(n_ghost_cells > ghost_cells_before)) return;
 
-            const timers::Scope timer("GHOST_CELLS", timers::Type::communication);
+            const timers::Scope timer("GHOST_CELLS");
             cells::make_room_for(cells, cells.n_cells, n_ghost_cells);
-            cells::copy_everything_to_ghost_cells(cells, ghosts);
-            find_seeds_at_sync(sync, top, mesh, seeds, cells);
+            cells::copy_everything_to_new_ghost_cells(cells, ghosts);
+            if (n_ghost_cells > ghost_cells_before) find_seeds_at_sync(sync, top, mesh, seeds, cells);
         }
 
         void find_seeds_at_sync(const timesteps::Sync&    sync,
@@ -458,7 +452,7 @@ namespace integrator {
                     state);
             }
             {
-                const timers::Scope timer("UNPHYS_CHECK", timers::Type::communication);
+                const timers::Scope timer("UNPHYS_CHECK");
                 hydro::stop_if_unphysical(state, conserved, of_sync.active);
             }
         }
@@ -471,7 +465,7 @@ namespace integrator {
 
             const timers::Scope timer("IO_SNAPSHOT");
             if constexpr (config::profiling) {
-                io::write_profile(parameters.output_directory, sim.profile, timers::profile_of_run());
+                io::write_profile(parameters.output_directory, sim.profile, profile::profile_of_run());
             }
             io::write_snapshot(parameters.output_directory,
                                sim.snapshots.number,

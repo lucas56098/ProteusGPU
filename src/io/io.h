@@ -5,7 +5,7 @@
 #include "astro/astro.h"
 #include "cells/cells.h"
 #include "mesh/mesh.h"
-#include "timers/timers.h"
+#include "profile/profile.h"
 #include "timesteps/timesteps.h"
 
 #include <string>
@@ -42,6 +42,6 @@ namespace io {
                         const timesteps::StepPointers& steps);
 
     // writes the profile of the run so far, anew each time: seconds of every timer per rank and top step; collective
-    void write_profile(const std::string& directory, const std::string& name, const timers::Profile& profile);
+    void write_profile(const std::string& directory, const std::string& name, const profile::Profile& profile);
 
 } // namespace io

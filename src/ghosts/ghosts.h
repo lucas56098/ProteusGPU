@@ -4,9 +4,11 @@
 
 #include "device/device.h"
 #include "domain/domain.h"
+#include "mpi/mpi.h"
 #include "ngbtree/ngbtree.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace ghosts {
 
@@ -59,6 +61,12 @@ namespace ghosts {
         device::Array<int>      new_tree_index{"ghosts: tree indices of the new hits", 0};
     };
 
+    // a new ghost cell, as its owner learns of it: its cell there, and the rank that holds the ghost cell
+    struct NewGhostCell {
+        int cell;
+        int asker;
+    };
+
     // the ghosts, and what this rank sent
     class Ghosts {
       public:
@@ -66,14 +74,15 @@ namespace ghosts {
         void start_new_build();
 
         // the cells in the balls not here yet become ghost seeds; drift_margin widens a ball by how far a seed may have
-        // left the part of its rank; tree has the n_cells cells as input indices 0 to n_cells - 1; collective
-        void add_cells_in_balls(const Vec*            center,
-                                const double*         radius,
-                                int                   n_balls,
-                                double                drift_margin,
-                                const domain::Domain& domain,
-                                const ngbtree::Tree&  tree,
-                                int                   n_cells);
+        // left the part of its rank; tree has the n_cells cells as input indices 0 to n_cells - 1; returns how many
+        // balls all ranks asked for; collective
+        long long add_cells_in_balls(const Vec*            center,
+                                     const double*         radius,
+                                     int                   n_balls,
+                                     double                drift_margin,
+                                     const domain::Domain& domain,
+                                     const ngbtree::Tree&  tree,
+                                     int                   n_cells);
 
         // every used ghost seed without a ghost cell gets one, behind those so far; collective
         void give_ghost_cells_to(const bool* used, int n_cells);
@@ -82,9 +91,16 @@ namespace ghosts {
         // exchange; for_each_field(function) calls function(field) for every array; collective
         template <typename FieldList> void copy_to_ghost_cells(int n_cells, FieldList for_each_field);
 
-        // the same for the sorted cells changed[i] only; nullptr, on every rank at once, is every cell; collective
+        // the same, but only into the ghost cells of the last give_ghost_cells_to; collective
+        template <typename FieldList> void copy_to_new_ghost_cells(FieldList for_each_field);
+
+        // at the start of a sync that is not the end of a top step: which cells go to which ghost cells at this sync,
+        // those whose step ends at tick; end also holds the ghost cells, and both sides of a copy read the same value
+        void find_active_cells(const int* end, int tick);
+
+        // into the ghost cells of the active cells of find_active_cells; of every cell if all are active; collective
         template <typename FieldList>
-        void copy_changed_to_ghost_cells(int n_cells, const int* changed, int n_changed, FieldList for_each_field);
+        void copy_active_to_ghost_cells(bool every_cell_is_active, int n_cells, FieldList for_each_field);
 
         // every ghost seed to the seed of its cell plus its shift; seeds[n_cells + ghost_cell] for other ranks' cells
         void move_to(const Vec* seeds, int n_cells);
@@ -94,9 +110,10 @@ namespace ghosts {
 
         GhostPointers pointers() const;
 
-        // the parts of copy_changed_to_ghost_cells; public only as nvcc wants GPU loops in public member functions
-        int start_items_of_changed_cells(const int* changed, int n_changed, int item_bytes);
-        void find_ghost_cells_of_items_that_came(int item_bytes);
+        // the parts of give_ghost_cells_to; public only as nvcc wants GPU loops in public member functions
+        void number_new_ghost_cells(const bool* used);
+        void order_ghost_cells_by_owner(int n_cells);
+        void tell_owners_of_new_ghost_cells(int old_ghost_cells);
 
       private:
         int                n_ghost_seeds = 0;
@@ -116,25 +133,41 @@ namespace ghosts {
         device::Array<int> ghost_cell{"ghosts: ghost cell of every ghost seed", 0};
         device::Array<int> ghost_seed{"ghosts: ghost seed of every ghost cell", 0};
 
+        // the ranks that hold cells of this rank as ghost seeds, and the ranks whose cells this rank holds, in this
+        // build
+        std::vector<int> askers;
+        std::vector<int> owners;
+
         // n_cells + ghost_cell of the ghost cells by owner, in the order the values from the owners come
-        device::Array<int> ghost_cell_place_by_owner{"ghosts: places of the ghost cells by owner", 0};
+        device::Array<int>      ghost_cell_place_by_owner{"ghosts: places of the ghost cells by owner", 0};
+        device::Array<int>      ghost_cell_by_owner{"ghosts: ghost cells by owner", 0};
+        device::Array<uint64_t> owner_of_ghost_cell_by_owner{"ghosts: owners of the ghost cells, sorted", 0};
 
-        // what the copies send: ghost cells per owner here, cells sent per rank in the order of its ghost cells
-        device::Array<int> ghost_cells_of_rank{"ghosts: ghost cells of every owner", 0};
-        device::Array<int> cells_for_rank{"ghosts: cells sent to every rank", 0};
-        int                n_cells_sent = 0;
-        device::Array<int> cell_sent{"ghosts: cells sent, by asking rank", 0};
-        device::Array<int> first_ghost_cell_of_rank{"ghosts: first ghost cell of every owner", 0};
-        device::Array<int> first_cell_for_rank{"ghosts: first cell sent to every rank", 0};
+        // what the copies send: the ghost cells by owner, and the cells by asking rank in the order of its ghost cells
+        mpi::Blocks             ghost_cells_from_owners;
+        mpi::Blocks             cells_to_askers;
+        int                     n_cells_sent = 0;
+        device::Array<int>      cell_sent{"ghosts: cells sent, by asking rank", 0};
+        device::Array<uint64_t> asker_of_cell_sent{"ghosts: asking ranks of the cells sent, sorted", 0};
 
-        // the work of a copy of changed cells
-        device::Array<int> changed_sent{"ghosts: places of the changed cells sent", 0};
-        device::Array<int> changed_cell_sent{"ghosts: changed cells sent", 0};
-        device::Array<int> changed_for_rank{"ghosts: changed cells sent to every rank", 0};
-        device::Array<int> changed_from_rank{"ghosts: changed cells from every rank", 0};
-        device::Array<int> first_changed_from_rank{"ghosts: first changed cell from every rank", 0};
-        int                n_changed_received = 0;
-        device::Array<int> ghost_cell_of_changed{"ghosts: ghost cells of the changed cells that came", 0};
+        // the last give_ghost_cells_to: its new ghost cells by owner, and the new ones of other ranks by asking rank
+        mpi::Blocks                 new_from_owners;
+        mpi::Blocks                 new_to_askers;
+        device::Array<int>          new_by_owner{"ghosts: new ghost cells, in the order by owner", 0};
+        device::Array<int>          place_of_new_ghost_cell{"ghosts: places of the new ghost cells by owner", 0};
+        device::Array<NewGhostCell> new_asked_here{"ghosts: new ghost cells to tell their owners", 0};
+        device::Array<NewGhostCell> new_asked_of_this_rank{"ghosts: new ghost cells of other ranks", 0};
+        device::Array<int>          cell_of_new_asked{"ghosts: cells of the new ghost cells of other ranks", 0};
+
+        // the copies of the active cells at a sync
+        mpi::Blocks        active_to_askers;
+        mpi::Blocks        active_from_owners;
+        int                n_active_cells_sent  = 0;
+        int                n_active_ghost_cells = 0;
+        device::Array<int> active_place_sent{"ghosts: places of the active cells sent", 0};
+        device::Array<int> active_cell_sent{"ghosts: active cells sent", 0};
+        device::Array<int> active_place_by_owner{"ghosts: places of the active ghost cells by owner", 0};
+        device::Array<int> active_ghost_cell{"ghosts: active ghost cells", 0};
 
         // the work of one call, kept so that the next call reuses the memory
         device::Array<char> values_sent{"ghosts: values sent to the ghost cells", 0};

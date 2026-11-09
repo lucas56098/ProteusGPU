@@ -190,7 +190,7 @@ namespace io {
     }
 
     // rank 0 writes the steps and times, which every rank has; every rank its own block of seconds
-    void write_profile(const std::string& directory, const std::string& name, const timers::Profile& profile) {
+    void write_profile(const std::string& directory, const std::string& name, const profile::Profile& profile) {
         std::string path = directory;
         if (!path.empty() && path.back() != '/') path += '/';
         path += name;

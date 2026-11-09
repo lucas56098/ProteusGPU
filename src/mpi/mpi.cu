@@ -2,15 +2,19 @@
 
 #include "mpi/mpi.h"
 
+#include "timers/timers.h"
+
 #ifdef USE_MPI
 #if __has_include(<mpi-ext.h>)
 #include <mpi-ext.h>
 #endif
 #endif
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace mpi {
@@ -31,7 +35,21 @@ namespace mpi {
 
         enum class Operation { min, max, sum };
 
+        // between two ranks MPI keeps the order of the messages of one tag, so these two need no more than that
+        constexpr int TAG_OF_KNOWN_COUNTS = 6001;
+        constexpr int TAG_OF_ITEMS        = 6002;
+
+        // a rank can already be in the next counts_from_any_rank while another one still is in this one
+        constexpr int FIRST_TAG_OF_COUNTS_FROM_ANY_RANK = 7000;
+        constexpr int TAGS_OF_COUNTS_FROM_ANY_RANK      = 4096;
+
         template <typename Number> Number combined_over_ranks(Number value, Operation operation);
+#ifdef USE_MPI
+        int tag_of_next_counts_from_any_rank();
+        void take_a_count_that_came(int tag, std::vector<std::pair<int, int>>& came);
+        bool all_are_taken(std::vector<MPI_Request>& sends);
+        void blocks_of_counts_that_came(std::vector<std::pair<int, int>>& came, Blocks& in);
+#endif
 
     } // namespace
 
@@ -142,6 +160,7 @@ namespace mpi {
 
     void sum_over_ranks(long long* values, int n) {
 #ifdef USE_MPI
+        const timers::Scope timer("MPI_REDUCE", timers::Type::mpi);
         MPI_Allreduce(MPI_IN_PLACE, values, n, MPI_LONG_LONG, MPI_SUM, world.comm);
 #else
         (void)values;
@@ -155,6 +174,7 @@ namespace mpi {
 
     void gather_from_all_ranks(long long value, long long* value_of_rank) {
 #ifdef USE_MPI
+        const timers::Scope timer("MPI_GATHER", timers::Type::mpi);
         MPI_Allgather(&value, 1, MPI_LONG_LONG, value_of_rank, 1, MPI_LONG_LONG, world.comm);
 #else
         value_of_rank[0] = value;
@@ -163,6 +183,7 @@ namespace mpi {
 
     std::vector<char> gather_items_from_all_ranks(const void* items, int n, int item_bytes) {
 #ifdef USE_MPI
+        const timers::Scope timer("MPI_GATHER", timers::Type::mpi);
 
         std::vector<int> bytes_of_rank(world.nranks), first_byte(world.nranks, 0);
 
@@ -185,41 +206,143 @@ namespace mpi {
 #endif
     }
 
-    void exchange_counts(const int* send_count, int* receive_count) {
+    void gather_one_item_from_all_ranks(const void* item, int item_bytes, void* all_items) {
 #ifdef USE_MPI
-        MPI_Alltoall(send_count, 1, MPI_INT, receive_count, 1, MPI_INT, world.comm);
+        const timers::Scope timer("MPI_GATHER", timers::Type::mpi);
+        MPI_Allgather(item, item_bytes, MPI_BYTE, all_items, item_bytes, MPI_BYTE, world.comm);
 #else
-        receive_count[0] = send_count[0];
+        std::memcpy(all_items, item, (size_t)item_bytes);
 #endif
     }
 
-    void exchange_items(const void* send,
-                        const int*  send_count,
-                        void*       receive,
-                        const int*  receive_count,
-                        int         item_bytes) {
-#ifdef USE_MPI
-        std::vector<int> send_offset(world.nranks), receive_offset(world.nranks);
-        for (int r = 1; r < world.nranks; r++) {
-            send_offset[r]    = send_offset[r - 1] + send_count[r - 1];
-            receive_offset[r] = receive_offset[r - 1] + receive_count[r - 1];
+    void Blocks::clear() {
+        ranks.clear();
+        counts.clear();
+        first.clear();
+        total = 0;
+    }
+
+    void Blocks::add(int rank, int count) {
+        ranks.push_back(rank);
+        counts.push_back(count);
+        first.push_back(total);
+        total += count;
+    }
+
+    Blocks blocks_of_counts(const int* count, int n_ranks) {
+        Blocks blocks;
+        for (int r = 0; r < n_ranks; r++) {
+            if (count[r] > 0) blocks.add(r, count[r]);
         }
-        MPI_Datatype item;
+        return blocks;
+    }
+
+    // the counts go out as synchronous sends, which end when they are taken; a rank joins the reduction once all its
+    // sends have ended, so when the reduction ends every count of every rank has been taken
+    long long counts_from_any_rank(const Blocks& out, long long to_sum, Blocks& in) {
+#ifdef USE_MPI
+        const timers::Scope              timer("MPI_COUNTS", timers::Type::mpi);
+        const int                        tag = tag_of_next_counts_from_any_rank();
+        std::vector<std::pair<int, int>> came;
+        std::vector<MPI_Request>         sends;
+        for (size_t b = 0; b < out.ranks.size(); b++) {
+            if (out.ranks[b] == world.rank) {
+                came.emplace_back(world.rank, out.counts[b]);
+                continue;
+            }
+            sends.emplace_back();
+            MPI_Issend(&out.counts[b], 1, MPI_INT, out.ranks[b], tag, world.comm, &sends.back());
+        }
+
+        long long   sum        = 0;
+        MPI_Request reduction  = MPI_REQUEST_NULL;
+        bool        has_joined = false;
+        int         all_joined = 0;
+        while (!all_joined) {
+            take_a_count_that_came(tag, came);
+            if (has_joined) {
+                MPI_Test(&reduction, &all_joined, MPI_STATUS_IGNORE);
+            } else if (all_are_taken(sends)) {
+                MPI_Iallreduce(&to_sum, &sum, 1, MPI_LONG_LONG, MPI_SUM, world.comm, &reduction);
+                has_joined = true;
+            }
+        }
+        blocks_of_counts_that_came(came, in);
+        return sum;
+#else
+        in = out;
+        return to_sum;
+#endif
+    }
+
+    void counts_from_known_ranks(const Blocks& out, const std::vector<int>& senders, Blocks& in) {
+#ifdef USE_MPI
+        const timers::Scope      timer("MPI_COUNTS", timers::Type::mpi);
+        std::vector<int>         came(senders.size(), 0);
+        std::vector<MPI_Request> requests;
+        for (size_t j = 0; j < senders.size(); j++) {
+            if (senders[j] == world.rank) continue;
+            requests.emplace_back();
+            MPI_Irecv(&came[j], 1, MPI_INT, senders[j], TAG_OF_KNOWN_COUNTS, world.comm, &requests.back());
+        }
+        for (size_t b = 0; b < out.ranks.size(); b++) {
+            if (out.ranks[b] == world.rank) {
+                const size_t j = std::lower_bound(senders.begin(), senders.end(), world.rank) - senders.begin();
+                came[j]        = out.counts[b];
+                continue;
+            }
+            requests.emplace_back();
+            MPI_Isend(&out.counts[b], 1, MPI_INT, out.ranks[b], TAG_OF_KNOWN_COUNTS, world.comm, &requests.back());
+        }
+        if (!requests.empty()) MPI_Waitall((int)requests.size(), requests.data(), MPI_STATUSES_IGNORE);
+
+        in.clear();
+        for (size_t j = 0; j < senders.size(); j++)
+            in.add(senders[j], came[j]);
+#else
+        (void)senders;
+        in = out;
+#endif
+    }
+
+    void exchange_items(const void* send, const Blocks& out, void* receive, const Blocks& in, int item_bytes) {
+#ifdef USE_MPI
+        const timers::Scope timer("MPI_ITEMS", timers::Type::mpi);
+        MPI_Datatype        item;
         MPI_Type_contiguous(item_bytes, MPI_BYTE, &item);
         MPI_Type_commit(&item);
-        MPI_Alltoallv(send,
-                      send_count,
-                      send_offset.data(),
+
+        std::vector<MPI_Request> requests;
+        for (size_t b = 0; b < in.ranks.size(); b++) {
+            if (in.ranks[b] == world.rank || in.counts[b] == 0) continue;
+            requests.emplace_back();
+            MPI_Irecv(static_cast<char*>(receive) + (long)in.first[b] * item_bytes,
+                      in.counts[b],
                       item,
-                      receive,
-                      receive_count,
-                      receive_offset.data(),
+                      in.ranks[b],
+                      TAG_OF_ITEMS,
+                      world.comm,
+                      &requests.back());
+        }
+        for (size_t b = 0; b < out.ranks.size(); b++) {
+            if (out.ranks[b] == world.rank || out.counts[b] == 0) continue;
+            requests.emplace_back();
+            MPI_Isend(static_cast<const char*>(send) + (long)out.first[b] * item_bytes,
+                      out.counts[b],
                       item,
-                      world.comm);
+                      out.ranks[b],
+                      TAG_OF_ITEMS,
+                      world.comm,
+                      &requests.back());
+        }
+        if (!requests.empty()) MPI_Waitall((int)requests.size(), requests.data(), MPI_STATUSES_IGNORE);
         MPI_Type_free(&item);
 #else
-        (void)receive_count;
-        if (send_count[0] > 0) std::memcpy(receive, send, (size_t)send_count[0] * item_bytes);
+        (void)send;
+        (void)out;
+        (void)receive;
+        (void)in;
+        (void)item_bytes;
 #endif
     }
 
@@ -252,7 +375,8 @@ namespace mpi {
 
         template <typename Number> Number combined_over_ranks(Number value, Operation operation) {
 #ifdef USE_MPI
-            Number result;
+            const timers::Scope timer("MPI_REDUCE", timers::Type::mpi);
+            Number              result;
             MPI_Allreduce(&value, &result, 1, mpi_type_of<Number>(), mpi_operation_of(operation), world.comm);
             return result;
 #else
@@ -260,6 +384,38 @@ namespace mpi {
             return value;
 #endif
         }
+
+#ifdef USE_MPI
+        // every rank calls counts_from_any_rank equally often, so all agree on the tag
+        int tag_of_next_counts_from_any_rank() {
+            static int calls = 0;
+            calls            = (calls + 1) % TAGS_OF_COUNTS_FROM_ANY_RANK;
+            return FIRST_TAG_OF_COUNTS_FROM_ANY_RANK + calls;
+        }
+
+        void take_a_count_that_came(int tag, std::vector<std::pair<int, int>>& came) {
+            int        arrived = 0;
+            MPI_Status status;
+            MPI_Iprobe(MPI_ANY_SOURCE, tag, world.comm, &arrived, &status);
+            if (!arrived) return;
+            int count = 0;
+            MPI_Recv(&count, 1, MPI_INT, status.MPI_SOURCE, tag, world.comm, MPI_STATUS_IGNORE);
+            came.emplace_back(status.MPI_SOURCE, count);
+        }
+
+        bool all_are_taken(std::vector<MPI_Request>& sends) {
+            int all_taken = 1;
+            if (!sends.empty()) MPI_Testall((int)sends.size(), sends.data(), &all_taken, MPI_STATUSES_IGNORE);
+            return all_taken != 0;
+        }
+
+        void blocks_of_counts_that_came(std::vector<std::pair<int, int>>& came, Blocks& in) {
+            std::sort(came.begin(), came.end());
+            in.clear();
+            for (const auto& [rank, count] : came)
+                in.add(rank, count);
+        }
+#endif
 
     } // namespace
 

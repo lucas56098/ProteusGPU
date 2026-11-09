@@ -23,7 +23,6 @@ namespace astro {
 
         // START, before the CFL steps: the cold gas near the centre, whether the AGN fires or switched on; collective
         void prepare(const timesteps::Sync&        sync,
-                     const long*                   id,
                      const Vec*                    position,
                      const gas::PrimitivePointers& state,
                      const mesh::MeshPointers&     mesh);

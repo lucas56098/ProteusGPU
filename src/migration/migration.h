@@ -3,6 +3,7 @@
 // Moves cells with all their fields to other ranks; the caller gives every destination and the per-cell arrays.
 
 #include "device/device.h"
+#include "mpi/mpi.h"
 
 namespace migration {
 
@@ -24,7 +25,8 @@ namespace migration {
         int                n_arriving = 0;
         device::Array<int> leaving_order{"migration: cells in the order they leave", 0};
         device::Array<int> send_count{"migration: cells to every rank", 0};
-        device::Array<int> receive_count{"migration: cells from every rank", 0};
+        mpi::Blocks        to;
+        mpi::Blocks        from;
         int                n_places = 0; // of leaving cells before n_cells - n_leaving
         device::Array<int> place{"migration: places of leaving cells to fill", 0};
         device::Array<int> filler{"migration: staying cells that fill them", 0};

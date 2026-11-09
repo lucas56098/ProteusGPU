@@ -2,8 +2,6 @@
 
 #include "ghosts/ghosts.h"
 
-#include "mpi/mpi.h"
-
 #include <algorithm>
 #include <utility>
 
@@ -30,7 +28,11 @@ namespace ghosts {
                                    const domain::DomainPointers& domain,
                                    ItemsByRank<Query>&           queries,
                                    device::Array<int>&           next_place);
-        template <typename Item> void send_to_their_ranks(const ItemsByRank<Item>& out, ItemsByRank<Item>& in);
+        template <typename Item>
+        void receive_items(const ItemsByRank<Item>& out,
+                           const mpi::Blocks&       to,
+                           const mpi::Blocks&       from,
+                           ItemsByRank<Item>&       in);
         void find_hits(const ngbtree::Tree& tree, int n_cells, const ItemsByRank<Query>& queries, Hits& hits);
         void keep_new_hits(const device::Array<uint64_t>& sent, int n_sent, Hits& hits);
         void write_answers(const ngbtree::Tree& tree, const Hits& hits, ItemsByRank<Answer>& answers);
@@ -44,6 +46,9 @@ namespace ghosts {
                                 device::Array<int>&        owner,
                                 device::Array<int>&        cell_on_owner,
                                 device::Array<int>&        shift);
+        void add_ranks_with_items(const mpi::Blocks& blocks, std::vector<int>& ranks);
+        mpi::Blocks blocks_of_sorted_ranks(const uint64_t* rank_of_item, int n, const std::vector<int>& ranks);
+        mpi::Blocks blocks_of_places(const int* place, int n, const mpi::Blocks& all);
 
         template <typename Function>
         HD void for_each_query_of_ball(const domain::DomainPointers& domain,
@@ -67,37 +72,58 @@ namespace ghosts {
         n_ghost_cells           = 0;
         n_seeds_with_ghost_cell = 0;
         n_cells_sent            = 0;
+        askers.clear();
+        owners.clear();
+        ghost_cells_from_owners.clear();
+        cells_to_askers.clear();
     }
 
     // every rank takes part, also with no balls of its own
-    void Ghosts::add_cells_in_balls(const Vec*            center,
-                                    const double*         radius,
-                                    int                   n_balls,
-                                    double                drift_margin,
-                                    const domain::Domain& domain,
-                                    const ngbtree::Tree&  tree,
-                                    int                   n_cells) {
+    long long Ghosts::add_cells_in_balls(const Vec*            center,
+                                         const double*         radius,
+                                         int                   n_balls,
+                                         double                drift_margin,
+                                         const domain::Domain& domain,
+                                         const ngbtree::Tree&  tree,
+                                         int                   n_cells) {
         write_queries_by_rank(center, radius, n_balls, drift_margin, domain.pointers(), queries_out, next_place);
-        send_to_their_ranks(queries_out, queries_in);
+        const mpi::Blocks queries_to = mpi::blocks_of_counts(queries_out.count.data(), mpi::nranks());
+        mpi::Blocks       queries_from;
+        const long long   n_asked = mpi::counts_from_any_rank(queries_to, n_balls, queries_from);
+        if (n_asked == 0) return 0;
+        receive_items(queries_out, queries_to, queries_from, queries_in);
 
         find_hits(tree, n_cells, queries_in, hits);
         keep_new_hits(sent, n_sent, hits);
         write_answers(tree, hits, answers_out);
         remember_as_sent(hits, sent, n_sent, merged_sent);
-        send_to_their_ranks(answers_out, answers_in);
+
+        // every rank that asked gets an answer, also an empty one
+        mpi::Blocks answers_to, answers_from;
+        for (int asker : queries_from.ranks)
+            answers_to.add(asker, answers_out.count[asker]);
+        mpi::counts_from_known_ranks(answers_to, queries_to.ranks, answers_from);
+        receive_items(answers_out, answers_to, answers_from, answers_in);
 
         append_ghost_seeds(answers_in, n_ghost_seeds, position, owner, cell_on_owner, shift);
+        add_ranks_with_items(answers_to, askers);
+        add_ranks_with_items(answers_from, owners);
+        return n_asked;
     }
 
     void Ghosts::give_ghost_cells_to(const bool* used, int n_cells) {
-        const int n_ranks       = mpi::nranks();
+        const int old_ghost_cells = n_ghost_cells;
+        number_new_ghost_cells(used);
+        order_ghost_cells_by_owner(n_cells);
+        tell_owners_of_new_ghost_cells(old_ghost_cells);
+    }
+
+    // the new ghost cells, behind the old ones
+    void Ghosts::number_new_ghost_cells(const bool* used) {
         const int n_ghost_seeds = this->n_ghost_seeds;
         this->ghost_cell.grow_to_at_least(n_ghost_seeds);
         this->ghost_seed.grow_to_at_least(n_ghost_seeds);
-        ghost_cells_of_rank.grow_to_at_least(n_ranks);
-        cells_for_rank.grow_to_at_least(n_ranks);
 
-        // the new ghost cells, behind the old ones
         int*      ghost_cell      = this->ghost_cell.data();
         int*      ghost_seed      = this->ghost_seed.data();
         const int old_ghost_cells = this->n_ghost_cells;
@@ -109,112 +135,112 @@ namespace ghosts {
             n_new, [=] HD(long i) { ghost_cell[ghost_seed[old_ghost_cells + i]] = old_ghost_cells + (int)i; });
         this->n_ghost_cells     = old_ghost_cells + n_new;
         n_seeds_with_ghost_cell = n_ghost_seeds;
-        const int n_ghost_cells = this->n_ghost_cells;
+    }
 
-        // the ghost cells by owner; the sort keeps the order within an owner, which is the order the owners send in
-        device::Array<uint64_t> owner_of_ghost_cell("ghosts: owners of the ghost cells", n_ghost_cells);
-        device::Array<int>      by_owner("ghosts: ghost cells by owner", n_ghost_cells);
-        device::Array<int>      cell_of_ghost_cell("ghosts: cells of the ghost cells on their owners", n_ghost_cells);
+    // the sort keeps the order within an owner, so the new ghost cells of an owner come after its old ones
+    void Ghosts::order_ghost_cells_by_owner(int n_cells) {
+        const int n_ghost_cells = this->n_ghost_cells;
+        owner_of_ghost_cell_by_owner.grow_to_at_least(n_ghost_cells);
+        ghost_cell_by_owner.grow_to_at_least(n_ghost_cells);
         ghost_cell_place_by_owner.grow_to_at_least(n_ghost_cells);
-        const int* owner         = this->owner.data();
-        const int* cell_on_owner = this->cell_on_owner.data();
-        uint64_t*  key           = owner_of_ghost_cell.data();
-        int*       order         = by_owner.data();
+
+        const int* owner      = this->owner.data();
+        const int* ghost_seed = this->ghost_seed.data();
+        uint64_t*  key        = owner_of_ghost_cell_by_owner.data();
+        int*       order      = ghost_cell_by_owner.data();
+        int*       place      = ghost_cell_place_by_owner.data();
         device::parallel_for(n_ghost_cells, [=] HD(long i) {
             key[i]   = (uint64_t)owner[ghost_seed[i]];
             order[i] = (int)i;
         });
-        device::sort_by_key(n_ghost_cells, owner_of_ghost_cell.data(), order);
+        device::sort_by_key(n_ghost_cells, key, order);
+        device::parallel_for(n_ghost_cells, [=] HD(long i) { place[i] = n_cells + order[i]; });
 
-        int* place = ghost_cell_place_by_owner.data();
-        int* cell  = cell_of_ghost_cell.data();
-        device::parallel_for(n_ghost_cells, [=] HD(long i) {
-            place[i] = n_cells + order[i];
-            cell[i]  = cell_on_owner[ghost_seed[order[i]]];
-        });
+        ghost_cells_from_owners = blocks_of_sorted_ranks(key, n_ghost_cells, owners);
+    }
 
-        const uint64_t* first = owner_of_ghost_cell.data();
-        const uint64_t* end   = first + n_ghost_cells;
-        for (int r = 0; r < n_ranks; r++)
-            ghost_cells_of_rank[r] =
-                (int)(std::lower_bound(first, end, (uint64_t)r + 1) - std::lower_bound(first, end, (uint64_t)r));
+    // every owner learns only of its new ghost cells, and adds them behind the cells it sends that rank already
+    void Ghosts::tell_owners_of_new_ghost_cells(int old_ghost_cells) {
+        const int       n_ghost_cells = this->n_ghost_cells;
+        const uint64_t* key           = owner_of_ghost_cell_by_owner.data();
+        const int*      order         = ghost_cell_by_owner.data();
+        const int*      place         = ghost_cell_place_by_owner.data();
+        const int*      ghost_seed    = this->ghost_seed.data();
+        const int*      cell_on_owner = this->cell_on_owner.data();
+        const int       here          = mpi::rank();
 
-        mpi::exchange_counts(ghost_cells_of_rank.data(), cells_for_rank.data());
-        first_ghost_cell_of_rank.grow_to_at_least(n_ranks + 1);
-        first_cell_for_rank.grow_to_at_least(n_ranks + 1);
-        first_ghost_cell_of_rank[0] = 0;
-        first_cell_for_rank[0]      = 0;
-        for (int r = 0; r < n_ranks; r++) {
-            first_ghost_cell_of_rank[r + 1] = first_ghost_cell_of_rank[r] + ghost_cells_of_rank[r];
-            first_cell_for_rank[r + 1]      = first_cell_for_rank[r] + cells_for_rank[r];
+        new_by_owner.grow_to_at_least(n_ghost_cells);
+        int*      new_one = new_by_owner.data();
+        const int n_new =
+            device::indices_where(n_ghost_cells, [=] HD(int i) { return order[i] >= old_ghost_cells; }, new_one);
+
+        // a count goes to every owner, also 0, as it waits for one from every rank it gave ghost seeds to
+        new_from_owners.clear();
+        for (int rank : owners) {
+            const int begin = number_below(key, n_ghost_cells, (uint64_t)rank);
+            const int end   = number_below(key, n_ghost_cells, (uint64_t)rank + 1);
+            new_from_owners.add(rank, number_below(new_one, n_new, end) - number_below(new_one, n_new, begin));
         }
+        mpi::counts_from_known_ranks(new_from_owners, askers, new_to_askers);
 
-        // the owners learn which cells they send
-        n_cells_sent = first_cell_for_rank[n_ranks];
+        new_asked_here.grow_to_at_least(n_new);
+        place_of_new_ghost_cell.grow_to_at_least(n_new);
+        new_asked_of_this_rank.grow_to_at_least(new_to_askers.total);
+        NewGhostCell* asked     = new_asked_here.data();
+        int*          place_new = place_of_new_ghost_cell.data();
+        device::parallel_for(n_new, [=] HD(long k) {
+            asked[k]     = NewGhostCell{cell_on_owner[ghost_seed[order[new_one[k]]]], here};
+            place_new[k] = place[new_one[k]];
+        });
+        device::exchange_items(new_asked_here.data(),
+                               new_from_owners,
+                               new_asked_of_this_rank.data(),
+                               new_to_askers,
+                               (int)sizeof(NewGhostCell));
+
+        const int n_more = new_to_askers.total;
+        if (n_more == 0) return;
+        const int n_before = n_cells_sent;
+        n_cells_sent       = n_before + n_more;
         cell_sent.grow_to_at_least(n_cells_sent);
-        device::exchange_items(cell_of_ghost_cell.data(),
-                               ghost_cells_of_rank.data(),
-                               cell_sent.data(),
-                               cells_for_rank.data(),
-                               (int)sizeof(int));
+        asker_of_cell_sent.grow_to_at_least(n_cells_sent);
+        cell_of_new_asked.grow_to_at_least(n_more);
+
+        const NewGhostCell* came     = new_asked_of_this_rank.data();
+        int*                cell     = cell_sent.data();
+        uint64_t*           asker    = asker_of_cell_sent.data();
+        int*                new_cell = cell_of_new_asked.data();
+        device::parallel_for(n_more, [=] HD(long k) {
+            cell[n_before + k]  = came[k].cell;
+            asker[n_before + k] = (uint64_t)came[k].asker;
+            new_cell[k]         = came[k].cell;
+        });
+        device::sort_by_key(n_cells_sent, asker, cell);
+        cells_to_askers = blocks_of_sorted_ranks(asker, n_cells_sent, askers);
     }
 
-    // the cells sent are by asking rank, in the order of the ghost cells there, so the items are too
-    int Ghosts::start_items_of_changed_cells(const int* changed, int n_changed, int item_bytes) {
-        const int n_ranks = mpi::nranks();
-        changed_sent.grow_to_at_least(n_cells_sent);
-        changed_cell_sent.grow_to_at_least(n_cells_sent);
-        changed_for_rank.grow_to_at_least(n_ranks);
-        changed_from_rank.grow_to_at_least(n_ranks);
-        first_changed_from_rank.grow_to_at_least(n_ranks + 1);
+    // the places are in the order the items are packed and unpacked in, so those of a rank make one block
+    void Ghosts::find_active_cells(const int* end, int tick) {
+        active_place_sent.grow_to_at_least(n_cells_sent);
+        active_cell_sent.grow_to_at_least(n_cells_sent);
+        active_place_by_owner.grow_to_at_least(n_ghost_cells);
+        active_ghost_cell.grow_to_at_least(n_ghost_cells);
 
-        const int* cell_sent  = this->cell_sent.data();
-        int*       sent       = changed_sent.data();
-        const auto is_changed = [=] HD(int place) {
-            const int below = number_below(changed, n_changed, cell_sent[place]);
-            return below < n_changed && changed[below] == cell_sent[place];
-        };
-        const int n_items = device::indices_where(n_cells_sent, is_changed, sent);
+        const int* cell_sent = this->cell_sent.data();
+        int*       place     = active_place_sent.data();
+        int*       cell      = active_cell_sent.data();
+        n_active_cells_sent =
+            device::indices_where(n_cells_sent, [=] HD(int i) { return end[cell_sent[i]] == tick; }, place);
+        device::parallel_for(n_active_cells_sent, [=] HD(long k) { cell[k] = cell_sent[place[k]]; });
+        active_to_askers = blocks_of_places(place, n_active_cells_sent, cells_to_askers);
 
-        const int* first_for_rank = first_cell_for_rank.data();
-        for (int r = 0; r < n_ranks; r++) {
-            changed_for_rank[r] =
-                number_below(sent, n_items, first_for_rank[r + 1]) - number_below(sent, n_items, first_for_rank[r]);
-        }
-        mpi::exchange_counts(changed_for_rank.data(), changed_from_rank.data());
-        first_changed_from_rank[0] = 0;
-        for (int r = 0; r < n_ranks; r++)
-            first_changed_from_rank[r + 1] = first_changed_from_rank[r] + changed_from_rank[r];
-        n_changed_received = first_changed_from_rank[n_ranks];
-
-        // every item starts with its place in the block of its rank
-        values_sent.grow_to_at_least((long)n_items * item_bytes);
-        values_received.grow_to_at_least((long)n_changed_received * item_bytes);
-        int*  cell  = changed_cell_sent.data();
-        char* items = values_sent.data();
-        device::parallel_for(n_items, [=] HD(long i) {
-            const int place_in_block = sent[i] - first_for_rank[rank_of_item(first_for_rank, n_ranks, sent[i])];
-            cell[i]                  = cell_sent[sent[i]];
-            memcpy(items + i * item_bytes, &place_in_block, sizeof(int));
-        });
-        return n_items;
-    }
-
-    // the ghost cell of an item is its place in the block of its owner, in the order by owner
-    void Ghosts::find_ghost_cells_of_items_that_came(int item_bytes) {
-        const int n_ranks = mpi::nranks();
-        ghost_cell_of_changed.grow_to_at_least(n_changed_received);
-        const int*  first_from_rank  = first_changed_from_rank.data();
-        const int*  first_ghost_cell = first_ghost_cell_of_rank.data();
-        const int*  place_by_owner   = ghost_cell_place_by_owner.data();
-        const char* items            = values_received.data();
-        int*        ghost_cell       = ghost_cell_of_changed.data();
-        device::parallel_for(n_changed_received, [=] HD(long i) {
-            int place_in_block;
-            memcpy(&place_in_block, items + i * item_bytes, sizeof(int));
-            ghost_cell[i] =
-                place_by_owner[first_ghost_cell[rank_of_item(first_from_rank, n_ranks, (int)i)] + place_in_block];
-        });
+        const int* ghost_place = ghost_cell_place_by_owner.data();
+        int*       by_owner    = active_place_by_owner.data();
+        int*       ghost       = active_ghost_cell.data();
+        n_active_ghost_cells =
+            device::indices_where(n_ghost_cells, [=] HD(int i) { return end[ghost_place[i]] == tick; }, by_owner);
+        device::parallel_for(n_active_ghost_cells, [=] HD(long k) { ghost[k] = ghost_place[by_owner[k]]; });
+        active_from_owners = blocks_of_places(by_owner, n_active_ghost_cells, ghost_cells_from_owners);
     }
 
     // the seeds are rounded to the box precision, so a seed and its shifted copy differ by exactly the shift
@@ -239,7 +265,7 @@ namespace ghosts {
         char*               out   = flag_out.data();
         device::parallel_for(n_ghost_cells, [=] HD(long i) { out[i] = marked_ghost_cell[place[i] - n_cells] ? 1 : 0; });
         device::exchange_items(
-            flag_out.data(), ghost_cells_of_rank.data(), flag_in.data(), cells_for_rank.data(), (int)sizeof(char));
+            flag_out.data(), ghost_cells_from_owners, flag_in.data(), cells_to_askers, (int)sizeof(char));
 
         const char* in   = flag_in.data();
         const int*  cell = cell_sent.data();
@@ -298,16 +324,22 @@ namespace ghosts {
             });
         }
 
-        template <typename Item> void send_to_their_ranks(const ItemsByRank<Item>& out, ItemsByRank<Item>& in) {
+        // in holds the items that come by rank, so that its kernels can find the rank of an item
+        template <typename Item>
+        void receive_items(const ItemsByRank<Item>& out,
+                           const mpi::Blocks&       to,
+                           const mpi::Blocks&       from,
+                           ItemsByRank<Item>&       in) {
             const int n_ranks = mpi::nranks();
             in.count.grow_to_at_least(n_ranks);
             in.first.grow_to_at_least(n_ranks);
-            mpi::exchange_counts(out.count.data(), in.count.data());
+            in.count.fill(0);
+            for (size_t b = 0; b < from.ranks.size(); b++)
+                in.count[from.ranks[b]] = from.counts[b];
             in.total = device::offsets_from_counts(n_ranks, in.count.data(), in.first.data());
 
             in.items.grow_to_at_least(in.total);
-            device::exchange_items(
-                out.items.data(), out.count.data(), in.items.data(), in.count.data(), (int)sizeof(Item));
+            device::exchange_items(out.items.data(), to, in.items.data(), from, (int)sizeof(Item));
         }
 
         // counts the hits of every query, then writes them; tree points from input index n_cells on are ghost seeds
@@ -445,6 +477,42 @@ namespace ghosts {
                 new_cell[a]     = answer[a].cell;
                 new_shift[a]    = answer[a].shift;
             });
+        }
+
+        // ==========================================================
+        // the partners and their blocks
+        // ==========================================================
+
+        // adds the other ranks of the blocks that hold items to the sorted list of ranks
+        void add_ranks_with_items(const mpi::Blocks& blocks, std::vector<int>& ranks) {
+            const int here = mpi::rank();
+            for (size_t b = 0; b < blocks.ranks.size(); b++) {
+                if (blocks.ranks[b] == here || blocks.counts[b] == 0) continue;
+                const auto place = std::lower_bound(ranks.begin(), ranks.end(), blocks.ranks[b]);
+                if (place == ranks.end() || *place != blocks.ranks[b]) ranks.insert(place, blocks.ranks[b]);
+            }
+        }
+
+        // rank_of_item is sorted and holds only ranks of the sorted list ranks; a rank without items gets no block
+        mpi::Blocks blocks_of_sorted_ranks(const uint64_t* rank_of_item, int n, const std::vector<int>& ranks) {
+            mpi::Blocks blocks;
+            for (int rank : ranks) {
+                const int count =
+                    number_below(rank_of_item, n, (uint64_t)rank + 1) - number_below(rank_of_item, n, (uint64_t)rank);
+                if (count > 0) blocks.add(rank, count);
+            }
+            return blocks;
+        }
+
+        // the n sorted places lie in the blocks of all; a block without places gets no block
+        mpi::Blocks blocks_of_places(const int* place, int n, const mpi::Blocks& all) {
+            mpi::Blocks blocks;
+            for (size_t b = 0; b < all.ranks.size(); b++) {
+                const int count =
+                    number_below(place, n, all.first[b] + all.counts[b]) - number_below(place, n, all.first[b]);
+                if (count > 0) blocks.add(all.ranks[b], count);
+            }
+            return blocks;
         }
 
         // ==========================================================
