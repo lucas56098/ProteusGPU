@@ -99,6 +99,18 @@ ifeq ($(SYSTYPE),HorekaGH200)
     HDF5_PARALLEL_LIBRARY := -L$(EBROOTHDF5)/lib -lhdf5
 endif
 
+# HoreKa2 Jade (GB200)
+#       module load nvidia-compilers/25.9-CUDA-12.9.1 HDF5/1.14.6-NVHPC-25.9-CUDA-12.9.1 gompi/2025b
+ifeq ($(SYSTYPE),Horeka2)
+    HOST_CXX              := g++
+    MPI_CXX               := mpicxx
+    GPU_ARCH              := sm_100f
+    HDF5_SERIAL_INCLUDE   := -I$(EBROOTHDF5)/include
+    HDF5_SERIAL_LIBRARY   := -L$(EBROOTHDF5)/lib -lhdf5
+    HDF5_PARALLEL_INCLUDE := -I$(EBROOTHDF5)/include
+    HDF5_PARALLEL_LIBRARY := -L$(EBROOTHDF5)/lib -lhdf5
+endif
+
 #########################################
 # INCLUDE YOUR SYSTYPE HERE
 #

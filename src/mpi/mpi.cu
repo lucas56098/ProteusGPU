@@ -36,12 +36,14 @@ namespace mpi {
         enum class Operation { min, max, sum };
 
         // between two ranks MPI keeps the order of the messages of one tag, so these two need no more than that
+#ifdef USE_MPI
         constexpr int TAG_OF_KNOWN_COUNTS = 6001;
         constexpr int TAG_OF_ITEMS        = 6002;
 
         // a rank can already be in the next counts_from_any_rank while another one still is in this one
         constexpr int FIRST_TAG_OF_COUNTS_FROM_ANY_RANK = 7000;
         constexpr int TAGS_OF_COUNTS_FROM_ANY_RANK      = 4096;
+#endif
 
         template <typename Number> Number combined_over_ranks(Number value, Operation operation);
 #ifdef USE_MPI
