@@ -7,7 +7,8 @@
 
 namespace ngbtree {
 
-    // one internal node: its two children, each an internal node or a point, and the box around each child
+    // one internal node: its two children, each an internal node or a leaf of up to config::tree_leaf_points points,
+    // and the box around each child
     struct Node {
         Vec child_box_min[2];
         Vec child_box_max[2];
@@ -61,7 +62,8 @@ namespace ngbtree {
                                BoxTest             box_is_worth_entering,
                                Function            function);
 
-    // depth first, lower value first; enters a child while its value is below limit(), which may fall during the walk
+    // depth first, lower value first; enters a child while its value is below limit(), which may fall during the walk;
+    // a leaf goes by the value of its node
     template <typename BoxValue, typename Limit, typename Function>
     HD void walk_lowest_value_first(const TreePointers& tree, BoxValue value_of_box, Limit limit, Function function);
 

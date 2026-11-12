@@ -7,15 +7,20 @@ namespace ngbtree {
     constexpr int ROOT    = 0;
     constexpr int NO_NODE = -1;
 
-    // a child is one int: an internal node is its index, the point with tree index t is -(t + 1)
-    HD inline bool child_is_point(int child) {
+    // a child is one int: an internal node is its index, the leaf of count points from tree index first on is
+    // -(16 first + count), so up to 134 million points
+    static_assert(config::tree_leaf_points >= 1 && config::tree_leaf_points < 16, "a leaf count has to fit 4 bits");
+    HD inline bool child_is_leaf(int child) {
         return child < 0;
     }
-    HD inline int tree_index_of_child(int child) {
-        return -child - 1;
+    HD inline int first_point_of_leaf(int child) {
+        return (-child) / 16;
     }
-    HD inline int child_of_tree_index(int tree_index) {
-        return -tree_index - 1;
+    HD inline int points_in_leaf(int child) {
+        return (-child) % 16;
+    }
+    HD inline int child_of_leaf(int first, int count) {
+        return -(16 * first + count);
     }
 
     // every node on a path shares more leading bits than its parent: at most 63 of the key plus 32 of the tree index
@@ -37,6 +42,7 @@ namespace ngbtree {
                                               int*                waiting,
                                               int&                n_waiting);
     HD inline double squared_distance(const Vec& a, const Vec& b);
+    HD inline bool is_first_point_of_leaf(const Node& node, int point);
     HD inline bool comes_before(const TreePointers& tree, int a, double distance_a, int b, double distance_b);
 
     // from the root down: offers the points at every node, enters the nearer child worth it, the other one waits
@@ -68,9 +74,11 @@ namespace ngbtree {
             const Node& current = tree.nodes[waiting[--n_waiting]];
             for (int h = 0; h < 2; h++) {
                 const int child = current.child[h];
-                if (child_is_point(child)) {
-                    const int tree_index = tree_index_of_child(child);
-                    if (squared_distance(center, tree.positions[tree_index]) <= radius2) function(tree_index);
+                if (child_is_leaf(child)) {
+                    const int first = first_point_of_leaf(child);
+                    for (int t = first; t < first + points_in_leaf(child); t++) {
+                        if (squared_distance(center, tree.positions[t]) <= radius2) function(t);
+                    }
                 } else if (squared_distance_to_box(center, current.child_box_min[h], current.child_box_max[h]) <=
                            radius2) {
                     waiting[n_waiting++] = child;
@@ -98,10 +106,14 @@ namespace ngbtree {
             if (!box_is_worth_entering(parent.child_box_min[h], parent.child_box_max[h])) continue;
 
             const int child = parent.child[h];
-            if (child_is_point(child))
-                function(tree_index_of_child(child));
-            else
+            if (child_is_leaf(child)) {
+                const int first = first_point_of_leaf(child);
+                for (int t = first; t < first + points_in_leaf(child); t++) {
+                    if (box_is_worth_entering(tree.positions[t], tree.positions[t])) function(t);
+                }
+            } else {
                 add_children_nearer_on_top(tree, child, position, waiting, n_waiting);
+            }
         }
     }
 
@@ -119,8 +131,13 @@ namespace ngbtree {
             const Node& current = tree.nodes[node];
             double      value[2];
             for (int h = 0; h < 2; h++) {
-                if (child_is_point(current.child[h])) {
-                    function(tree_index_of_child(current.child[h]));
+                if (child_is_leaf(current.child[h])) {
+                    // a leaf has no value of its own and goes by that of its node
+                    if (value_of_box(current.child_box_min[h], current.child_box_max[h], node) < limit()) {
+                        const int first = first_point_of_leaf(current.child[h]);
+                        for (int t = first; t < first + points_in_leaf(current.child[h]); t++)
+                            function(t);
+                    }
                     value[h] = INFINITY;
                 } else {
                     value[h] = value_of_box(current.child_box_min[h], current.child_box_max[h], current.child[h]);
@@ -142,15 +159,23 @@ namespace ngbtree {
         }
     }
 
-    // offers the points among the children of node, except the point itself
+    // offers the points in the leaves among the children of node whose box could still hold a kept point, except the
+    // point itself
     template <int K>
     HD void offer_points_among_children(const TreePointers& tree, int node, int tree_index, NearestSoFar<K>& nearest) {
+        const Node& current  = tree.nodes[node];
+        const Vec   position = tree.positions[tree_index];
         for (int h = 0; h < 2; h++) {
-            const int child = tree.nodes[node].child[h];
-            if (!child_is_point(child)) continue;
-            const int candidate = tree_index_of_child(child);
-            if (candidate == tree_index) continue;
-            nearest.offer(tree, candidate, squared_distance(tree.positions[tree_index], tree.positions[candidate]));
+            const int child = current.child[h];
+            if (!child_is_leaf(child)) continue;
+            if (!nearest.could_keep_a_point_at(
+                    squared_distance_to_box(position, current.child_box_min[h], current.child_box_max[h]))) {
+                continue;
+            }
+            const int first = first_point_of_leaf(child);
+            for (int t = first; t < first + points_in_leaf(child); t++) {
+                if (t != tree_index) nearest.offer(tree, t, squared_distance(position, tree.positions[t]));
+            }
         }
     }
 
@@ -166,7 +191,7 @@ namespace ngbtree {
         double      distance_of_worth[2];
         int         n_worth = 0;
         for (int h = 0; h < 2; h++) {
-            if (child_is_point(current.child[h])) continue;
+            if (child_is_leaf(current.child[h])) continue;
             const double distance =
                 squared_distance_to_box(position, current.child_box_min[h], current.child_box_max[h]);
             if (!nearest.could_keep_a_point_at(distance)) continue;
@@ -196,55 +221,75 @@ namespace ngbtree {
             if (count < K) {
                 tree_index[count] = candidate;
                 distance[count]   = distance_of_candidate;
-                move_up(tree, count);
                 count++;
+                if (count == K) make_heap(tree);
             } else if (comes_before(tree, candidate, distance_of_candidate, tree_index[0], distance[0])) {
-                tree_index[0] = candidate;
-                distance[0]   = distance_of_candidate;
-                move_down(tree, 0, K);
+                move_down(tree, 0, K, candidate, distance_of_candidate);
             }
         }
 
         // the kept points, nearest first, and -1 behind them; sorts the heap in place
         HD void write_nearest_first(const TreePointers& tree, int* neighbour_tree_indices) {
+            if (count < K) make_heap(tree);
             for (int end = count - 1; end > 0; end--) {
-                swap(0, end);
-                move_down(tree, 0, end);
+                const int    last          = tree_index[end];
+                const double distance_last = distance[end];
+                tree_index[end]            = tree_index[0];
+                distance[end]              = distance[0];
+                sink_and_rise(tree, end, last, distance_last);
             }
             for (int i = 0; i < K; i++)
                 neighbour_tree_indices[i] = (i < count) ? tree_index[i] : -1;
         }
 
-        HD void move_up(const TreePointers& tree, int i) {
+        // the points so far become a heap, from the last entry with a child up to the top
+        HD void make_heap(const TreePointers& tree) {
+            for (int i = count / 2 - 1; i >= 0; i--)
+                move_down(tree, i, count, tree_index[i], distance[i]);
+        }
+
+        // the entry from the end goes in at the top of the first n: the later child moves up all the way down, then
+        // the entry rises to its place, as it belongs near the bottom
+        HD void sink_and_rise(const TreePointers& tree, int n, int entry, double distance_of_entry) {
+            int i = 0;
+            while (2 * i + 1 < n) {
+                int child = 2 * i + 1;
+                if (child + 1 < n &&
+                    comes_before(
+                        tree, tree_index[child], distance[child], tree_index[child + 1], distance[child + 1])) {
+                    child++;
+                }
+                tree_index[i] = tree_index[child];
+                distance[i]   = distance[child];
+                i             = child;
+            }
             while (i > 0) {
                 const int parent = (i - 1) / 2;
-                if (!comes_before(tree, tree_index[parent], distance[parent], tree_index[i], distance[i])) return;
-                swap(i, parent);
-                i = parent;
+                if (!comes_before(tree, tree_index[parent], distance[parent], entry, distance_of_entry)) break;
+                tree_index[i] = tree_index[parent];
+                distance[i]   = distance[parent];
+                i             = parent;
             }
+            tree_index[i] = entry;
+            distance[i]   = distance_of_entry;
         }
 
-        HD void move_down(const TreePointers& tree, int i, int n) {
-            while (true) {
-                int latest = i;
-                for (int child = 2 * i + 1; child <= 2 * i + 2 && child < n; child++) {
-                    if (comes_before(tree, tree_index[latest], distance[latest], tree_index[child], distance[child])) {
-                        latest = child;
-                    }
+        // the entry goes in at i of the first n: children that come after it move up, and it is written once
+        HD void move_down(const TreePointers& tree, int i, int n, int entry, double distance_of_entry) {
+            while (2 * i + 1 < n) {
+                int child = 2 * i + 1;
+                if (child + 1 < n &&
+                    comes_before(
+                        tree, tree_index[child], distance[child], tree_index[child + 1], distance[child + 1])) {
+                    child++;
                 }
-                if (latest == i) return;
-                swap(i, latest);
-                i = latest;
+                if (!comes_before(tree, entry, distance_of_entry, tree_index[child], distance[child])) break;
+                tree_index[i] = tree_index[child];
+                distance[i]   = distance[child];
+                i             = child;
             }
-        }
-
-        HD void swap(int i, int j) {
-            const int    index_of_i    = tree_index[i];
-            const double distance_of_i = distance[i];
-            tree_index[i]              = tree_index[j];
-            distance[i]                = distance[j];
-            tree_index[j]              = index_of_i;
-            distance[j]                = distance_of_i;
+            tree_index[i] = entry;
+            distance[i]   = distance_of_entry;
         }
     };
 
@@ -285,6 +330,14 @@ namespace ngbtree {
 
     HD inline double squared_distance(const Vec& a, const Vec& b) {
         return norm2(a - b);
+    }
+
+    // only the first point of a leaf goes up the tree for its leaf
+    HD inline bool is_first_point_of_leaf(const Node& node, int point) {
+        for (int h = 0; h < 2; h++) {
+            if (child_is_leaf(node.child[h]) && first_point_of_leaf(node.child[h]) == point) return true;
+        }
+        return false;
     }
 
     // computed like squared_distance, so after rounding a box is only skipped when it is really farther

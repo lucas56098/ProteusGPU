@@ -102,7 +102,8 @@ namespace mesh {
     }
 
     void Mesh::forget_faces() {
-        work.face_counter[0] = 0;
+        work.tree_holds_these_seeds = false;
+        work.face_counter[0]        = 0;
         faces.n_faces.fill(0);
         built_at_sync.grow_to_at_least(n_cells);
         built_at_sync.fill(false);
@@ -236,7 +237,6 @@ namespace mesh {
             work.tree_index_of_cell.grow_to_at_least(n_cells);
             work.progress.grow_to_at_least(n_cells);
             work.status.grow_to_at_least(n_cells);
-            work.handover.grow_to_at_least(n_cells);
             work.known_radius.grow_to_at_least(n_cells);
             work.next_radius.grow_to_at_least(n_cells);
             work.list.grow_to_at_least(n_cells);
@@ -256,6 +256,9 @@ namespace mesh {
                                                  BuildWork&                work) {
             const ghosts::GhostPointers ghost    = ghosts.pointers();
             const int                   n_points = n_cells + ghost.n_ghost_seeds;
+            // the lists of one sync see the same seeds
+            if (keep_order && work.tree_holds_these_seeds && work.tree.pointers().n_points == n_points) return;
+            work.tree_holds_these_seeds = true;
             work.points.grow_to_at_least(n_points);
 
             const Vec* cell_seed = seed.data();
@@ -350,10 +353,10 @@ namespace mesh {
                     return;
                 }
 
-                int neighbours[FAST_TIER_K];
-                ngbtree::nearest_neighbours<FAST_TIER_K>(tree, (int)t, neighbours);
+                int neighbours[NEAREST_NEIGHBOURS];
+                ngbtree::nearest_neighbours<NEAREST_NEIGHBOURS>(tree, (int)t, neighbours);
                 double reach = 0.0;
-                for (int k = 0; k < FAST_TIER_K && neighbours[k] >= 0; k++)
+                for (int k = 0; k < NEAREST_NEIGHBOURS && neighbours[k] >= 0; k++)
                     reach = sqrt(norm2(tree.positions[neighbours[k]] - seed));
                 known[cell]    = 0.0;
                 next[cell]     = (reach > 0.0 && reach < MAX_BALL_RADIUS) ? reach : MAX_BALL_RADIUS;

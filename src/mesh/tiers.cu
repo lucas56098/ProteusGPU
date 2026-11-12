@@ -1,4 +1,5 @@
-// the three tiers that build the open cells of a round: fast and slow on the GPU, exact on the CPU (tiers.h)
+// the three tiers that build the open cells of a round: fast and slow on the GPU, exact on the CPU (tiers.h); all of
+// them start from the same nearest neighbours and walk the tree for the points those miss
 
 #include "mesh/tiers.h"
 
@@ -8,33 +9,28 @@ namespace mesh {
 
     namespace {
 
-        // how a tier builds a cell; THREADS_PER_BLOCK and MIN_BLOCKS_PER_MULTIPROCESSOR are tuned for the GH200
+        // how a tier builds a cell: with room for MAX_PLANES planes and MAX_CORNERS corners, with or without exact
+        // tests; THREADS_PER_BLOCK and MIN_BLOCKS_PER_MULTIPROCESSOR are tuned for the GH200. The slow tier is the fast
+        // one with more room, for the cells that ran out of it
         struct FastTier {
-            static constexpr int  K           = FAST_TIER_K;
-            static constexpr int  MAX_PLANES  = (config::dim == 2) ? 20 : 30;
-            static constexpr int  MAX_CORNERS = (config::dim == 2) ? 20 : 60;
-            static constexpr bool WALK        = false;
-            static constexpr bool EXACT       = false;
-
-            static constexpr int THREADS_PER_BLOCK             = 64;
-            static constexpr int MIN_BLOCKS_PER_MULTIPROCESSOR = 16;
-        };
-        struct SlowTier {
-            static constexpr int  K           = (config::dim == 2) ? 35 : 64;
-            static constexpr int  MAX_PLANES  = (config::dim == 2) ? 30 : 50;
-            static constexpr int  MAX_CORNERS = (config::dim == 2) ? 60 : 96;
-            static constexpr bool WALK        = true;
+            static constexpr int  MAX_PLANES  = (config::dim == 2) ? 20 : 40;
+            static constexpr int  MAX_CORNERS = (config::dim == 2) ? 20 : 80;
             static constexpr bool EXACT       = false;
 
             static constexpr int THREADS_PER_BLOCK             = 64;
             static constexpr int MIN_BLOCKS_PER_MULTIPROCESSOR = 8;
         };
-        static_assert(SlowTier::K >= FAST_TIER_K, "the slow tier goes on after the neighbours of the fast tier");
+        struct SlowTier {
+            static constexpr int  MAX_PLANES  = (config::dim == 2) ? 30 : 50;
+            static constexpr int  MAX_CORNERS = (config::dim == 2) ? 60 : 96;
+            static constexpr bool EXACT       = false;
+
+            static constexpr int THREADS_PER_BLOCK             = 64;
+            static constexpr int MIN_BLOCKS_PER_MULTIPROCESSOR = 8;
+        };
         struct ExactTier {
-            static constexpr int  K           = (config::dim == 2) ? 35 : 64;
             static constexpr int  MAX_PLANES  = 1024;
             static constexpr int  MAX_CORNERS = 2048;
-            static constexpr bool WALK        = true;
             static constexpr bool EXACT       = true;
         };
 
@@ -51,7 +47,6 @@ namespace mesh {
             double*                next_radius;
             Progress*              progress;
             voronoi_cell::Status*  status;
-            uint64_t*              handover; // the faces among the fast tier's neighbours, for the slow tier
             double*                volume;
             Vec*                   centroid_from_seed;
             int*                   face_counter;
@@ -152,7 +147,6 @@ namespace mesh {
             p.next_radius         = work.next_radius.data();
             p.progress            = work.progress.data();
             p.status              = work.status.data();
-            p.handover            = work.handover.data();
             p.volume              = volume.data();
             p.centroid_from_seed  = centroid_from_seed.data();
             p.face_counter        = work.face_counter.data();
@@ -178,6 +172,9 @@ namespace mesh {
             int       n_listed = n_built;
             while (n_listed > 0) {
                 if constexpr (Tier::EXACT) {
+                    device::parallel_for_on_cpu(n_listed, [=](long i) { build_and_judge<Tier>(list[i], p); });
+                } else if (n_listed < config::mesh_min_cells_on_gpu) {
+                    // a launch of a kernel with this much stack costs about a millisecond, however few cells it has
                     device::parallel_for_on_cpu(n_listed, [=](long i) { build_and_judge<Tier>(list[i], p); });
                 } else {
                     device::parallel_for<Tier::THREADS_PER_BLOCK, Tier::MIN_BLOCKS_PER_MULTIPROCESSOR>(
@@ -217,19 +214,9 @@ namespace mesh {
         template <typename Tier> HD void build_and_judge(int cell, const TierPointers& p) {
             const int seed = p.tree_index_of_cell[cell];
 
-            // the slow tier goes on from the faces of a cell that ran out of the neighbours of the fast tier
-            voronoi_cell::Handover handover{0, 0};
-            if constexpr (Tier::WALK && !Tier::EXACT) {
-                if (p.status[cell] == voronoi_cell::Status::needs_more_points)
-                    handover = voronoi_cell::Handover{p.handover[cell], FAST_TIER_K};
-            }
-
             voronoi_cell::Cell<Tier::MAX_PLANES, Tier::MAX_CORNERS, Tier::EXACT> voronoi(seed, p.tree.positions);
-            voronoi_cell::build_cell<Tier::K, Tier::WALK>(p.tree, seed, voronoi, handover);
+            voronoi_cell::build_cell<NEAREST_NEIGHBOURS>(p.tree, seed, voronoi);
             p.status[cell] = voronoi.status();
-            if constexpr (!Tier::WALK) {
-                if (voronoi.status() == voronoi_cell::Status::needs_more_points) p.handover[cell] = handover.faces;
-            }
             if (voronoi.status() != voronoi_cell::Status::ok) return;
 
             const double security_radius = voronoi.security_radius();
@@ -310,8 +297,6 @@ namespace mesh {
             switch (status) {
             case voronoi_cell::Status::ok:
                 return "it is fine";
-            case voronoi_cell::Status::needs_more_points:
-                return "the points ran out";
             case voronoi_cell::Status::too_many_planes:
                 return "more planes than it has room for";
             case voronoi_cell::Status::too_many_corners:

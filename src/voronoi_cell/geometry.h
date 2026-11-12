@@ -20,12 +20,15 @@ namespace voronoi_cell {
         PlaneIndex face[MAX_PLANES];
         const int  n_faces = faces_in_fixed_order(face);
 
+        CornersOfPlanes corners_of_planes;
+        if constexpr (config::dim == 3) list_corners_of_planes(corners_of_planes);
+
         double volume = 0.0;
         Vec    volume_times_centroid{};
         for (int f = 0; f < n_faces; f++) {
-            int       ring[MAX_PLANES];
-            const int n_ring = corners_around_face(face[f], ring);
-            const Vec first  = corner_position[ring[0]];
+            CornerIndex ring[MAX_PLANES];
+            const int   n_ring = corners_around_face(face[f], corners_of_planes, ring);
+            const Vec   first  = corner_position[ring[0]];
 
             double area          = 0.0;
             Vec    face_centroid = first;
@@ -59,20 +62,21 @@ namespace voronoi_cell {
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
     HD double Cell<MAX_PLANES, MAX_CORNERS, EXACT>::security_radius() const {
         if (!farthest_corner_known) find_farthest_corner();
-        return 2.0 * sqrt(SECURITY_MARGIN * farthest_numerator / farthest_denominator);
+        return 2.0 * sqrt(SECURITY_MARGIN * farthest_squared_distance);
     }
 
-    // the walls first, by number; then the planes by the position of their point, x, then y, then z
+    // the walls first, by number; then the planes by the position of their point, x, then y, then z, read from the
+    // normal, which is the seed minus the point: the smaller position has the larger normal
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
     HD bool Cell<MAX_PLANES, MAX_CORNERS, EXACT>::plane_comes_before(int a, int b) const {
         const bool a_is_wall = (a < 2 * config::dim);
         const bool b_is_wall = (b < 2 * config::dim);
         if (a_is_wall || b_is_wall) return a_is_wall && (!b_is_wall || a < b);
 
-        const Vec& position_a = positions[point_of_plane[a]];
-        const Vec& position_b = positions[point_of_plane[b]];
+        const Vec& normal_a = planes[a].normal;
+        const Vec& normal_b = planes[b].normal;
         for (int d = 0; d < config::dim; d++) {
-            if (position_a[d] != position_b[d]) return position_a[d] < position_b[d];
+            if (normal_a[d] != normal_b[d]) return normal_a[d] > normal_b[d];
         }
         return false;
     }
@@ -106,25 +110,6 @@ namespace voronoi_cell {
         return n_faces;
     }
 
-    // a plane is dropped only when it cut nothing, so the planes after the walls are those of some points, in order
-    template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
-    HD uint64_t Cell<MAX_PLANES, MAX_CORNERS, EXACT>::faces_among(const int* point, int n) const {
-        static_assert(MAX_PLANES <= 64, "the planes with corners are bits of one word");
-        uint64_t with_corners = 0;
-        for (int c = 0; c < n_corners; c++)
-            for (int d = 0; d < config::dim; d++)
-                with_corners |= (uint64_t)1 << corners[c].plane[d];
-
-        uint64_t faces = 0;
-        int      p     = 2 * config::dim;
-        for (int k = 0; k < n && p < n_planes; k++) {
-            if (point_of_plane[p] != point[k]) continue;
-            if ((with_corners >> p) & 1) faces |= (uint64_t)1 << k;
-            p++;
-        }
-        return faces;
-    }
-
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
     HD void Cell<MAX_PLANES, MAX_CORNERS, EXACT>::mark_planes_with_corners(bool* has_corners) const {
         for (int p = 0; p < n_planes; p++)
@@ -136,30 +121,26 @@ namespace voronoi_cell {
 
     // the corners of a face in order, counterclockwise in 2D, with the normal out of the cell in 3D; returns how many
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
-    HD int Cell<MAX_PLANES, MAX_CORNERS, EXACT>::corners_around_face(int face, int* ring) const {
+    HD int Cell<MAX_PLANES, MAX_CORNERS, EXACT>::corners_around_face(int                    face,
+                                                                     const CornersOfPlanes& list,
+                                                                     CornerIndex*           ring) const {
         if constexpr (config::dim == 2) {
+            (void)list;
             ring[0] = 0;
             ring[1] = 0;
             for (int c = 0; c < n_corners; c++) {
-                if (corners[c].plane[0] == face) ring[0] = c;
-                if (corners[c].plane[1] == face) ring[1] = c;
+                if (corners[c].plane[0] == face) ring[0] = (CornerIndex)c;
+                if (corners[c].plane[1] == face) ring[1] = (CornerIndex)c;
             }
             return 2;
         } else {
             // every corner on the face, with the two planes that follow the face in its turning order
-            int        corner_on_face[MAX_PLANES];
-            PlaneIndex second_plane[MAX_PLANES];
-            PlaneIndex third_plane[MAX_PLANES];
-            int        n = 0;
-            for (int corner = 0; corner < n_corners; corner++) {
-                for (int e = 0; e < 3; e++) {
-                    if (corners[corner].plane[e] != face) continue;
-                    corner_on_face[n] = corner;
-                    second_plane[n]   = corners[corner].plane[(e + 1) % 3];
-                    third_plane[n]    = corners[corner].plane[(e + 2) % 3];
-                    n++;
-                }
-            }
+            ring[0]                           = 0;
+            const int          begin          = (face == 0) ? 0 : list.end[face - 1];
+            const int          n              = list.end[face] - begin;
+            const CornerIndex* corner_on_face = &list.corner[begin];
+            const PlaneIndex*  second_plane   = &list.second_plane[begin];
+            const PlaneIndex*  third_plane    = &list.third_plane[begin];
 
             // from the corner whose second plane comes first; the next corner has this one's third plane as its second
             int here = 0;
@@ -175,6 +156,31 @@ namespace voronoi_cell {
                 here = next;
             }
             return n;
+        }
+    }
+
+    // once over the corners, by counting; on every plane its corners stay in the order of the corners
+    template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
+    HD void Cell<MAX_PLANES, MAX_CORNERS, EXACT>::list_corners_of_planes(CornersOfPlanes& list) const {
+        for (int p = 0; p < n_planes; p++)
+            list.end[p] = 0;
+        for (int c = 0; c < n_corners; c++) {
+            for (int e = 0; e < 3; e++)
+                list.end[corners[c].plane[e]]++;
+        }
+        int entries = 0;
+        for (int p = 0; p < n_planes; p++) {
+            const int on_plane = list.end[p];
+            list.end[p]        = entries;
+            entries += on_plane;
+        }
+        for (int c = 0; c < n_corners; c++) {
+            for (int e = 0; e < 3; e++) {
+                const int entry          = list.end[corners[c].plane[e]]++;
+                list.corner[entry]       = (CornerIndex)c;
+                list.second_plane[entry] = corners[c].plane[(e + 1) % 3];
+                list.third_plane[entry]  = corners[c].plane[(e + 2) % 3];
+            }
         }
     }
 

@@ -71,12 +71,12 @@ namespace mesh {
     struct BuildWork {
         // the seeds of the cells, then the ghost seeds; ghosts answers its requests from the same tree
         ngbtree::Tree      tree;
+        bool               tree_holds_these_seeds = false; // no seed moved since the tree was made or refitted
         device::Array<Vec> points{"mesh: seeds and ghost seeds", 0};
         device::Array<int> tree_index_of_cell{"mesh: tree index of every cell", 0};
 
         device::Array<Progress>             progress{"mesh: progress of every cell", 0};
         device::Array<voronoi_cell::Status> status{"mesh: status of the last build of every cell", 0};
-        device::Array<uint64_t>             handover{"mesh: faces the fast tier hands to the slow tier", 0};
         device::Array<double>               known_radius{"mesh: radius around every seed with all points here", 0};
         device::Array<double>               next_radius{"mesh: radius every cell asks for next", 0};
 

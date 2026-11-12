@@ -86,21 +86,28 @@ namespace ngbtree {
             device::parallel_for(n, [=] HD(long i) { positions[i] = points[input_index_of_point[i]]; });
         }
 
-        // every internal node finds its range and split; a child that holds one point is that point
+        // every internal node finds its range and split; a child of at most config::tree_leaf_points points is a
+        // leaf, and the nodes inside a leaf are not used
         void link_nodes(int n, const uint64_t* keys, Node* nodes, int* parent_of_node, int* parent_of_point) {
             device::parallel_for(n - 1, [=] HD(long i) {
                 const int   node  = (int)i;
                 const Range range = range_of_node(keys, n, node);
-                const int   split = split_of_range(keys, n, range);
-                const int   left  = (split == range.first) ? child_of_tree_index(split) : split;
-                const int   right = (split + 1 == range.last) ? child_of_tree_index(split + 1) : split + 1;
+                if (node != ROOT && range.last - range.first + 1 <= config::tree_leaf_points) return;
+                const int split    = split_of_range(keys, n, range);
+                const int in_left  = split - range.first + 1;
+                const int in_right = range.last - split;
+                const int most     = config::tree_leaf_points;
+                const int left     = (in_left <= most) ? child_of_leaf(range.first, in_left) : split;
+                const int right    = (in_right <= most) ? child_of_leaf(split + 1, in_right) : split + 1;
 
                 nodes[node].child[0] = left;
                 nodes[node].child[1] = right;
                 for (int h = 0; h < 2; h++) {
                     const int child = nodes[node].child[h];
-                    if (child_is_point(child)) {
-                        parent_of_point[tree_index_of_child(child)] = node;
+                    if (child_is_leaf(child)) {
+                        const int first = first_point_of_leaf(child);
+                        for (int t = first; t < first + points_in_leaf(child); t++)
+                            parent_of_point[t] = node;
                     } else {
                         parent_of_node[child] = node;
                     }
@@ -150,7 +157,8 @@ namespace ngbtree {
             return 64 + device::count_leading_zero_bits((uint32_t)a ^ (uint32_t)b);
         }
 
-        // from every point up to the root: the first child to arrive stops, the second makes both boxes and goes on up
+        // from the first point of every leaf up to the root: the first child to arrive stops, the second makes both
+        // boxes and goes on up
         void compute_boxes(int        n,
                            const Vec* positions,
                            Node*      nodes,
@@ -160,6 +168,7 @@ namespace ngbtree {
             device::parallel_for(n - 1, [=] HD(long i) { arrivals[i] = 0; });
             device::parallel_for(n, [=] HD(long i) {
                 int node = parent_of_point[i];
+                if (!is_first_point_of_leaf(nodes[node], (int)i)) return;
                 while (node != NO_NODE) {
                     if (device::atomic_add(&arrivals[node], 1) == 0) return;
                     for (int h = 0; h < 2; h++) {
@@ -174,11 +183,19 @@ namespace ngbtree {
             });
         }
 
-        // a point is its own box; a node's box holds those of its children, which another thread may have just written
+        // a leaf's box holds its points; a node's box holds those of its children, which another thread may have just
+        // written
         HD void box_of_child(const Node* nodes, const Vec* positions, int child, Vec* box_min, Vec* box_max) {
-            if (child_is_point(child)) {
-                *box_min = positions[tree_index_of_child(child)];
-                *box_max = positions[tree_index_of_child(child)];
+            if (child_is_leaf(child)) {
+                const int first = first_point_of_leaf(child);
+                *box_min        = positions[first];
+                *box_max        = positions[first];
+                for (int t = first + 1; t < first + points_in_leaf(child); t++) {
+                    for (int d = 0; d < config::dim; d++) {
+                        if (positions[t][d] < (*box_min)[d]) (*box_min)[d] = positions[t][d];
+                        if (positions[t][d] > (*box_max)[d]) (*box_max)[d] = positions[t][d];
+                    }
+                }
                 return;
             }
             const Node& node  = nodes[child];

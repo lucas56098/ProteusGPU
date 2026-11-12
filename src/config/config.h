@@ -159,6 +159,18 @@ namespace config {
     constexpr double regularization_speed_by_volume = 0.0;
 #endif
 
+// mesh building
+#ifdef TREE_LEAF_POINTS
+    constexpr int tree_leaf_points = TREE_LEAF_POINTS;
+#else
+    constexpr int tree_leaf_points = 8;
+#endif
+#ifdef MESH_MIN_CELLS_ON_GPU
+    constexpr int mesh_min_cells_on_gpu = MESH_MIN_CELLS_ON_GPU;
+#else
+    constexpr int mesh_min_cells_on_gpu = 1000;
+#endif
+
 #ifdef ADIABATIC_INDEX
     constexpr double adiabatic_index = ADIABATIC_INDEX;
 #else

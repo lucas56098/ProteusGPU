@@ -9,8 +9,8 @@ namespace mesh {
     // a ball may not reach beyond this part of the box, where a cell would meet its own periodic copy
     constexpr double MAX_BALL_RADIUS = 0.49;
 
-    // neighbours of the fast tier; the first guess of a ball reaches the farthest of them
-    constexpr int FAST_TIER_K = (config::dim == 2) ? 15 : 35;
+    // nearest neighbours a cell is first cut by, in every tier; the first guess of a ball reaches the farthest of them
+    constexpr int NEAREST_NEIGHBOURS = (config::dim == 2) ? 15 : 35;
 
     // cells built per tier, not counting cells built again for want of room
     struct CellsPerTier {

@@ -13,7 +13,6 @@ namespace voronoi_cell {
     // how a build stands; anything but ok leaves the cell unfinished
     enum class Status {
         ok,
-        needs_more_points,
         too_many_planes,
         too_many_corners,
         broken_ring, // the ring of planes around the cut away corners does not close
@@ -25,12 +24,6 @@ namespace voronoi_cell {
     struct CellGeometry {
         double volume;
         Vec    centroid_from_seed;
-    };
-
-    // left for a build with more neighbours: bit k of faces if neighbour k is a face; n_neighbours is 0 for none
-    struct Handover {
-        uint64_t faces;
-        int      n_neighbours;
     };
 
     // a cell while it is built; an EXACT cell (CPU only) decides every cut with exact tests
@@ -47,19 +40,15 @@ namespace voronoi_cell {
 
         HD Status status() const { return current_status; }
 
-        HD void mark_as_needing_more_points() { current_status = Status::needs_more_points; }
-
-        // the corner spheres through the seed that reach at least squared distance inside from it; returns how many
-        HD int corner_spheres(Vec* centre, double* squared_radius, double inside) const;
+        // the corner spheres through the seed that reach at least squared distance inside from it; returns how many,
+        // and the largest of their squared radii
+        HD int corner_spheres(Vec* centre, double* squared_radius, double inside, double& largest) const;
 
         // volume and centroid of a finished cell, and store_face(neighbour, area, centroid) for every face in a fixed
         // order; neighbour is -1 for a wall of the start box; in 2D the area of a face is its length
         template <typename FaceFunction> HD CellGeometry compute_geometry(FaceFunction store_face) const;
 
         HD int number_of_faces() const;
-
-        // bit k for every point[k] whose plane is a face, k < n <= 64; the planes came from these points, in order
-        HD uint64_t faces_among(const int* point, int n) const;
 
         // twice the distance from the seed to the farthest corner, with the margin; points beyond it cannot cut
         HD double security_radius() const;
@@ -69,19 +58,28 @@ namespace voronoi_cell {
         using PlaneIndex                        = typename std::conditional<(MAX_PLANES < 255), uint8_t, int>::type;
         static constexpr PlaneIndex END_OF_RING = (PlaneIndex)(-1);
 
-        // the points x with normal . x + offset >= 0 are inside
+        // one byte while there is room for at most 254 corners
+        using CornerIndex = typename std::conditional<(MAX_CORNERS < 255), uint8_t, int>::type;
+
+        // the points x with normal . x + offset >= 0 are inside; scale bounds the size of its numbers
         struct Plane {
             Vec    normal;
             double offset;
+            double scale;
         };
 
-        // a corner: its config::dim planes, and the minors, bound and squared distance from the seed its tests need
+        // a corner: its config::dim planes
         struct Corner {
             PlaneIndex plane[config::dim];
-            double     minor[config::dim + 1];
-            double     bound_scale;
-            double     distance_numerator;
-            double     distance_denominator;
+        };
+
+        // in 3D, per plane, its corners and the two planes after it in each; those of plane p end at end[p] and begin
+        // where those of p - 1 end
+        struct CornersOfPlanes {
+            short       end[MAX_PLANES];
+            CornerIndex corner[3 * MAX_CORNERS];
+            PlaneIndex  second_plane[3 * MAX_CORNERS];
+            PlaneIndex  third_plane[3 * MAX_CORNERS];
         };
 
         struct UndividedPosition {
@@ -94,37 +92,39 @@ namespace voronoi_cell {
         Status     current_status = Status::ok;
 
         // the first 2 * config::dim planes are the walls of the box, -1 in point_of_plane
-        int point_of_plane[MAX_PLANES];
-        int n_planes;
+        int   point_of_plane[MAX_PLANES];
+        Plane planes[MAX_PLANES];
+        int   n_planes;
 
         // the corners the last cut removed are parked behind the n_corners corners
         Corner corners[MAX_CORNERS];
+        double squared_distance_from_seed[MAX_CORNERS];
         int    n_corners;
         int    n_cut_away;
 
         PlaneIndex first_in_ring;
         PlaneIndex next_in_ring[MAX_PLANES];
 
-        // squared distance to the farthest corner as numerator / denominator, while no cut changed the cell
-        mutable bool   farthest_corner_known = false;
-        mutable double farthest_numerator    = 0.0;
-        mutable double farthest_denominator  = 1.0;
+        // squared distance to the farthest corner, while no cut changed the cell
+        mutable bool   farthest_corner_known     = false;
+        mutable double farthest_squared_distance = 0.0;
 
         HD int add_plane(int point);
-        HD void park_cut_away_corners(int plane);
+        HD void park_cut_away_corners(int new_plane, const Plane& equation);
         HD void link_ring_around_cut_away_corners();
         HD void add_corners_along_ring(int plane);
         HD void add_corner(PlaneIndex a, PlaneIndex b, PlaneIndex c);
-        HD void fill_corner(Corner& corner) const;
-        HD bool is_cut_away(const Corner& corner, int new_plane, const Plane& equation, double scale);
-        HD Plane plane(int p, double* scale = nullptr) const;
+        HD void fill_corner(int c);
+        HD bool is_cut_away(const Corner& corner, int new_plane, const Plane& equation);
+        HD Plane equation_of_plane(int p) const;
         HD UndividedPosition position_of(const Corner& corner) const;
         HD void find_farthest_corner() const;
 
         HD bool plane_comes_before(int a, int b) const;
         HD int faces_in_fixed_order(PlaneIndex* face) const;
         HD void mark_planes_with_corners(bool* has_corners) const;
-        HD int corners_around_face(int face, int* ring) const;
+        HD void list_corners_of_planes(CornersOfPlanes& list) const;
+        HD int corners_around_face(int face, const CornersOfPlanes& list, CornerIndex* ring) const;
         HD Vec position_relative_to_seed(Corner corner) const;
 
         // the exact tests, CPU only
@@ -134,13 +134,10 @@ namespace voronoi_cell {
         void point_for_exact_tests(int p, double* out) const;
     };
 
-    // cuts cell, made as Cell(seed, tree.positions), by the K nearest neighbours of seed and, if WALK, the points a
-    // walk finds; without WALK a cell they do not finish needs more points, and the handover gets its faces
-    template <int K, bool WALK, int MAX_PLANES, int MAX_CORNERS, bool EXACT>
-    HD void build_cell(const ngbtree::TreePointers&          tree,
-                       int                                   seed,
-                       Cell<MAX_PLANES, MAX_CORNERS, EXACT>& cell,
-                       Handover&                             handover);
+    // cuts cell, made as Cell(seed, tree.positions), by the K nearest neighbours of seed, then by the points a walk
+    // over the tree finds
+    template <int K, int MAX_PLANES, int MAX_CORNERS, bool EXACT>
+    HD void build_cell(const ngbtree::TreePointers& tree, int seed, Cell<MAX_PLANES, MAX_CORNERS, EXACT>& cell);
 
 } // namespace voronoi_cell
 

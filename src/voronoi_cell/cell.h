@@ -58,8 +58,10 @@ namespace voronoi_cell {
         : positions(positions), seed_position(positions[seed]) {
         static_assert(MAX_PLANES > 2 * config::dim, "room for the walls and at least one cut");
 
-        for (int p = 0; p < 2 * config::dim; p++)
+        for (int p = 0; p < 2 * config::dim; p++) {
             point_of_plane[p] = -1;
+            planes[p]         = equation_of_plane(p);
+        }
         n_planes      = 2 * config::dim;
         n_cut_away    = 0;
         first_in_ring = END_OF_RING;
@@ -69,7 +71,7 @@ namespace voronoi_cell {
             for (int c = 0; c < 4; c++) {
                 for (int d = 0; d < 2; d++)
                     corners[c].plane[d] = (PlaneIndex)box_corners[c][d];
-                fill_corner(corners[c]);
+                fill_corner(c);
             }
             n_corners = 4;
         } else {
@@ -78,7 +80,7 @@ namespace voronoi_cell {
             for (int c = 0; c < 8; c++) {
                 for (int d = 0; d < 3; d++)
                     corners[c].plane[d] = (PlaneIndex)box_corners[c][d];
-                fill_corner(corners[c]);
+                fill_corner(c);
             }
             n_corners = 8;
         }
@@ -93,7 +95,8 @@ namespace voronoi_cell {
         const int new_plane = add_plane(point);
         if (current_status != Status::ok) return;
 
-        park_cut_away_corners(new_plane);
+        const Plane equation = equation_of_plane(new_plane);
+        park_cut_away_corners(new_plane, equation);
         if (current_status != Status::ok) return;
         if (n_cut_away == 0) {
             n_planes--;
@@ -101,6 +104,7 @@ namespace voronoi_cell {
             return;
         }
 
+        planes[new_plane] = equation;
         link_ring_around_cut_away_corners();
         if (current_status != Status::ok || first_in_ring == END_OF_RING) return;
         add_corners_along_ring(new_plane);
@@ -110,7 +114,7 @@ namespace voronoi_cell {
     HD bool Cell<MAX_PLANES, MAX_CORNERS, EXACT>::is_finished_before(int point) const {
         if (!farthest_corner_known) find_farthest_corner();
         const double squared_distance = norm2(positions[point] - seed_position);
-        return squared_distance * farthest_denominator > 4.0 * SECURITY_MARGIN * farthest_numerator;
+        return squared_distance > 4.0 * SECURITY_MARGIN * farthest_squared_distance;
     }
 
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
@@ -124,17 +128,16 @@ namespace voronoi_cell {
     }
 
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
-    HD void Cell<MAX_PLANES, MAX_CORNERS, EXACT>::park_cut_away_corners(int new_plane) {
-        double      scale;
-        const Plane equation = plane(new_plane, &scale);
-        n_cut_away           = 0;
-        int i                = 0;
+    HD void Cell<MAX_PLANES, MAX_CORNERS, EXACT>::park_cut_away_corners(int new_plane, const Plane& equation) {
+        n_cut_away = 0;
+        int i      = 0;
         while (i < n_corners) {
-            if (is_cut_away(corners[i], new_plane, equation, scale)) {
+            if (is_cut_away(corners[i], new_plane, equation)) {
                 n_corners--;
-                const Corner parked = corners[i];
-                corners[i]          = corners[n_corners];
-                corners[n_corners]  = parked;
+                const Corner parked           = corners[i];
+                corners[i]                    = corners[n_corners];
+                corners[n_corners]            = parked;
+                squared_distance_from_seed[i] = squared_distance_from_seed[n_corners];
                 n_cut_away++;
             } else {
                 i++;
@@ -256,9 +259,9 @@ namespace voronoi_cell {
         Corner& corner = corners[n_corners];
         if constexpr (config::dim == 2) {
             (void)c;
-            const Plane pa   = plane(a);
-            const Plane pb   = plane(b);
-            double      turn = det2x2(pa.normal[0], pa.normal[1], pb.normal[0], pb.normal[1]);
+            const Plane& pa   = planes[a];
+            const Plane& pb   = planes[b];
+            double       turn = det2x2(pa.normal[0], pa.normal[1], pb.normal[0], pb.normal[1]);
             if constexpr (EXACT && !config::compiling_for_gpu) turn = exactly_turns_left(a, b) ? 1.0 : -1.0;
             corner.plane[0] = (turn > 0.0) ? b : a;
             corner.plane[1] = (turn > 0.0) ? a : b;
@@ -267,22 +270,35 @@ namespace voronoi_cell {
             corner.plane[1] = b;
             corner.plane[2] = c;
         }
-        fill_corner(corner);
+        fill_corner(n_corners);
         n_corners++;
     }
 
-    // the minors and the bound that is_cut_away needs, and the distance that find_farthest_corner compares
+    // the squared distance from the seed, which find_farthest_corner and corner_spheres compare
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
-    HD void Cell<MAX_PLANES, MAX_CORNERS, EXACT>::fill_corner(Corner& corner) const {
-        double      scale_a, scale_b;
-        const Plane a = plane(corner.plane[0], &scale_a);
-        const Plane b = plane(corner.plane[1], &scale_b);
+    HD void Cell<MAX_PLANES, MAX_CORNERS, EXACT>::fill_corner(int c) {
+        const UndividedPosition position = position_of(corners[c]);
+        squared_distance_from_seed[c]    = norm2(position.numerator - seed_position * position.denominator) /
+                                        (position.denominator * position.denominator);
+    }
+
+    // on the far side when the determinant with the new plane is positive; an exact cell asks the exact tests instead
+    template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
+    HD bool Cell<MAX_PLANES, MAX_CORNERS, EXACT>::is_cut_away(const Corner& corner,
+                                                              int           new_plane,
+                                                              const Plane&  equation) {
+        if constexpr (EXACT && !config::compiling_for_gpu) return exactly_cut_away(corner, new_plane);
+
+        // the minors of the determinant of the planes of the corner with the new one, and the bound without its scale
+        double       m[config::dim + 1];
+        double       bound_scale;
+        const Plane& a = planes[corner.plane[0]];
+        const Plane& b = planes[corner.plane[1]];
         if constexpr (config::dim == 2) {
-            minors_of_det3x3(a.normal[0], b.normal[0], a.normal[1], b.normal[1], a.offset, b.offset, corner.minor);
-            corner.bound_scale = UNCERTAIN_DETERMINANT * scale_a * scale_b;
+            minors_of_det3x3(a.normal[0], b.normal[0], a.normal[1], b.normal[1], a.offset, b.offset, m);
+            bound_scale = UNCERTAIN_DETERMINANT * a.scale * b.scale;
         } else {
-            double      scale_c;
-            const Plane c = plane(corner.plane[2], &scale_c);
+            const Plane& c = planes[corner.plane[2]];
             minors_of_det4x4(a.normal[0],
                              b.normal[0],
                              c.normal[0],
@@ -295,46 +311,32 @@ namespace voronoi_cell {
                              a.offset,
                              b.offset,
                              c.offset,
-                             corner.minor);
-            corner.bound_scale = UNCERTAIN_DETERMINANT * scale_a * scale_b * scale_c;
+                             m);
+            bound_scale = UNCERTAIN_DETERMINANT * a.scale * b.scale * c.scale;
         }
-        const UndividedPosition position = position_of(corner);
-        corner.distance_numerator        = norm2(position.numerator - seed_position * position.denominator);
-        corner.distance_denominator      = position.denominator * position.denominator;
-    }
 
-    // on the far side when the determinant with the new plane is positive; an exact cell asks the exact tests instead
-    template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
-    HD bool Cell<MAX_PLANES, MAX_CORNERS, EXACT>::is_cut_away(const Corner& corner,
-                                                              int           new_plane,
-                                                              const Plane&  equation,
-                                                              double        scale) {
-        if constexpr (EXACT && !config::compiling_for_gpu) return exactly_cut_away(corner, new_plane);
-
-        const double* m = corner.minor;
-        double        determinant;
+        double determinant;
         if constexpr (config::dim == 2) {
             determinant = m[2] * equation.normal[0] - m[1] * equation.normal[1] + m[0] * equation.offset;
         } else {
             determinant = m[3] * equation.normal[0] - m[2] * equation.normal[1] + m[1] * equation.normal[2] -
                           m[0] * equation.offset;
         }
-        const double bound = corner.bound_scale * scale;
+        const double bound = bound_scale * equation.scale;
         if (!(fabs(determinant) > bound)) current_status = Status::needs_exact_tests;
         return determinant > 0.0;
     }
 
     // a wall, or the plane halfway between the seed and its point, normal towards the seed; scale bounds its numbers
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
-    HD typename Cell<MAX_PLANES, MAX_CORNERS, EXACT>::Plane Cell<MAX_PLANES, MAX_CORNERS, EXACT>::plane(
-        int     p,
-        double* scale) const {
+    HD typename Cell<MAX_PLANES, MAX_CORNERS, EXACT>::Plane Cell<MAX_PLANES, MAX_CORNERS, EXACT>::equation_of_plane(
+        int p) const {
         Plane result{};
         if (p < 2 * config::dim) {
             const bool low       = (p % 2 == 0);
             result.normal[p / 2] = low ? 1.0 : -1.0;
             result.offset        = low ? WALL_LOW : WALL_HIGH;
-            if (scale) *scale = 1.0 + result.offset;
+            result.scale         = 1.0 + result.offset;
             return result;
         }
 
@@ -343,14 +345,12 @@ namespace voronoi_cell {
         const Vec twice_middle = seed_position + point;
         result.normal          = normal;
         result.offset          = -dot(twice_middle, normal) * 0.5;
-        if (scale) {
-            double size_of_normal = 0.0, size_of_offset = 0.0;
-            for (int d = 0; d < config::dim; d++) {
-                size_of_normal += fabs(normal[d]);
-                size_of_offset += fabs(twice_middle[d] * normal[d]);
-            }
-            *scale = size_of_normal + 0.5 * size_of_offset;
+        double size_of_normal = 0.0, size_of_offset = 0.0;
+        for (int d = 0; d < config::dim; d++) {
+            size_of_normal += fabs(normal[d]);
+            size_of_offset += fabs(twice_middle[d] * normal[d]);
         }
+        result.scale = size_of_normal + 0.5 * size_of_offset;
         return result;
     }
 
@@ -359,8 +359,8 @@ namespace voronoi_cell {
     HD typename Cell<MAX_PLANES, MAX_CORNERS, EXACT>::UndividedPosition Cell<MAX_PLANES, MAX_CORNERS, EXACT>::
         position_of(const Corner& corner) const {
         UndividedPosition result{};
-        const Plane       a = plane(corner.plane[0]);
-        const Plane       b = plane(corner.plane[1]);
+        const Plane&      a = planes[corner.plane[0]];
+        const Plane&      b = planes[corner.plane[1]];
         double            normals_squared;
         if constexpr (config::dim == 2) {
             result.numerator[0] = -det2x2(a.offset, a.normal[1], b.offset, b.normal[1]);
@@ -368,7 +368,7 @@ namespace voronoi_cell {
             result.denominator  = det2x2(a.normal[0], a.normal[1], b.normal[0], b.normal[1]);
             normals_squared     = norm2(a.normal) * norm2(b.normal);
         } else {
-            const Plane c       = plane(corner.plane[2]);
+            const Plane& c      = planes[corner.plane[2]];
             result.numerator[0] = -det3x3(a.offset,
                                           a.normal[1],
                                           a.normal[2],
@@ -415,22 +415,14 @@ namespace voronoi_cell {
         return result;
     }
 
-    // compared as fractions, without dividing
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
     HD void Cell<MAX_PLANES, MAX_CORNERS, EXACT>::find_farthest_corner() const {
-        double max_numerator   = 0.0;
-        double max_denominator = 1.0;
+        double farthest = 0.0;
         for (int i = 0; i < n_corners; i++) {
-            const double numerator   = corners[i].distance_numerator;
-            const double denominator = corners[i].distance_denominator;
-            if (numerator * max_denominator > max_numerator * denominator) {
-                max_numerator   = numerator;
-                max_denominator = denominator;
-            }
+            if (squared_distance_from_seed[i] > farthest) farthest = squared_distance_from_seed[i];
         }
-        farthest_numerator    = max_numerator;
-        farthest_denominator  = max_denominator;
-        farthest_corner_known = true;
+        farthest_squared_distance = farthest;
+        farthest_corner_known     = true;
     }
 
     // ==========================================================

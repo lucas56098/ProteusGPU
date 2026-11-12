@@ -36,6 +36,9 @@ dim_2D                  # run in 2D mode
 
 #ADIABATIC_INDEX=1.4                # sets adiabatic index of the ideal gas (default: 5./3.)
 
+#TREE_LEAF_POINTS=8                 # points in a leaf of the neighbour tree, 1 to 15 (default: 8)
+#MESH_MIN_CELLS_ON_GPU=1000         # lists of fewer cells are built on the CPU, 0 for none (default: 1000)
+
 ################################################################
 # astrophysics
 ################################################################

@@ -17,28 +17,13 @@ namespace voronoi_cell {
     HD inline bool is_among(int point, const int* list, int n);
 
     // the neighbours cut the cell nearest first, until the next one lies outside the security radius
-    template <int K, bool WALK, int MAX_PLANES, int MAX_CORNERS, bool EXACT>
-    HD void build_cell(const ngbtree::TreePointers&          tree,
-                       int                                   seed,
-                       Cell<MAX_PLANES, MAX_CORNERS, EXACT>& cell,
-                       Handover&                             handover) {
-        static_assert(WALK || K <= 64, "a handover has one bit per neighbour");
+    template <int K, int MAX_PLANES, int MAX_CORNERS, bool EXACT>
+    HD void build_cell(const ngbtree::TreePointers& tree, int seed, Cell<MAX_PLANES, MAX_CORNERS, EXACT>& cell) {
         int neighbours[K];
         ngbtree::nearest_neighbours<K>(tree, seed, neighbours);
 
-        // the faces of the handover stand for all its neighbours, which are the nearest of these
-        int first = 0;
-        if constexpr (WALK) {
-            first = (handover.n_neighbours < K) ? handover.n_neighbours : K;
-            for (int k = 0; k < first; k++) {
-                if (!((handover.faces >> k) & 1)) continue;
-                cell.cut_by(neighbours[k]);
-                if (cell.status() != Status::ok) return;
-            }
-        }
-
         // -1 after the last neighbour: the tree has fewer than K other points, and all of them have cut
-        for (int k = first; k < K; k++) {
+        for (int k = 0; k < K; k++) {
             if (neighbours[k] < 0 || cell.is_finished_before(neighbours[k])) return;
             cell.cut_by(neighbours[k]);
             if (cell.status() != Status::ok) return;
@@ -46,12 +31,7 @@ namespace voronoi_cell {
 
         // every other point lies at least as far as the last neighbour
         if (cell.is_finished_before(neighbours[K - 1])) return;
-        if constexpr (WALK) {
-            cut_by_points_the_walk_finds<K>(cell, tree, seed, neighbours);
-        } else {
-            cell.mark_as_needing_more_points();
-            handover = Handover{cell.faces_among(neighbours, K), K};
-        }
+        cut_by_points_the_walk_finds<K>(cell, tree, seed, neighbours);
     }
 
     // cuts by the points the K neighbours missed: those in boxes that reach into a corner sphere, with the margin
@@ -67,11 +47,14 @@ namespace voronoi_cell {
 
         Vec    centre[MAX_CORNERS];
         double squared_radius[MAX_CORNERS];
-        int    n_spheres = cell.corner_spheres(centre, squared_radius, inside);
+        double largest;
+        int    n_spheres = cell.corner_spheres(centre, squared_radius, inside, largest);
 
         const auto box_reaches_into_a_sphere = [&](const Vec& box_min, const Vec& box_max) {
             if (cell.status() != Status::ok) return false;
             if (ngbtree::farthest_squared_distance_to_box(at, box_min, box_max) < inside) return false;
+            // with the margin a sphere reaches at most twice its radius from the seed
+            if (ngbtree::squared_distance_to_box(at, box_min, box_max) > 4.0 * SECURITY_MARGIN * largest) return false;
             for (int s = 0; s < n_spheres; s++) {
                 const double squared_distance = ngbtree::squared_distance_to_box(centre[s], box_min, box_max);
                 // a sphere the doubles could not place lets every box in
@@ -84,7 +67,7 @@ namespace voronoi_cell {
             const double distance = norm2(at - tree.positions[point]);
             if (distance < last || (distance == last && is_among(point, neighbours, K))) return;
             cell.cut_by(point);
-            n_spheres = cell.corner_spheres(centre, squared_radius, inside);
+            n_spheres = cell.corner_spheres(centre, squared_radius, inside, largest);
         };
         ngbtree::walk_nearest_first(tree, at, box_reaches_into_a_sphere, cut_by_new_point);
     }
@@ -93,14 +76,21 @@ namespace voronoi_cell {
     template <int MAX_PLANES, int MAX_CORNERS, bool EXACT>
     HD int Cell<MAX_PLANES, MAX_CORNERS, EXACT>::corner_spheres(Vec*    centre,
                                                                 double* squared_radius,
-                                                                double  inside) const {
-        int n = 0;
+                                                                double  inside,
+                                                                double& largest) const {
+        int n   = 0;
+        largest = 0.0;
         for (int c = 0; c < n_corners; c++) {
+            // with the margin a sphere reaches at most twice its radius from the seed
+            const double squared = squared_distance_from_seed[c];
+            if (4.0 * SECURITY_MARGIN * squared < inside) continue;
+
             const UndividedPosition corner = position_of(corners[c]);
             centre[n]                      = corner.numerator / corner.denominator;
-            squared_radius[n]              = norm2(centre[n] - seed_position);
-            // with the margin a sphere reaches at most twice its radius from the seed
-            if (!(4.0 * SECURITY_MARGIN * squared_radius[n] < inside)) n++;
+            squared_radius[n]              = squared;
+            n++;
+            // a sphere the doubles could not place leaves largest at NaN, which lets every box in
+            if (squared > largest || squared != squared) largest = squared;
         }
         return n;
     }
