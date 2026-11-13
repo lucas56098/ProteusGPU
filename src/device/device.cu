@@ -15,6 +15,7 @@
 #include <cstring>
 #include <sys/resource.h>
 #include <unistd.h>
+#include <vector>
 
 namespace device {
 
@@ -54,22 +55,34 @@ namespace device {
         stop_on_cuda_error(cudaGetDeviceCount(&n_gpus), "counting the GPUs of the node");
         if (n_gpus == 0) logging::stop_run("DEVICE: no GPU on this node");
 
+        // with all GPUs of the node visible the node rank picks one; the scheduler may also show each rank only its own
         const int gpu = node_rank % n_gpus;
         stop_on_cuda_error(cudaSetDevice(gpu), "choosing the GPU");
         cudaDeviceProp properties;
         stop_on_cuda_error(cudaGetDeviceProperties(&properties, gpu), "reading the GPU properties");
-        logging::print("BEGRUN: GPUs per node  = %d (%d ranks/node, %g ranks/GPU)",
-                       n_gpus,
+
+        // the PCI address tells the physical GPUs apart, however many of them a rank sees
+        const long long address =
+            ((long long)properties.pciDomainID << 16) | (properties.pciBusID << 8) | properties.pciDeviceID;
+        std::vector<long long> address_of_node_rank = mpi::gather_on_node(address);
+        const int ranks_on_gpu = (int)std::count(address_of_node_rank.begin(), address_of_node_rank.end(), address);
+        std::sort(address_of_node_rank.begin(), address_of_node_rank.end());
+        const int gpus_used =
+            (int)(std::unique(address_of_node_rank.begin(), address_of_node_rank.end()) - address_of_node_rank.begin());
+        logging::print("BEGRUN: GPUs used per node = %d (%d ranks/node, %d GPUs visible to a rank)",
+                       gpus_used,
                        ranks_on_node,
-                       (double)ranks_on_node / n_gpus);
-        logging::print_from_this_rank("CUDA: rank %d on device %d (%s), SM %d.%d",
+                       n_gpus);
+        logging::print_from_this_rank("CUDA: rank %d on device %d (%s, PCI %04x:%02x:%02x), SM %d.%d, %d rank(s) on it",
                                       mpi::rank(),
                                       gpu,
                                       properties.name,
+                                      properties.pciDomainID,
+                                      properties.pciBusID,
+                                      properties.pciDeviceID,
                                       properties.major,
-                                      properties.minor);
-
-        const int ranks_on_gpu = (ranks_on_node - gpu + n_gpus - 1) / n_gpus;
+                                      properties.minor,
+                                      ranks_on_gpu);
         warn_if_limit_above((double)properties.totalGlobalMem / ranks_on_gpu, "its share of the GPU memory");
 
         // freed temporary memory stays in the pool up to the limit, so the next temporary can reuse it

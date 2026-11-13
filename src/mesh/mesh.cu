@@ -23,6 +23,9 @@ namespace mesh {
         // every round doubles the balls that are still open, so a build needs only a few
         constexpr int MAX_ROUNDS = 24;
 
+        // the first guess of a ball: the security radius of the last build, grown by the drift since and this share
+        constexpr double GROWTH_OF_GUESS = 1.1;
+
         void start_build(const Vec*             positions,
                          int                    n_cells,
                          device::Array<Vec>&    seed,
@@ -71,7 +74,7 @@ namespace mesh {
                                             device::Array<int>& first_cell_next_to_ghost_cell,
                                             device::Array<int>& cell_next_to_ghost_cell);
         void count_for_log(int n_cells, const CellsPerTier& built, BuildsSinceLog& since_log);
-        void print_request_round(long long n_asked, const ghosts::Ghosts& ghosts, BuildsSinceLog& since_log);
+        void print_request_round(long long n_asked, int round, BuildsSinceLog& since_log);
         double mean_cell_spacing(int n_cells, const domain::DomainPointers& domain);
 
     } // namespace
@@ -80,6 +83,12 @@ namespace mesh {
         this->n_cells = n_cells;
         start_build(positions, n_cells, seed, volume, centroid_from_seed, faces, work);
         ghosts.start_new_build();
+        // the ghost seeds go, and the cells may have moved to other places
+        work.knowledge.grow_to_at_least(n_cells);
+        work.last_security_radius.grow_to_at_least(n_cells);
+        work.drift_at_last_build.grow_to_at_least(n_cells);
+        work.knowledge.fill(-1.0);
+        work.last_security_radius.fill(-1.0);
         const CellList     every = CellList{n_cells, nullptr};
         const CellsPerTier built = build_cells_in_rounds(
             every, n_cells, domain, 0.0, false, ghosts, seed, volume, centroid_from_seed, faces, work);
@@ -140,6 +149,7 @@ namespace mesh {
         const ghosts::GhostPointers ghost = ghosts.pointers();
         const BuildsSinceLog&       since = work.since_log;
         long long number[5] = {since.n_cells, since.slow, since.exact, ghost.n_ghost_seeds, ghost.n_ghost_cells};
+        const int n_rounds  = since.n_request_rounds;
         mpi::sum_over_ranks(number, 5);
         work.since_log = BuildsSinceLog{};
 
@@ -151,8 +161,9 @@ namespace mesh {
                 details + written, sizeof details - written, ", ghosts=%lld, used=%lld", number[3], number[4]);
         }
         if (number[2] > 0) {
-            std::snprintf(details + written, sizeof details - written, ", cpu_fallback=%lld", number[2]);
+            written += std::snprintf(details + written, sizeof details - written, ", cpu_fallback=%lld", number[2]);
         }
+        if (n_rounds > 0) std::snprintf(details + written, sizeof details - written, ", %d request rounds", n_rounds);
         logging::print_labelled("VORONOI", "Generated %lld cells (%s)", number[0], details);
     }
 
@@ -298,9 +309,12 @@ namespace mesh {
                 const timers::Scope timer("FIRST_GUESS");
                 make_first_guess(cells, n_cells, drift_margin, domain, work);
             }
+            work.since_log.n_lists++;
+            int round = 0;
             {
                 const timers::Scope timer("GHOST_SEEDS");
-                ask_for_balls(n_cells, domain, drift_margin, seed, ghosts, work);
+                const long long     n_asked = ask_for_balls(n_cells, domain, drift_margin, seed, ghosts, work);
+                if (n_asked > 0) print_request_round(n_asked, ++round, work.since_log);
             }
 
             CellsPerTier built;
@@ -323,7 +337,7 @@ namespace mesh {
                 const timers::Scope timer("GHOST_SEEDS");
                 const long long     n_asked = ask_for_balls(n_cells, domain, drift_margin, seed, ghosts, work);
                 asked                       = n_asked > 0;
-                if (asked) print_request_round(n_asked, ghosts, work.since_log);
+                if (asked) print_request_round(n_asked, ++round, work.since_log);
             }
             return built;
         }
@@ -343,6 +357,9 @@ namespace mesh {
             double*                     known      = work.known_radius.data();
             double*                     next       = work.next_radius.data();
             Progress*                   progress   = work.progress.data();
+            const double*               knowledge  = work.knowledge.data();
+            const double*               security   = work.last_security_radius.data();
+            const double*               drift_then = work.drift_at_last_build.data();
             device::parallel_for(cells.n, [=] HD(long i) {
                 const int cell = cells[(int)i];
                 const int t    = tree_index[cell];
@@ -353,13 +370,27 @@ namespace mesh {
                     return;
                 }
 
-                int neighbours[NEAREST_NEIGHBOURS];
-                ngbtree::nearest_neighbours<NEAREST_NEIGHBOURS>(tree, (int)t, neighbours);
-                double reach = 0.0;
-                for (int k = 0; k < NEAREST_NEIGHBOURS && neighbours[k] >= 0; k++)
-                    reach = sqrt(norm2(tree.positions[neighbours[k]] - seed));
-                known[cell]    = 0.0;
-                next[cell]     = (reach > 0.0 && reach < MAX_BALL_RADIUS) ? reach : MAX_BALL_RADIUS;
+                // the security radius of the last build, else the farthest of the nearest points
+                double guess = 0.0;
+                if (security[cell] > 0.0) {
+                    guess = GROWTH_OF_GUESS * (security[cell] + 2.0 * (drift_margin - drift_then[cell]));
+                } else {
+                    int neighbours[NEAREST_NEIGHBOURS];
+                    ngbtree::nearest_neighbours<NEAREST_NEIGHBOURS>(tree, (int)t, neighbours);
+                    for (int k = 0; k < NEAREST_NEIGHBOURS && neighbours[k] >= 0; k++)
+                        guess = sqrt(norm2(tree.positions[neighbours[k]] - seed));
+                }
+                guess = (guess > 0.0 && guess < MAX_BALL_RADIUS) ? guess : MAX_BALL_RADIUS;
+
+                // what the cell learned before in this top step may be enough already
+                const double known_now = knowledge[cell] - 2.0 * drift_margin;
+                if (known_now >= guess) {
+                    known[cell]    = known_now;
+                    progress[cell] = Progress::open;
+                    return;
+                }
+                known[cell]    = (known_now > 0.0) ? known_now : 0.0;
+                next[cell]     = guess;
                 progress[cell] = Progress::asks_for_more_points;
             });
         }
@@ -391,10 +422,12 @@ namespace mesh {
             const long long n_asked =
                 ghosts.add_cells_in_balls(center, radius, n_asking, drift_margin, domain, work.tree, n_cells);
 
-            // now they know every point in their balls
+            // now they know every point in their balls, also for the later builds of this top step
+            double* knowledge = work.knowledge.data();
             device::parallel_for(n_asking, [=] HD(long i) {
-                known[asking[i]]    = next[asking[i]];
-                progress[asking[i]] = Progress::open;
+                known[asking[i]]     = next[asking[i]];
+                knowledge[asking[i]] = fmax(knowledge[asking[i]], next[asking[i]] + 2.0 * drift_margin);
+                progress[asking[i]]  = Progress::open;
             });
             return n_asked;
         }
@@ -524,20 +557,11 @@ namespace mesh {
             since_log.exact += built.exact;
         }
 
-        // the rounds count on over all builds of one line in the log; collective
-        void print_request_round(long long n_asked, const ghosts::Ghosts& ghosts, BuildsSinceLog& since_log) {
+        // numbered within the list; the list is counted within the sync
+        void print_request_round(long long n_asked, int round, BuildsSinceLog& since_log) {
             since_log.n_request_rounds++;
-            const long long n_ghost_seeds = mpi::sum_over_ranks((long long)ghosts.pointers().n_ghost_seeds);
-            if (mpi::nranks() > 1) {
-                logging::print_labelled("VORONOI",
-                                        "Round %d: %lld cells asked for more points (ghosts=%lld)",
-                                        since_log.n_request_rounds,
-                                        n_asked,
-                                        n_ghost_seeds);
-            } else {
-                logging::print_labelled(
-                    "VORONOI", "Round %d: %lld cells asked for more points", since_log.n_request_rounds, n_asked);
-            }
+            logging::print_labelled(
+                "VORONOI", "List %d, round %d: %lld cells asked for more points", since_log.n_lists, round, n_asked);
         }
 
         // from the part of the curve this rank holds; only for the first guess, so the rounding of pow does not matter

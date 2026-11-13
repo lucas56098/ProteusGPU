@@ -33,8 +33,14 @@ namespace simulation {
         timesteps::TopStep    top;
         timesteps::Sync       sync{};
         Snapshots             snapshots{};
-        int                   step       = 0; // top steps done so far
-        double                start_time = 0.0; // of this run, also after a restart
+        long long             fluxes         = 0; // of this rank in the top step so far, for the log
+        long long             limited_fluxes = 0; // of these, cut by the flux limiter
+        int                   flux_passes    = 0; // halves of fluxes in the top step so far
+        int                   redone_passes  = 0; // of these, done again with the limiter
+        long long             floored_cells  = 0; // with a negative thermal energy set to zero, in the top step so far
+        double                floor_energy   = 0.0; // the energy that added
+        int                   step           = 0; // top steps done so far
+        double                start_time     = 0.0; // of this run, also after a restart
         std::string           profile; // file name of the profile
 
         std::chrono::steady_clock::time_point start_of_run;

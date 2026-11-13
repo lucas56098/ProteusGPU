@@ -6,6 +6,49 @@
 
 namespace device {
 
+    // The loops of these templates are named functors, not __host__ __device__ lambdas: nvcc wraps such a lambda in a
+    // type that several .cu files share at link time, while each file keeps its own pointer to the host function
+    // behind it, so a lambda of a template used in two files can call the null pointer of the other one.
+    namespace array_loops {
+
+        template <typename ElementType> struct Fill {
+            ElementType* to;
+            ElementType  value;
+            HD void operator()(long i) const { to[i] = value; }
+        };
+
+        template <typename ElementType> struct Pack {
+            const ElementType* from;
+            const int*         index;
+            char*              to;
+            int                item_bytes;
+            int                offset;
+            HD void operator()(long i) const {
+                memcpy(to + i * item_bytes + offset, &from[index[i]], sizeof(ElementType));
+            }
+        };
+
+        template <typename ElementType> struct Unpack {
+            const char*  from;
+            ElementType* to;
+            int          item_bytes;
+            int          offset;
+            HD void operator()(long i) const { memcpy(&to[i], from + i * item_bytes + offset, sizeof(ElementType)); }
+        };
+
+        template <typename ElementType> struct UnpackAt {
+            const char*  from;
+            const int*   index;
+            ElementType* to;
+            int          item_bytes;
+            int          offset;
+            HD void operator()(long i) const {
+                memcpy(&to[index[i]], from + i * item_bytes + offset, sizeof(ElementType));
+            }
+        };
+
+    } // namespace array_loops
+
     template <typename ElementType>
     Array<ElementType>::Array(const char* name, long size)
         : name(name), length(size),
@@ -24,8 +67,7 @@ namespace device {
     }
 
     template <typename ElementType> void Array<ElementType>::fill(const ElementType& value) {
-        ElementType* to_fill = elements;
-        parallel_for(length, [=] HD(long i) { to_fill[i] = value; });
+        parallel_for(length, array_loops::Fill<ElementType>{elements, value});
     }
 
     template <typename ElementType> void copy(const Array<ElementType>& from, Array<ElementType>& to, long n) {
@@ -39,9 +81,7 @@ namespace device {
                          int                       item_bytes,
                          int                       offset,
                          Array<char>&              items) {
-        const ElementType* from = field.data();
-        char*              to   = items.data();
-        parallel_for(n, [=] HD(long i) { memcpy(to + i * item_bytes + offset, &from[index[i]], sizeof(ElementType)); });
+        parallel_for(n, array_loops::Pack<ElementType>{field.data(), index, items.data(), item_bytes, offset});
     }
 
     template <typename ElementType>
@@ -51,9 +91,7 @@ namespace device {
                            int                 offset,
                            long                first,
                            Array<ElementType>& field) {
-        const char*  from = items.data();
-        ElementType* to   = field.data() + first;
-        parallel_for(n, [=] HD(long i) { memcpy(&to[i], from + i * item_bytes + offset, sizeof(ElementType)); });
+        parallel_for(n, array_loops::Unpack<ElementType>{items.data(), field.data() + first, item_bytes, offset});
     }
 
     template <typename ElementType>
@@ -63,9 +101,7 @@ namespace device {
                               int                 offset,
                               const int*          index,
                               Array<ElementType>& field) {
-        const char*  from = items.data();
-        ElementType* to   = field.data();
-        parallel_for(n, [=] HD(long i) { memcpy(&to[index[i]], from + i * item_bytes + offset, sizeof(ElementType)); });
+        parallel_for(n, array_loops::UnpackAt<ElementType>{items.data(), index, field.data(), item_bytes, offset});
     }
 
 } // namespace device

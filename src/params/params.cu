@@ -62,6 +62,10 @@ namespace params {
         run.output_dt    = file.number("output_dt", SMALLEST_POSITIVE, NO_UPPER_END, "the time between two snapshots");
         run.time_end     = file.number("time_end", SMALLEST_POSITIVE, NO_UPPER_END, "the time the run ends at");
         run.cfl_fraction = file.number("CFL_frac", SMALLEST_POSITIVE, 1.0, "the share of its CFL step a cell takes");
+        if (file.has("write_snapshots")) {
+            run.write_snapshots =
+                file.number("write_snapshots", 0.0, 1.0, "1 to write snapshots, 0 for only the profile") != 0.0;
+        }
         run.memory_limit_in_gb =
             file.number("memory_limit_in_gb", SMALLEST_POSITIVE, NO_UPPER_END, "the memory one rank may use, in GB");
         if constexpr (config::regularization_speed_by_volume > 0.0) {

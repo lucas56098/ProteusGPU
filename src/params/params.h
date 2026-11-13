@@ -14,6 +14,7 @@ namespace params {
         std::string output_directory;
         double      output_dt           = 0.0; // time between two snapshots
         bool        from_last_snapshot  = false; // go on from the last snapshot in output_directory
+        bool        write_snapshots     = true; // optional write_snapshots = 0: only the profile, as for timing runs
         double      time_end            = 0.0;
         double      cfl_fraction        = 0.0; // the share of its CFL step a cell takes
         double      memory_limit_in_gb  = 0.0; // per rank

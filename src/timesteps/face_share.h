@@ -40,6 +40,14 @@ namespace timesteps {
         }
     }
 
+    HD inline double planned_length_of_step(const StepPointers& steps, int cell) {
+        if constexpr (!config::individual_timesteps) {
+            return (double)TICKS_PER_TOP_STEP * steps.tick_length;
+        } else {
+            return (double)(steps.planned_end[cell] - steps.start[cell]) * steps.tick_length;
+        }
+    }
+
     HD inline int start_of_step(const StepPointers& steps, int cell) {
         if constexpr (!config::individual_timesteps) {
             return 0;

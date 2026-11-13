@@ -65,6 +65,7 @@ namespace mesh {
         long long slow             = 0;
         long long exact            = 0;
         int       n_request_rounds = 0;
+        int       n_lists          = 0;
     };
 
     // the arrays of a build, kept for the next one
@@ -79,6 +80,13 @@ namespace mesh {
         device::Array<voronoi_cell::Status> status{"mesh: status of the last build of every cell", 0};
         device::Array<double>               known_radius{"mesh: radius around every seed with all points here", 0};
         device::Array<double>               next_radius{"mesh: radius every cell asks for next", 0};
+
+        // what a cell learned in the builds of this top step, as the ghost seeds stay until its end: every point within
+        // knowledge - 2 drift_margin of its seed is here, as no seed moved farther than the drift margin since; and its
+        // security radius at its last build, with the drift margin then, for the first guess of the next one
+        device::Array<double> knowledge{"mesh: known radius plus twice the drift margin then", 0};
+        device::Array<double> last_security_radius{"mesh: security radius at the last build", 0};
+        device::Array<double> drift_at_last_build{"mesh: drift margin at the last build", 0};
 
         // the faces taken so far, one int, and where it stood when the build began
         device::Array<int> face_counter{"mesh: counter of faces", 0};

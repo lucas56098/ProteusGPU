@@ -28,6 +28,11 @@ namespace cells {
         device::Array<Vec>    velocity_gradient[config::dim]; // [d]: gradient of velocity component d
         device::Array<Vec>    pressure_gradient{"cells: pressure gradients", 0};
         device::Array<Vec>    gradient_anchor{"cells: gradient anchors", 0};
+        device::Array<double> step_mass{"cells: masses at the start of their steps", 0}; // for the flux limiter
+        // the mass a cell would lose over its step at the fluxes of one half; also of the ghost cells, for the limiter
+        device::Array<double> outflow_exposure{"cells: mass a cell would lose over its step", 0};
+        // the conserved variables of a list before its fluxes, for a second try with the limiter
+        device::Array<gas::Conserved> conserved_backup{"cells: conserved variables before the fluxes", 0};
         device::Array<Vec> mesh_velocity{"cells: mesh velocities", 0}; // from the start of the step; moving mesh only
         device::Array<double> cfl_step{"cells: CFL steps", 0}; // of the cells that begin a step, at its start
         // with ASTRO_PHYSICS and individual timesteps: the tick up to which the sources of the cell ran
@@ -74,6 +79,9 @@ namespace cells {
 
     // the same, but only into the ghost cells of the last ghosts.give_ghost_cells_to; collective
     void copy_everything_to_new_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts);
+
+    // the outflow exposure of every cell into its ghost cells, for the flux limiter; collective
+    void copy_outflow_exposure_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts);
 
 } // namespace cells
 

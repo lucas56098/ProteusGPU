@@ -177,6 +177,7 @@ namespace timesteps {
 
     // time since the step of a cell or ghost cell began, and the tick it began at
     HD inline double since_start(const StepPointers& steps, int cell);
+    HD inline double planned_length_of_step(const StepPointers& steps, int cell);
     HD inline int start_of_step(const StepPointers& steps, int cell);
 
     // plain values for kernels; the arrays are null with one bin

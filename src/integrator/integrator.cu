@@ -13,6 +13,7 @@
 #include "logging/logging.h"
 #include "mesh/mesh.h"
 #include "mesh_motion/mesh_motion.h"
+#include "mpi/mpi.h"
 #include "profile/profile.h"
 #include "signals/signals.h"
 #include "simulation/simulation.h"
@@ -75,6 +76,8 @@ namespace integrator {
                                 device::Array<Vec>&       seeds,
                                 cells::Cells&             cells);
         void end_steps(simulation::Simulation& sim, CellsOfSync& of_sync);
+        void apply_limited_fluxes(simulation::Simulation& sim, timesteps::Half half, const mesh::CellList& with_faces);
+        void print_limited_fluxes(simulation::Simulation& sim);
         void write_snapshot_if_due(simulation::Simulation& sim);
         double seconds_left(const simulation::Simulation& sim);
 
@@ -114,6 +117,7 @@ namespace integrator {
                     sim.step++;
                     if constexpr (config::profiling) timers::record_top_step(sim.step, sim.sync.time);
                     sim.top.print_syncs_and_steps(sim.cells.n_cells);
+                    print_limited_fluxes(sim);
 
                     // OUTPUT
                     write_snapshot_if_due(sim);
@@ -191,7 +195,8 @@ namespace integrator {
                 }
             }
 
-            // the neighbours on other ranks get the gradients and mesh velocities before the fluxes
+            // the neighbours on other ranks get the gradients, mesh velocities and masses before the fluxes
+            hydro::masses_at_start_of_step(on_mesh, state, active, sim.cells.step_mass.data());
             {
                 const timers::Scope timer("GHOST_CELLS");
                 cells::copy_gradients_to_ghost_cells(sim.cells, sim.ghosts, active);
@@ -202,15 +207,7 @@ namespace integrator {
             }
             {
                 const timers::Scope timer("FLUX");
-                hydro::apply_fluxes(on_mesh,
-                                    state,
-                                    gradients,
-                                    sim.cells.mesh_velocity.data(),
-                                    at_sync,
-                                    timesteps::Half::first,
-                                    sim.sources.lowest_specific_energy(),
-                                    of_sync.with_faces,
-                                    conserved);
+                apply_limited_fluxes(sim, timesteps::Half::first, of_sync.with_faces);
             }
         }
 
@@ -418,28 +415,20 @@ namespace integrator {
                     sim.top.cells_with_faces_at_sync(sim.sync, of_sync.active, on_mesh, sim.cells.steps);
             }
 
-            const gas::PrimitivePointers      state     = cells::primitive_of(sim.cells);
-            const gas::ConservedPointers      conserved = cells::conserved_of(sim.cells);
-            const gradients::GradientPointers gradients = cells::gradients_of(sim.cells);
-            const timesteps::StepPointers     at_sync   = sim.top.pointers(sim.sync, sim.cells.steps);
+            const gas::PrimitivePointers state     = cells::primitive_of(sim.cells);
+            const gas::ConservedPointers conserved = cells::conserved_of(sim.cells);
 
             // a cell in the middle of its step takes the fluxes in its conserved variables only
             {
                 const timers::Scope timer("FLUX");
-                hydro::apply_fluxes(on_mesh,
-                                    state,
-                                    gradients,
-                                    sim.cells.mesh_velocity.data(),
-                                    at_sync,
-                                    timesteps::Half::second,
-                                    sim.sources.lowest_specific_energy(),
-                                    of_sync.with_faces,
-                                    conserved);
+                apply_limited_fluxes(sim, timesteps::Half::second, of_sync.with_faces);
             }
             {
-                const timers::Scope timer("CONS_TO_PRIM");
-                hydro::primitive_from_conserved(
+                const timers::Scope            timer("CONS_TO_PRIM");
+                const hydro::ThermalFloorCount floored = hydro::primitive_from_conserved(
                     on_mesh, conserved, of_sync.active, sim.sources.lowest_specific_energy(), state);
+                sim.floored_cells += floored.cells;
+                sim.floor_energy += floored.energy;
             }
 
             {
@@ -457,6 +446,69 @@ namespace integrator {
             }
         }
 
+        // optimistic: the fluxes without the limiter, which give the exposures; only if a cell on some rank would lose
+        // too much does every cell of the list go back to its conserved variables before, and the fluxes are taken
+        // again with the limiter, once the ghost cells have the exposures; collective
+        void apply_limited_fluxes(simulation::Simulation& sim, timesteps::Half half, const mesh::CellList& with_faces) {
+            const mesh::MeshPointers          on_mesh   = sim.mesh.pointers();
+            const gas::PrimitivePointers      state     = cells::primitive_of(sim.cells);
+            const gas::ConservedPointers      conserved = cells::conserved_of(sim.cells);
+            const gradients::GradientPointers gradients = cells::gradients_of(sim.cells);
+            const timesteps::StepPointers     at_sync   = sim.top.pointers(sim.sync, sim.cells.steps);
+            const double                      lowest    = sim.sources.lowest_specific_energy();
+            const double*                     step_mass = sim.cells.step_mass.data();
+            double*                           exposure  = sim.cells.outflow_exposure.data();
+            const auto                        fluxes    = [&](const double* limit_by, double* exposure_out) {
+                return hydro::apply_fluxes(on_mesh,
+                                           state,
+                                           gradients,
+                                           sim.cells.mesh_velocity.data(),
+                                           at_sync,
+                                           half,
+                                           lowest,
+                                           step_mass,
+                                           limit_by,
+                                           exposure_out,
+                                           with_faces,
+                                           conserved);
+            };
+
+            sim.cells.conserved_backup.grow_to_at_least(with_faces.n);
+            hydro::save_conserved(with_faces, conserved, sim.cells.conserved_backup.data());
+            hydro::FluxCount count = fluxes(nullptr, exposure);
+            sim.flux_passes++;
+            if (mpi::sum_over_ranks(hydro::count_over_exposed(with_faces, step_mass, exposure)) > 0) {
+                hydro::restore_conserved(with_faces, sim.cells.conserved_backup.data(), conserved);
+                cells::copy_outflow_exposure_to_ghost_cells(sim.cells, sim.ghosts);
+                count = fluxes(exposure, nullptr);
+                sim.redone_passes++;
+            }
+            sim.fluxes += count.faces;
+            sim.limited_fluxes += count.limited;
+        }
+
+        // the fluxes and thermal floors of the top step over all ranks, as Arepo's FLUX line; collective
+        void print_limited_fluxes(simulation::Simulation& sim) {
+            long long number[3] = {sim.fluxes, sim.limited_fluxes, sim.floored_cells};
+            mpi::sum_over_ranks(number, 3);
+            const double added = mpi::sum_over_ranks(sim.floor_energy);
+            logging::print("HYDRO: %lld fluxes over faces, %lld of them limited (fraction %g; %d of %d halves done "
+                           "again); %lld cells with negative thermal energy set to zero, adding %g",
+                           number[0],
+                           number[1],
+                           (double)number[1] / ((double)number[0] + 1e-30),
+                           sim.redone_passes,
+                           sim.flux_passes,
+                           number[2],
+                           added);
+            sim.flux_passes    = 0;
+            sim.redone_passes  = 0;
+            sim.fluxes         = 0;
+            sim.limited_fluxes = 0;
+            sim.floored_cells  = 0;
+            sim.floor_energy   = 0.0;
+        }
+
         // OUTPUT: a snapshot at the end of a top step that reaches its due time or the end of the run
         void write_snapshot_if_due(simulation::Simulation& sim) {
             const params::RunParameters& parameters = sim.parameters;
@@ -467,15 +519,16 @@ namespace integrator {
             if constexpr (config::profiling) {
                 io::write_profile(parameters.output_directory, sim.profile, profile::profile_of_run());
             }
-            io::write_snapshot(parameters.output_directory,
-                               sim.snapshots.number,
-                               sim.sync.time,
-                               sim.step,
-                               parameters.astro.units,
-                               sim.cells,
-                               sim.mesh.pointers(),
-                               sim.ghosts.pointers(),
-                               sim.top.pointers(sim.sync, sim.cells.steps));
+            if (parameters.write_snapshots)
+                io::write_snapshot(parameters.output_directory,
+                                   sim.snapshots.number,
+                                   sim.sync.time,
+                                   sim.step,
+                                   parameters.astro.units,
+                                   sim.cells,
+                                   sim.mesh.pointers(),
+                                   sim.ghosts.pointers(),
+                                   sim.top.pointers(sim.sync, sim.cells.steps));
             sim.snapshots.number++;
             sim.snapshots.next_time += parameters.output_dt;
         }

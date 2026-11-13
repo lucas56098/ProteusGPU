@@ -45,6 +45,8 @@ namespace mesh {
             const Vec*             seed;
             const double*          known_radius;
             double*                next_radius;
+            double*                last_security_radius;
+            double*                drift_at_last_build;
             Progress*              progress;
             voronoi_cell::Status*  status;
             double*                volume;
@@ -135,21 +137,23 @@ namespace mesh {
                                         Faces&                    faces,
                                         BuildWork&                work) {
             TierPointers p;
-            p.n_cells             = n_cells;
-            p.tree                = work.tree.pointers();
-            p.point_of_tree_index = work.tree.input_indices();
-            p.tree_index_of_cell  = work.tree_index_of_cell.data();
-            p.ghosts              = ghosts.pointers();
-            p.domain              = domain.pointers();
-            p.drift_margin        = drift_margin;
-            p.seed                = seed.data();
-            p.known_radius        = work.known_radius.data();
-            p.next_radius         = work.next_radius.data();
-            p.progress            = work.progress.data();
-            p.status              = work.status.data();
-            p.volume              = volume.data();
-            p.centroid_from_seed  = centroid_from_seed.data();
-            p.face_counter        = work.face_counter.data();
+            p.n_cells              = n_cells;
+            p.tree                 = work.tree.pointers();
+            p.point_of_tree_index  = work.tree.input_indices();
+            p.tree_index_of_cell   = work.tree_index_of_cell.data();
+            p.ghosts               = ghosts.pointers();
+            p.domain               = domain.pointers();
+            p.drift_margin         = drift_margin;
+            p.seed                 = seed.data();
+            p.known_radius         = work.known_radius.data();
+            p.next_radius          = work.next_radius.data();
+            p.last_security_radius = work.last_security_radius.data();
+            p.drift_at_last_build  = work.drift_at_last_build.data();
+            p.progress             = work.progress.data();
+            p.status               = work.status.data();
+            p.volume               = volume.data();
+            p.centroid_from_seed   = centroid_from_seed.data();
+            p.face_counter         = work.face_counter.data();
             point_at_faces(faces, p);
             return p;
         }
@@ -228,6 +232,8 @@ namespace mesh {
                 p.progress[cell]    = Progress::asks_for_more_points;
                 return;
             }
+            p.last_security_radius[cell] = security_radius;
+            p.drift_at_last_build[cell]  = p.drift_margin;
             store(voronoi, cell, p);
         }
 

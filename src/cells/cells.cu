@@ -49,6 +49,7 @@ namespace cells {
         for_each_gradient_field(cells, [&](auto& field) { field.grow_to_at_least(n_cells + n_ghost_cells); });
         for_each_seed_field(cells, [&](auto& field) { field.grow_to_at_least(n_cells + n_ghost_cells); });
         for_each_step_field(cells, [&](auto& field) { field.grow_to_at_least(n_cells + n_ghost_cells); });
+        cells.outflow_exposure.grow_to_at_least(n_cells + n_ghost_cells);
     }
 
     // order[new place] = old place; every field then follows, one after the other through the same array
@@ -127,6 +128,10 @@ namespace cells {
             for_each_seed_field(cells, function);
             for_each_step_field(cells, function);
         });
+    }
+
+    void copy_outflow_exposure_to_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts) {
+        ghosts.copy_to_ghost_cells(cells.n_cells, [&](auto function) { function(cells.outflow_exposure); });
     }
 
     void copy_everything_to_new_ghost_cells(Cells& cells, ghosts::Ghosts& ghosts) {

@@ -88,15 +88,16 @@ namespace begrun {
         if (!parameters.from_last_snapshot) {
             const timers::Scope timer("IO_SNAPSHOT");
             io::prepare_output_directory(parameters.output_directory);
-            io::write_snapshot(parameters.output_directory,
-                               0,
-                               start.time,
-                               0,
-                               parameters.astro.units,
-                               sim.cells,
-                               sim.mesh.pointers(),
-                               sim.ghosts.pointers(),
-                               sim.top.pointers(sim.sync, sim.cells.steps));
+            if (parameters.write_snapshots)
+                io::write_snapshot(parameters.output_directory,
+                                   0,
+                                   start.time,
+                                   0,
+                                   parameters.astro.units,
+                                   sim.cells,
+                                   sim.mesh.pointers(),
+                                   sim.ghosts.pointers(),
+                                   sim.top.pointers(sim.sync, sim.cells.steps));
         }
 
         sim.snapshots  = start.snapshots;

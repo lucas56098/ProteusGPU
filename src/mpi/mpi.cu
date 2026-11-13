@@ -29,6 +29,7 @@ namespace mpi {
             int node_size = 1;
 #ifdef USE_MPI
             MPI_Comm comm = MPI_COMM_NULL;
+            MPI_Comm node = MPI_COMM_NULL; // the ranks of this node
 #endif
         };
         World world;
@@ -63,11 +64,9 @@ namespace mpi {
         MPI_Comm_size(world.comm, &world.nranks);
 
         // the ranks that share this node, and the place of this rank among them
-        MPI_Comm node;
-        MPI_Comm_split_type(world.comm, MPI_COMM_TYPE_SHARED, world.rank, MPI_INFO_NULL, &node);
-        MPI_Comm_rank(node, &world.node_rank);
-        MPI_Comm_size(node, &world.node_size);
-        MPI_Comm_free(&node);
+        MPI_Comm_split_type(world.comm, MPI_COMM_TYPE_SHARED, world.rank, MPI_INFO_NULL, &world.node);
+        MPI_Comm_rank(world.node, &world.node_rank);
+        MPI_Comm_size(world.node, &world.node_size);
 #else
         (void)argc;
         (void)argv;
@@ -76,6 +75,7 @@ namespace mpi {
 
     void finalize() {
 #ifdef USE_MPI
+        MPI_Comm_free(&world.node);
         MPI_Comm_free(&world.comm);
         MPI_Finalize();
 #endif
@@ -101,6 +101,15 @@ namespace mpi {
     }
     int node_size() {
         return world.node_size;
+    }
+
+    std::vector<long long> gather_on_node(long long value) {
+        std::vector<long long> value_of_node_rank(world.node_size, value);
+#ifdef USE_MPI
+        const timers::Scope timer("MPI_GATHER", timers::Type::mpi);
+        MPI_Allgather(&value, 1, MPI_LONG_LONG, value_of_node_rank.data(), 1, MPI_LONG_LONG, world.node);
+#endif
+        return value_of_node_rank;
     }
 
     std::vector<std::string> about_library() {
@@ -157,6 +166,9 @@ namespace mpi {
         return combined_over_ranks(value, Operation::max);
     }
     long long sum_over_ranks(long long value) {
+        return combined_over_ranks(value, Operation::sum);
+    }
+    double sum_over_ranks(double value) {
         return combined_over_ranks(value, Operation::sum);
     }
 

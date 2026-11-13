@@ -14,6 +14,9 @@ namespace hydro {
         constexpr int THREADS_PER_BLOCK             = 256;
         constexpr int MIN_BLOCKS_PER_MULTIPROCESSOR = 2;
 
+        // the share of its mass an upwind cell may lose over one face in one of its steps (Arepo: face_limit_fluxes)
+        constexpr double MOST_OF_UPWIND_MASS = 0.9;
+
         struct UnphysicalCells {
             long long density_not_positive;
             long long energy_not_positive;
@@ -33,7 +36,11 @@ namespace hydro {
                                      const timesteps::StepPointers&     steps,
                                      timesteps::Half                    half,
                                      double                             lowest_specific_energy,
-                                     const gas::ConservedPointers&      conserved);
+                                     const double*                      step_mass,
+                                     const double*                      exposure,
+                                     double*                            exposure_out,
+                                     const gas::ConservedPointers&      conserved,
+                                     int*                               count);
         HD gas::Flux flux_over_face(int                                cell,
                                     int                                face,
                                     const gas::Primitive&              w,
@@ -76,33 +83,103 @@ namespace hydro {
         });
     }
 
-    void primitive_from_conserved(const mesh::MeshPointers&     mesh,
-                                  const gas::ConservedPointers& conserved,
-                                  const mesh::CellList&         cells,
-                                  double                        lowest_specific_energy,
-                                  const gas::PrimitivePointers& state) {
+    // the count first, as the floor changes the energy it reads
+    ThermalFloorCount primitive_from_conserved(const mesh::MeshPointers&     mesh,
+                                               const gas::ConservedPointers& conserved,
+                                               const mesh::CellList&         cells,
+                                               double                        lowest_specific_energy,
+                                               const gas::PrimitivePointers& state) {
+        const auto        kinetic_of = [] HD(const gas::Conserved& u) { return 0.5 * norm2(u.momentum) / u.mass; };
+        ThermalFloorCount count;
+        count.cells  = device::sum(cells.n, [=] HD(long i) {
+            const gas::Conserved u = gas::load(conserved, cells[(int)i]);
+            return (long long)(u.energy < kinetic_of(u));
+        });
+        count.energy = device::sum(cells.n, [=] HD(long i) {
+            const gas::Conserved u = gas::load(conserved, cells[(int)i]);
+            return (u.energy < kinetic_of(u)) ? kinetic_of(u) - u.energy : 0.0;
+        });
+
         device::parallel_for(cells.n, [=] HD(long i) {
-            const int      cell = cells[(int)i];
-            gas::Primitive w    = gas::primitive_of(gas::load(conserved, cell), mesh.volume[cell]);
+            const int      cell  = cells[(int)i];
+            gas::Conserved u     = gas::load(conserved, cell);
+            const bool     floor = u.energy < kinetic_of(u);
+            if (floor) {
+                u.energy               = kinetic_of(u);
+                conserved.energy[cell] = u.energy;
+            }
+            gas::Primitive w = gas::primitive_of(u, mesh.volume[cell]);
+            if (floor) w.pressure = 0.0; // not the rounding of E - kinetic
             if (lowest_specific_energy > 0.0)
                 w = gas::with_temperature_floor(w, state.velocity[cell], lowest_specific_energy);
             gas::store(state, cell, w);
         });
+        return count;
     }
 
-    void apply_fluxes(const mesh::MeshPointers&          mesh,
-                      const gas::PrimitivePointers&      state,
-                      const gradients::GradientPointers& gradients,
-                      const Vec*                         mesh_velocity,
-                      const timesteps::StepPointers&     steps,
-                      timesteps::Half                    half,
-                      double                             lowest_specific_energy,
-                      const mesh::CellList&              cells,
-                      const gas::ConservedPointers&      conserved) {
-        device::parallel_for<THREADS_PER_BLOCK, MIN_BLOCKS_PER_MULTIPROCESSOR>(cells.n, [=] HD(long i) {
-            apply_fluxes_of_cell(
-                cells[(int)i], mesh, state, gradients, mesh_velocity, steps, half, lowest_specific_energy, conserved);
+    void masses_at_start_of_step(const mesh::MeshPointers&     mesh,
+                                 const gas::PrimitivePointers& state,
+                                 const mesh::CellList&         cells,
+                                 double*                       step_mass) {
+        device::parallel_for(cells.n, [=] HD(long i) {
+            const int cell  = cells[(int)i];
+            step_mass[cell] = state.density[cell] * mesh.volume[cell];
         });
+    }
+
+    void save_conserved(const mesh::CellList& cells, const gas::ConservedPointers& conserved, gas::Conserved* backup) {
+        device::parallel_for(cells.n, [=] HD(long i) { backup[i] = gas::load(conserved, cells[(int)i]); });
+    }
+
+    void restore_conserved(const mesh::CellList&         cells,
+                           const gas::Conserved*         backup,
+                           const gas::ConservedPointers& conserved) {
+        device::parallel_for(cells.n, [=] HD(long i) { gas::store(conserved, cells[(int)i], backup[i]); });
+    }
+
+    long long count_over_exposed(const mesh::CellList& cells, const double* step_mass, const double* exposure) {
+        return device::sum(cells.n, [=] HD(long i) {
+            const int cell = cells[(int)i];
+            return (long long)(exposure[cell] > MOST_OF_UPWIND_MASS * step_mass[cell]);
+        });
+    }
+
+    // every cell counts its faces and limited fluxes into its own two ints, which are summed after
+    FluxCount apply_fluxes(const mesh::MeshPointers&          mesh,
+                           const gas::PrimitivePointers&      state,
+                           const gradients::GradientPointers& gradients,
+                           const Vec*                         mesh_velocity,
+                           const timesteps::StepPointers&     steps,
+                           timesteps::Half                    half,
+                           double                             lowest_specific_energy,
+                           const double*                      step_mass,
+                           const double*                      exposure,
+                           double*                            exposure_out,
+                           const mesh::CellList&              cells,
+                           const gas::ConservedPointers&      conserved) {
+        if (cells.n == 0) return FluxCount{};
+        const long bytes  = 2l * cells.n * (long)sizeof(int);
+        int*       counts = static_cast<int*>(device::allocate_temporary(bytes));
+        device::parallel_for<THREADS_PER_BLOCK, MIN_BLOCKS_PER_MULTIPROCESSOR>(cells.n, [=] HD(long i) {
+            apply_fluxes_of_cell(cells[(int)i],
+                                 mesh,
+                                 state,
+                                 gradients,
+                                 mesh_velocity,
+                                 steps,
+                                 half,
+                                 lowest_specific_energy,
+                                 step_mass,
+                                 exposure,
+                                 exposure_out,
+                                 conserved,
+                                 &counts[2 * i]);
+        });
+        FluxCount count;
+        count.faces   = device::sum(cells.n, [=] HD(long i) { return (long long)counts[2 * i]; });
+        count.limited = device::sum(cells.n, [=] HD(long i) { return (long long)counts[2 * i + 1]; });
+        device::free_temporary(counts, bytes);
+        return count;
     }
 
     void stop_if_unphysical(const gas::PrimitivePointers& state,
@@ -141,7 +218,8 @@ namespace hydro {
             return cfl_step_of(gas::load(state, cell), mesh.volume[cell], of_mesh, cfl_fraction, 0.0, 0.0);
         }
 
-        // sums what flows out over the faces with a share, in face order; then the cell loses that
+        // sums what flows out over the faces with a share, in face order; then the cell loses that. The limiter sees
+        // the same upwind cell, mass, step and area from both sides of a face, so both cut the flux alike
         HD void apply_fluxes_of_cell(int                                cell,
                                      const mesh::MeshPointers&          mesh,
                                      const gas::PrimitivePointers&      state,
@@ -150,23 +228,42 @@ namespace hydro {
                                      const timesteps::StepPointers&     steps,
                                      timesteps::Half                    half,
                                      double                             lowest_specific_energy,
-                                     const gas::ConservedPointers&      conserved) {
+                                     const double*                      step_mass,
+                                     const double*                      exposure,
+                                     double*                            exposure_out,
+                                     const gas::ConservedPointers&      conserved,
+                                     int*                               count) {
             const gas::Primitive      w        = gas::load(state, cell);
             const gradients::Gradient gradient = gradients::load(gradients, cell);
 
             gas::Conserved outflow{};
+            double         mass_out = 0.0; // per time, before the limiter
+            int            n_faces = 0, n_limited = 0;
             const int      first = mesh.first_face[cell];
             for (int face = first; face < first + mesh.n_faces[cell]; face++) {
-                const timesteps::FaceShare share = timesteps::face_share(steps, cell, mesh.neighbour[face], half);
+                const int                  neighbour = mesh.neighbour[face];
+                const timesteps::FaceShare share     = timesteps::face_share(steps, cell, neighbour, half);
                 if (share.time == 0.0) continue;
+                n_faces++;
 
                 const gas::Flux flux = flux_over_face(
                     cell, face, w, gradient, share, mesh, state, gradients, mesh_velocity, lowest_specific_energy);
-                const double amount = share.time * mesh.area[face];
+                const int    upwind     = (flux.mass > 0.0) ? cell : neighbour;
+                const double most       = MOST_OF_UPWIND_MASS * step_mass[upwind];
+                const double limited_by = (exposure && exposure[upwind] > most) ? most / exposure[upwind] : 1.0;
+                if (limited_by < 1.0) n_limited++;
+
+                if (flux.mass > 0.0) mass_out += flux.mass * mesh.area[face];
+
+                const double amount = limited_by * share.time * mesh.area[face];
                 outflow.mass += amount * flux.mass;
                 outflow.momentum += amount * flux.momentum;
                 outflow.energy += amount * flux.energy;
             }
+
+            count[0] = n_faces;
+            count[1] = n_limited;
+            if (exposure_out) exposure_out[cell] = mass_out * timesteps::planned_length_of_step(steps, cell);
 
             gas::Conserved u = gas::load(conserved, cell);
             u.mass -= outflow.mass;

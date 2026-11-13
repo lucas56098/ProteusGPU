@@ -27,6 +27,9 @@ namespace mpi {
     int node_rank();
     int node_size(); // ranks on this node
 
+    // the value of every rank on this node, by node rank; collective on the node
+    std::vector<long long> gather_on_node(long long value);
+
     // what the MPI library says about itself and about GPU memory, as lines for the log; none without MPI
     std::vector<std::string> about_library();
 
@@ -41,6 +44,7 @@ namespace mpi {
     long long max_over_ranks(long long value);
     double max_over_ranks(double value);
     long long sum_over_ranks(long long value);
+    double sum_over_ranks(double value);
     void sum_over_ranks(long long* values, int n); // in place
     bool on_any_rank(bool value);
 

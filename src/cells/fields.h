@@ -39,6 +39,7 @@ namespace cells {
             function(cells.velocity_gradient[d]);
         function(cells.pressure_gradient);
         function(cells.gradient_anchor);
+        function(cells.step_mass);
     }
 
     // the fields a neighbour on another rank reads for the shares of the faces and for the bins; none with one bin
