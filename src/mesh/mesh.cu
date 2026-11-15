@@ -98,6 +98,15 @@ namespace mesh {
             n_ghost_cells = give_ghost_cells_to_ghost_seeds_of_faces(
                 every, n_cells, ghosts, faces, seed, volume, centroid_from_seed);
         }
+        if (mpi::nranks() > 1) {
+            const int       partners = ghosts.n_partner_ranks();
+            const long long all      = mpi::sum_over_ranks((long long)partners);
+            logging::print_labelled("VORONOI",
+                                    "Partner ranks of the ghosts per rank: min %d, mean %.1f, max %d",
+                                    mpi::min_over_ranks(partners),
+                                    (double)all / mpi::nranks(),
+                                    mpi::max_over_ranks(partners));
+        }
         if constexpr (config::moving_mesh && config::individual_timesteps) {
             built_at_sync.grow_to_at_least(n_cells);
             built_at_sync.fill(true);

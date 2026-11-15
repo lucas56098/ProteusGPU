@@ -91,8 +91,9 @@ namespace timesteps {
 
         double length_of_this_top_step() const { return length; }
 
-        // TIME: the next sync, the earliest end of a step on any rank; collective
-        Sync next_sync(const CellSteps& steps, int n_cells) const;
+        // TIME: the earliest end of a step on this rank; the next sync is the earliest over all ranks, at that tick
+        int earliest_end_here(const CellSteps& steps, int n_cells) const;
+        Sync sync_at(int tick) const;
 
         // every cell at the end of a top step, else those whose step ends at the sync; holds until the next call
         mesh::CellList active_cells(const Sync& sync, const mesh::MeshPointers& mesh, const CellSteps& steps);
@@ -110,8 +111,11 @@ namespace timesteps {
                                                 const mesh::MeshPointers& mesh,
                                                 const CellSteps&          steps);
 
-        // keeps the fastest mesh speed of the top step, over all ranks; collective
+        // the fastest mesh speed of the active cells of this rank; the integrator takes the fastest over all ranks
+        // (take_fastest_mesh_speed) with the next sync, in one reduction
         void remember_fastest_mesh_speed(const mesh::CellList& active, const Vec* mesh_velocity);
+        double fastest_mesh_speed_here() const { return fastest_here; }
+        void take_fastest_mesh_speed(double over_ranks);
 
         // how far a seed may have moved since the start of the top step
         double drift_margin(const Sync& sync) const;
@@ -152,6 +156,7 @@ namespace timesteps {
         double tick_length = 0.0; // the length / 2^FINEST_BIN
 
         double fastest_mesh_speed = 0.0; // over all ranks
+        double fastest_here       = 0.0; // of this rank at the last START
 
         // what this rank did in the top step so far, for the log
         int       n_syncs      = 0;

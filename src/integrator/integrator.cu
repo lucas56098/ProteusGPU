@@ -41,7 +41,7 @@ namespace integrator {
                             double                       longest_step_that_matters,
                             signals::Signals&            signals,
                             cells::Cells&                cells);
-        mesh::CellList go_to_next_sync(simulation::Simulation& sim);
+        mesh::CellList go_to_next_sync(simulation::Simulation& sim, const CellsOfSync& of_sync);
         void end_steps_longer_than_their_cfl_step(const params::RunParameters& parameters,
                                                   const mesh::Mesh&            mesh,
                                                   ghosts::Ghosts&              ghosts,
@@ -77,6 +77,15 @@ namespace integrator {
                                 cells::Cells&             cells);
         void end_steps(simulation::Simulation& sim, CellsOfSync& of_sync);
         void apply_limited_fluxes(simulation::Simulation& sim, timesteps::Half half, const mesh::CellList& with_faces);
+        long long try_fluxes(simulation::Simulation& sim, timesteps::Half half, const mesh::CellList& with_faces);
+        void redo_fluxes_with_limiter(simulation::Simulation& sim,
+                                      timesteps::Half         half,
+                                      const mesh::CellList&   with_faces);
+        hydro::FluxCount fluxes_of_half(simulation::Simulation& sim,
+                                        timesteps::Half         half,
+                                        const mesh::CellList&   with_faces,
+                                        const double*           limit_by,
+                                        double*                 exposure_out);
         void print_limited_fluxes(simulation::Simulation& sim);
         void write_snapshot_if_due(simulation::Simulation& sim);
         double seconds_left(const simulation::Simulation& sim);
@@ -101,7 +110,7 @@ namespace integrator {
                     sim.sync, sim.step, seconds_left(sim), sim.mesh.pointers(), of_sync.active, sim.cells.steps);
 
                 // TIME
-                of_sync.active = go_to_next_sync(sim);
+                of_sync.active = go_to_next_sync(sim, of_sync);
                 sim.top.print_sync(sim.sync, of_sync.active, sim.cells.steps);
 
                 // MESH
@@ -207,7 +216,7 @@ namespace integrator {
             }
             {
                 const timers::Scope timer("FLUX");
-                apply_limited_fluxes(sim, timesteps::Half::first, of_sync.with_faces);
+                sim.first_half_too_much = try_fluxes(sim, timesteps::Half::first, of_sync.with_faces);
             }
         }
 
@@ -240,10 +249,18 @@ namespace integrator {
             }
         }
 
-        // TIME: the next sync and its active cells; when the AGN switched on, too long steps end there too; collective
-        mesh::CellList go_to_next_sync(simulation::Simulation& sim) {
+        // TIME: the next sync and its active cells; when the AGN switched on, too long steps end there too; collective.
+        // One reduction for what START left to all ranks: the fastest mesh speed, the next sync, and whether the first
+        // half of the fluxes needs the limiter, which is then taken again here, still at the sync of START
+        mesh::CellList go_to_next_sync(simulation::Simulation& sim, const CellsOfSync& of_sync) {
             const timers::Scope timer("TIME");
-            sim.sync = sim.top.next_sync(sim.cells.steps, sim.cells.n_cells);
+            double              over_ranks[3] = {sim.top.fastest_mesh_speed_here(),
+                                                 -(double)sim.top.earliest_end_here(sim.cells.steps, sim.cells.n_cells),
+                                                 (double)sim.first_half_too_much};
+            mpi::max_over_ranks(over_ranks, 3);
+            sim.top.take_fastest_mesh_speed(over_ranks[0]);
+            if (over_ranks[2] > 0.0) redo_fluxes_with_limiter(sim, timesteps::Half::first, of_sync.with_faces);
+            sim.sync = sim.top.sync_at((int)-over_ranks[1]);
             if (sim.sources.agn_switched_on() && !sim.sync.ends_top_step) {
                 end_steps_longer_than_their_cfl_step(
                     sim.parameters, sim.mesh, sim.ghosts, sim.sources, sim.signals, sim.sync, sim.top, sim.cells);
@@ -448,43 +465,54 @@ namespace integrator {
 
         // optimistic: the fluxes without the limiter, which give the exposures; only if a cell on some rank would lose
         // too much does every cell of the list go back to its conserved variables before, and the fluxes are taken
-        // again with the limiter, once the ghost cells have the exposures; collective
+        // again with the limiter, once the ghost cells have the exposures. The first half decides at TIME
+        // (go_to_next_sync), this second one at once; collective
         void apply_limited_fluxes(simulation::Simulation& sim, timesteps::Half half, const mesh::CellList& with_faces) {
-            const mesh::MeshPointers          on_mesh   = sim.mesh.pointers();
-            const gas::PrimitivePointers      state     = cells::primitive_of(sim.cells);
-            const gas::ConservedPointers      conserved = cells::conserved_of(sim.cells);
-            const gradients::GradientPointers gradients = cells::gradients_of(sim.cells);
-            const timesteps::StepPointers     at_sync   = sim.top.pointers(sim.sync, sim.cells.steps);
-            const double                      lowest    = sim.sources.lowest_specific_energy();
-            const double*                     step_mass = sim.cells.step_mass.data();
-            double*                           exposure  = sim.cells.outflow_exposure.data();
-            const auto                        fluxes    = [&](const double* limit_by, double* exposure_out) {
-                return hydro::apply_fluxes(on_mesh,
-                                           state,
-                                           gradients,
-                                           sim.cells.mesh_velocity.data(),
-                                           at_sync,
-                                           half,
-                                           lowest,
-                                           step_mass,
-                                           limit_by,
-                                           exposure_out,
-                                           with_faces,
-                                           conserved);
-            };
+            if (mpi::sum_over_ranks(try_fluxes(sim, half, with_faces)) > 0)
+                redo_fluxes_with_limiter(sim, half, with_faces);
+        }
 
+        // the fluxes without the limiter, after a backup of the conserved variables of the list; returns how many cells
+        // of the list would lose too much
+        long long try_fluxes(simulation::Simulation& sim, timesteps::Half half, const mesh::CellList& with_faces) {
             sim.cells.conserved_backup.grow_to_at_least(with_faces.n);
-            hydro::save_conserved(with_faces, conserved, sim.cells.conserved_backup.data());
-            hydro::FluxCount count = fluxes(nullptr, exposure);
-            sim.flux_passes++;
-            if (mpi::sum_over_ranks(hydro::count_over_exposed(with_faces, step_mass, exposure)) > 0) {
-                hydro::restore_conserved(with_faces, sim.cells.conserved_backup.data(), conserved);
-                cells::copy_outflow_exposure_to_ghost_cells(sim.cells, sim.ghosts);
-                count = fluxes(exposure, nullptr);
-                sim.redone_passes++;
-            }
+            hydro::save_conserved(with_faces, cells::conserved_of(sim.cells), sim.cells.conserved_backup.data());
+            const hydro::FluxCount count =
+                fluxes_of_half(sim, half, with_faces, nullptr, sim.cells.outflow_exposure.data());
             sim.fluxes += count.faces;
+            sim.flux_passes++;
+            return hydro::count_over_exposed(with_faces, sim.cells.step_mass.data(), sim.cells.outflow_exposure.data());
+        }
+
+        // the same fluxes again from the backup, with the limiter; the faces were counted by the try; collective
+        void redo_fluxes_with_limiter(simulation::Simulation& sim,
+                                      timesteps::Half         half,
+                                      const mesh::CellList&   with_faces) {
+            hydro::restore_conserved(with_faces, sim.cells.conserved_backup.data(), cells::conserved_of(sim.cells));
+            cells::copy_outflow_exposure_to_ghost_cells(sim.cells, sim.ghosts);
+            const hydro::FluxCount count =
+                fluxes_of_half(sim, half, with_faces, sim.cells.outflow_exposure.data(), nullptr);
             sim.limited_fluxes += count.limited;
+            sim.redone_passes++;
+        }
+
+        hydro::FluxCount fluxes_of_half(simulation::Simulation& sim,
+                                        timesteps::Half         half,
+                                        const mesh::CellList&   with_faces,
+                                        const double*           limit_by,
+                                        double*                 exposure_out) {
+            return hydro::apply_fluxes(sim.mesh.pointers(),
+                                       cells::primitive_of(sim.cells),
+                                       cells::gradients_of(sim.cells),
+                                       sim.cells.mesh_velocity.data(),
+                                       sim.top.pointers(sim.sync, sim.cells.steps),
+                                       half,
+                                       sim.sources.lowest_specific_energy(),
+                                       sim.cells.step_mass.data(),
+                                       limit_by,
+                                       exposure_out,
+                                       with_faces,
+                                       cells::conserved_of(sim.cells));
         }
 
         // the fluxes and thermal floors of the top step over all ranks, as Arepo's FLUX line; collective

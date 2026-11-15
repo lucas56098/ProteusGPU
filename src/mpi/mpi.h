@@ -46,6 +46,7 @@ namespace mpi {
     long long sum_over_ranks(long long value);
     double sum_over_ranks(double value);
     void sum_over_ranks(long long* values, int n); // in place
+    void max_over_ranks(double* values, int n); // in place
     bool on_any_rank(bool value);
 
     // gathers value of all ranks into value_of_rank[nranks]; collective

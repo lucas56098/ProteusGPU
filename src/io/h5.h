@@ -2,6 +2,7 @@
 
 // the HDF5 C API as io uses it: handles that close themselves, and files all ranks open together (included by io.cu)
 
+#include "device/device.h"
 #include "logging/logging.h"
 #include "mpi/mpi.h"
 
@@ -157,9 +158,14 @@ namespace io {
         }
     }
 
-    // a dataset of rows.n_all rows, one dimension for one column; this rank writes its block from values; collective
+    // a dataset of rows.n_all rows, one dimension for one column; this rank writes its block from values; collective.
+    // values may be array memory: HDF5 and MPI-IO only see a copy on the host, as the collective writes of some MPI-IO
+    // layers fail on managed memory (OpenMPI ompio with UCX on GB200)
     template <typename Number>
     void write_rows(hid_t group, const char* name, const Number* values, const Rows& rows, int columns) {
+        std::vector<Number> on_host((size_t)rows.n * (size_t)columns);
+        if (rows.n > 0) device::copy_bytes(on_host.data(), values, (long)on_host.size() * (long)sizeof(Number));
+
         const int     dimensions = (columns == 1) ? 1 : 2;
         const hsize_t shape[2]   = {(hsize_t)rows.n_all, (hsize_t)columns};
         const hsize_t first[2]   = {(hsize_t)rows.first, 0};
@@ -180,7 +186,8 @@ namespace io {
         // a rank without rows still takes part, with a buffer that is not null
         const Number       nothing{};
         const PropertyList transfer(transfer_by_all_ranks());
-        if (H5Dwrite(dataset, hdf5_type_of(values), in_memory, in_file, transfer, (rows.n > 0) ? values : &nothing) <
+        if (H5Dwrite(
+                dataset, hdf5_type_of(values), in_memory, in_file, transfer, (rows.n > 0) ? on_host.data() : &nothing) <
             0) {
             logging::stop_run("OUTPUT: cannot write the dataset %s", name);
         }

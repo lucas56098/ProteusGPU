@@ -102,12 +102,16 @@ namespace timesteps {
         return 4.0 * (sync.ends_top_step ? stop_time - sync.time : length);
     }
 
-    Sync TopStep::next_sync(const CellSteps& steps, int n_cells) const {
-        int tick = TICKS_PER_TOP_STEP;
-        if constexpr (config::individual_timesteps) {
+    int TopStep::earliest_end_here(const CellSteps& steps, int n_cells) const {
+        if constexpr (!config::individual_timesteps) {
+            return TICKS_PER_TOP_STEP;
+        } else {
             const int* end = steps.end.data();
-            tick           = mpi::min_over_ranks(device::min(n_cells, [=] HD(long cell) { return end[cell]; }));
+            return (n_cells > 0) ? device::min(n_cells, [=] HD(long cell) { return end[cell]; }) : TICKS_PER_TOP_STEP;
         }
+    }
+
+    Sync TopStep::sync_at(int tick) const {
         const bool   ends_top_step = (tick == TICKS_PER_TOP_STEP);
         const double time          = ends_top_step ? end_time : start_time + (double)tick * tick_length;
         return Sync{tick, time, ends_top_step};
@@ -195,9 +199,14 @@ namespace timesteps {
     }
 
     void TopStep::remember_fastest_mesh_speed(const mesh::CellList& active, const Vec* mesh_velocity) {
-        const double fastest = mpi::max_over_ranks(
-            device::max(active.n, [=] HD(long i) { return sqrt(norm2(mesh_velocity[active[(int)i]])); }));
-        fastest_mesh_speed = std::max(fastest_mesh_speed, fastest);
+        fastest_here =
+            (active.n > 0)
+                ? device::max(active.n, [=] HD(long i) { return sqrt(norm2(mesh_velocity[active[(int)i]])); })
+                : 0.0;
+    }
+
+    void TopStep::take_fastest_mesh_speed(double over_ranks) {
+        fastest_mesh_speed = std::max(fastest_mesh_speed, over_ranks);
     }
 
     // a seed moves at most once per sync

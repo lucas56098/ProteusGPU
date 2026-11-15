@@ -274,6 +274,15 @@ namespace ghosts {
         });
     }
 
+    int Ghosts::n_partner_ranks() const {
+        std::vector<int> partners(askers);
+        partners.insert(partners.end(), owners.begin(), owners.end());
+        std::sort(partners.begin(), partners.end());
+        partners.erase(std::unique(partners.begin(), partners.end()), partners.end());
+        partners.erase(std::remove(partners.begin(), partners.end(), mpi::rank()), partners.end());
+        return (int)partners.size();
+    }
+
     GhostPointers Ghosts::pointers() const {
         return GhostPointers{n_ghost_seeds,
                              position.data(),

@@ -42,8 +42,17 @@ namespace device {
                                      void*              receive,
                                      const mpi::Blocks& in,
                                      int                item_bytes);
-#if defined(CUDA) && !defined(GPU_AWARE_MPI)
-        void move_bytes(const void* memory, long bytes, int location_type, const char* what);
+#ifdef CUDA
+        // MPI sends from and receives into these, not into array memory: GPUDirect RDMA and the registration cache of
+        // the network work on plain device memory (GPU_AWARE_MPI) or pinned host memory, not on managed memory. They
+        // only grow, and keep their place, so the network registers them once
+        struct StagingBuffer {
+            void* memory = nullptr;
+            long  bytes  = 0;
+        };
+        StagingBuffer staging_to_send;
+        StagingBuffer staging_received;
+        void* staging(StagingBuffer& buffer, long bytes);
 #endif
 
     } // namespace
@@ -171,25 +180,32 @@ namespace device {
 #endif
     }
 
-    // without GPU_AWARE_MPI, the items go to the host for MPI and back to the GPU after
+    // through the staging buffers on the GPU; the block of this rank is copied last, as the items received are copied
+    // back over the whole of receive
     void exchange_items(const void*        send,
                         const mpi::Blocks& out,
                         void*              receive,
                         const mpi::Blocks& in,
                         int                item_bytes) {
-        copy_block_of_this_rank(send, out, receive, in, item_bytes);
-#if defined(CUDA) && !defined(GPU_AWARE_MPI)
+#ifdef CUDA
         if (mpi::nranks() > 1) {
-            move_bytes(send, (long)out.total * item_bytes, cudaMemLocationTypeHost, "items to send");
-            move_bytes(receive, (long)in.total * item_bytes, cudaMemLocationTypeHost, "items to receive");
+            const long send_bytes    = (long)out.total * item_bytes;
+            const long receive_bytes = (long)in.total * item_bytes;
+            void*      to_send       = staging(staging_to_send, send_bytes);
+            void*      received      = staging(staging_received, receive_bytes);
+            if (send_bytes > 0)
+                stop_on_cuda_error(cudaMemcpy(to_send, send, send_bytes, cudaMemcpyDefault), "staging items to send");
+            mpi::exchange_items(to_send, out, received, in, item_bytes);
+            if (receive_bytes > 0) {
+                stop_on_cuda_error(cudaMemcpy(receive, received, receive_bytes, cudaMemcpyDefault),
+                                   "taking the items received");
+            }
+            copy_block_of_this_rank(send, out, receive, in, item_bytes);
+            return;
         }
-        mpi::exchange_items(send, out, receive, in, item_bytes);
-        if (mpi::nranks() > 1) {
-            move_bytes(receive, (long)in.total * item_bytes, cudaMemLocationTypeDevice, "items received");
-        }
-#else
-        mpi::exchange_items(send, out, receive, in, item_bytes);
 #endif
+        copy_block_of_this_rank(send, out, receive, in, item_bytes);
+        mpi::exchange_items(send, out, receive, in, item_bytes);
     }
 
     // what the loops use (declared in loops.h)
@@ -300,16 +316,21 @@ namespace device {
                        (long)out.counts[in_out - out.ranks.begin()] * item_bytes);
         }
 
-#if defined(CUDA) && !defined(GPU_AWARE_MPI)
-        // moves bytes to host or GPU in one go, not page by page as MPI touches them
-        void move_bytes(const void* memory, long bytes, int location_type, const char* what) {
-            if (bytes <= 0) return;
-            const timers::Scope timer("GPU", timers::Type::gpu);
-            cudaMemLocation     to = {};
-            to.type                = (cudaMemLocationType)location_type;
-            if (to.type == cudaMemLocationTypeDevice) stop_on_cuda_error(cudaGetDevice(&to.id), "finding the GPU");
-            stop_on_cuda_error(cudaMemPrefetchAsync(memory, bytes, to, 0, 0), what);
-            if (to.type == cudaMemLocationTypeHost) stop_on_cuda_error(cudaDeviceSynchronize(), what);
+#ifdef CUDA
+        // a quarter more than asked when it grows, so it rarely grows again; plain device memory with GPU_AWARE_MPI,
+        // else pinned host memory
+        void* staging(StagingBuffer& buffer, long bytes) {
+            if (bytes <= buffer.bytes) return buffer.memory;
+            const long size = bytes + bytes / 4;
+#ifdef GPU_AWARE_MPI
+            if (buffer.memory) stop_on_cuda_error(cudaFree(buffer.memory), "freeing a staging buffer");
+            stop_on_cuda_error(cudaMalloc(&buffer.memory, size), "allocating a staging buffer for MPI");
+#else
+            if (buffer.memory) stop_on_cuda_error(cudaFreeHost(buffer.memory), "freeing a staging buffer");
+            stop_on_cuda_error(cudaMallocHost(&buffer.memory, size), "allocating a staging buffer for MPI");
+#endif
+            buffer.bytes = size;
+            return buffer.memory;
         }
 #endif
 

@@ -110,6 +110,9 @@ namespace ghosts {
 
         GhostPointers pointers() const;
 
+        // the other ranks this rank exchanges ghosts with in this build: those that ask it and those it asks
+        int n_partner_ranks() const;
+
         // the parts of give_ghost_cells_to; public only as nvcc wants GPU loops in public member functions
         void number_new_ghost_cells(const bool* used);
         void order_ghost_cells_by_owner(int n_cells);

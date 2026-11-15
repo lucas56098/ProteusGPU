@@ -182,6 +182,16 @@ namespace mpi {
 #endif
     }
 
+    void max_over_ranks(double* values, int n) {
+#ifdef USE_MPI
+        const timers::Scope timer("MPI_REDUCE", timers::Type::mpi);
+        MPI_Allreduce(MPI_IN_PLACE, values, n, MPI_DOUBLE, MPI_MAX, world.comm);
+#else
+        (void)values;
+        (void)n;
+#endif
+    }
+
     bool on_any_rank(bool value) {
         return max_over_ranks(value ? 1 : 0) == 1;
     }
