@@ -54,6 +54,10 @@ namespace domain {
     // whether the ball lies inside [0, 1) and touches no other rank; then this rank holds every cell inside it
     HD inline bool ball_is_inside_this_rank(const DomainPointers& domain, const Vec& center, double radius);
 
+    // how far position lies inside the largest cube of the curve around it that holds keys of this rank only, 0 if
+    // there is none; every point nearer than that belongs to this rank. Costs one key, not a walk from the whole box
+    HD inline double room_in_own_cube(const DomainPointers& domain, const Vec& position);
+
     // plain pointers to the cuts, for kernels
     struct DomainPointers {
         int             n_ranks;

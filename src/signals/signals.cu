@@ -19,8 +19,8 @@ namespace signals {
         // margin on the bound of a box, so that rounding never skips a cell that would reach the cell sooner
         constexpr double BOUND_SAFETY = 1e-10;
 
-        constexpr int ROOT_OF_RANK_TREE      = 1;
-        constexpr int MAX_DEPTH_OF_RANK_TREE = 64;
+        // a ball rarely reaches many ranks; remembering a few keeps most ranks from getting the same query twice
+        constexpr int RANKS_REMEMBERED = 16;
 
         void put_cells_in_tree_order(const ngbtree::TreePointers&  tree,
                                      const int*                    point,
@@ -45,19 +45,22 @@ namespace signals {
                                 const double*                 sound_in_tree,
                                 const Bounds*                 bounds_of_node,
                                 Query*                        query,
+                                const domain::DomainPointers& domain,
+                                double                        drift_margin,
                                 BetweenRanks&                 between);
-        void fill_tree_over_ranks(const BoundsOfRank& mine, int n_ranks, device::Array<BoundsOfRank>& of_node);
+        Bounds gather_bounds_of_ranks(const Bounds& mine, int n_ranks, device::Array<Bounds>& of_rank);
         template <typename Function>
-        HD void for_each_rank_that_might_reach(const Query&        query,
-                                               const BoundsOfRank* of_node,
-                                               int                 n_ranks,
-                                               int                 here,
-                                               Function            function);
-        HD BoundsOfRank both_ranks(const BoundsOfRank& a, const BoundsOfRank& b);
+        HD void for_each_rank_that_might_reach(const Query&                  query,
+                                               const domain::DomainPointers& domain,
+                                               const Bounds*                 of_rank,
+                                               const Bounds&                 of_all,
+                                               double                        drift_margin,
+                                               Function                      function);
         HD Bounds bounds_of_point(const Vec& velocity, double sound);
         HD Bounds combined(const Bounds& a, const Bounds& b);
         HD double sound_speed_of(const gas::Primitive& w);
         HD double time_at_least(const Query& query, const Vec& box_min, const Vec& box_max, const Bounds& bounds);
+        HD double time_at_least_from_beyond(const Query& query, double distance, const Bounds& bounds);
         HD double signal_time(const Query& query, const Vec& seed, const Vec& velocity, double sound);
 
     } // namespace
@@ -67,6 +70,8 @@ namespace signals {
                                     const gas::PrimitivePointers& state,
                                     double                        cfl_fraction,
                                     double                        longest_step_that_matters,
+                                    const domain::Domain&         domain,
+                                    double                        drift_margin,
                                     double*                       cfl_step) {
         const mesh::MeshPointers    on_mesh = mesh.pointers();
         const ngbtree::TreePointers tree    = mesh.tree();
@@ -109,8 +114,17 @@ namespace signals {
         }
         if (mpi::nranks() > 1) {
             const timers::Scope timer("OTHER_RANKS");
-            search_other_ranks(
-                cells, tree, on_mesh, state, velocity_in_tree, sound_in_tree, bounds_of_node, query, between_ranks);
+            search_other_ranks(cells,
+                               tree,
+                               on_mesh,
+                               state,
+                               velocity_in_tree,
+                               sound_in_tree,
+                               bounds_of_node,
+                               query,
+                               domain.pointers(),
+                               drift_margin,
+                               between_ranks);
         }
 
         device::parallel_for(cells.n, [=] HD(long i) {
@@ -179,27 +193,22 @@ namespace signals {
                                 const double*                 sound_in_tree,
                                 const Bounds*                 bounds_of_node,
                                 Query*                        query,
+                                const domain::DomainPointers& domain,
+                                double                        drift_margin,
                                 BetweenRanks&                 between) {
             const int n_ranks = mpi::nranks();
-            const int here    = mpi::rank();
 
-            // the bounds of every rank
-            const Vec*   seed  = mesh.seed;
-            BoundsOfRank empty = {Vec{}, Vec{}, Bounds{-1.0, Vec{}, Vec{}}};
-            for (int d = 0; d < config::dim; d++) {
-                empty.box_min[d] = INFINITY;
-                empty.box_max[d] = -INFINITY;
-            }
-            const BoundsOfRank mine = device::reduce(
+            // the speeds of every rank; its cells lie in its part of the curve, widened by the drift margin
+            const Bounds mine = device::reduce(
                 mesh.n_cells,
-                empty,
+                Bounds{-1.0, Vec{}, Vec{}},
                 [=] HD(long i) {
                     const gas::Primitive w = gas::load(state, (int)i);
-                    return BoundsOfRank{seed[i], seed[i], bounds_of_point(w.velocity, sound_speed_of(w))};
+                    return bounds_of_point(w.velocity, sound_speed_of(w));
                 },
-                [=] HD(const BoundsOfRank& a, const BoundsOfRank& b) { return both_ranks(a, b); });
-            fill_tree_over_ranks(mine, n_ranks, between.of_node);
-            const BoundsOfRank* of_node = between.of_node.data();
+                [=] HD(const Bounds& a, const Bounds& b) { return combined(a, b); });
+            const Bounds  of_all  = gather_bounds_of_ranks(mine, n_ranks, between.of_rank);
+            const Bounds* of_rank = between.of_rank.data();
 
             // the pairs of a cell of the list and a rank; sent in the order of the ranks
             between.n_pairs_of_entry.grow_to_at_least(cells.n);
@@ -207,7 +216,7 @@ namespace signals {
             int* n_pairs_of_entry = between.n_pairs_of_entry.data();
             device::parallel_for(cells.n, [=] HD(long i) {
                 int n = 0;
-                for_each_rank_that_might_reach(query[i], of_node, n_ranks, here, [&](int) { n++; });
+                for_each_rank_that_might_reach(query[i], domain, of_rank, of_all, drift_margin, [&](int) { n++; });
                 n_pairs_of_entry[i] = n;
             });
             const int n_pairs = device::offsets_from_counts(cells.n, n_pairs_of_entry, between.first_pair.data());
@@ -220,8 +229,9 @@ namespace signals {
             int*       pair_in_order = between.pair_in_order.data();
             const int* first_pair    = between.first_pair.data();
             device::parallel_for(cells.n, [=] HD(long i) {
+                if (n_pairs_of_entry[i] == 0) return;
                 int pair = first_pair[i];
-                for_each_rank_that_might_reach(query[i], of_node, n_ranks, here, [&](int rank) {
+                for_each_rank_that_might_reach(query[i], domain, of_rank, of_all, drift_margin, [&](int rank) {
                     entry_of_pair[pair] = (int)i;
                     key_of_pair[pair]   = (uint64_t)rank * (uint64_t)n_pairs + (uint64_t)pair;
                     pair_in_order[pair] = pair;
@@ -262,48 +272,66 @@ namespace signals {
             });
         }
 
-        // on every rank the same numbers, from the ranks up to the root; ranks next to each other are neighbours on the
-        // Hilbert curve, so the nodes stay small; collective
-        void fill_tree_over_ranks(const BoundsOfRank& mine, int n_ranks, device::Array<BoundsOfRank>& of_node) {
-            std::vector<BoundsOfRank> nodes(2 * n_ranks);
-            mpi::gather_one_item_from_all_ranks(&mine, (int)sizeof(BoundsOfRank), nodes.data() + n_ranks);
-            for (int node = n_ranks - 1; node >= ROOT_OF_RANK_TREE; node--)
-                nodes[node] = both_ranks(nodes[2 * node], nodes[2 * node + 1]);
-
-            of_node.grow_to_at_least(2 * n_ranks);
-            std::memcpy(of_node.data(), nodes.data(), sizeof(BoundsOfRank) * 2 * n_ranks);
+        // the same numbers on every rank; returns the bounds of all of them; collective
+        Bounds gather_bounds_of_ranks(const Bounds& mine, int n_ranks, device::Array<Bounds>& of_rank) {
+            std::vector<Bounds> all(n_ranks);
+            mpi::gather_one_item_from_all_ranks(&mine, (int)sizeof(Bounds), all.data());
+            of_rank.grow_to_at_least(n_ranks);
+            Bounds of_all{-1.0, Vec{}, Vec{}};
+            for (int r = 0; r < n_ranks; r++) {
+                of_rank[r] = all[r];
+                of_all     = combined(of_all, all[r]);
+            }
+            return of_all;
         }
 
-        // a node holds its ranks, so no rank below a node that cannot reach the cell sooner can reach it sooner either
+        // the cubes of the Hilbert curve from the whole box down, as domain::for_each_rank_touched_by_ball: a cube of
+        // one other rank gives the rank if its cells might reach the cell sooner, a cube of several ranks splits if
+        // any cell might; every cube widened by the drift margin, as a seed may have left the part of its rank. Most
+        // cubes are too far for a cell of any rank, which is tested first, as it needs no keys. A cell deep inside a
+        // cube of this rank needs no walk: every cube of another rank lies outside that cube, so at least the room in
+        // it less the drift margin away
         template <typename Function>
-        HD void for_each_rank_that_might_reach(const Query&        query,
-                                               const BoundsOfRank* of_node,
-                                               int                 n_ranks,
-                                               int                 here,
-                                               Function            function) {
-            int waiting[MAX_DEPTH_OF_RANK_TREE];
-            int n_waiting        = 0;
-            waiting[n_waiting++] = ROOT_OF_RANK_TREE;
+        HD void for_each_rank_that_might_reach(const Query&                  query,
+                                               const domain::DomainPointers& domain,
+                                               const Bounds*                 of_rank,
+                                               const Bounds&                 of_all,
+                                               double                        drift_margin,
+                                               Function                      function) {
+            const double room = domain::room_in_own_cube(domain, query.position) - drift_margin;
+            if (room > 0.0 && !(time_at_least_from_beyond(query, room, of_all) < query.shortest)) return;
+
+            domain::Cube waiting[domain::MAX_WAITING_CUBES];
+            int          n_waiting = 0;
+            int          remembered[RANKS_REMEMBERED];
+            int          n_remembered = 0;
+            waiting[n_waiting++]      = domain::Cube{0, {}};
             while (n_waiting > 0) {
-                const int           node = waiting[--n_waiting];
-                const BoundsOfRank& r    = of_node[node];
-                if (!(time_at_least(query, r.box_min, r.box_max, r.bounds) < query.shortest)) continue;
-                if (node >= n_ranks) {
-                    if (node - n_ranks != here) function(node - n_ranks);
+                const domain::Cube cube = waiting[--n_waiting];
+                const double       side = 1.0 / (double)(1ull << cube.level);
+                Vec                box_min{}, box_max{};
+                for (int d = 0; d < config::dim; d++) {
+                    box_min[d] = cube.corner[d] * side - drift_margin;
+                    box_max[d] = (cube.corner[d] + 1) * side + drift_margin;
+                }
+                if (!(time_at_least(query, box_min, box_max, of_all) < query.shortest)) continue;
+                uint64_t first, last;
+                keys::hilbert_keys_of_cube(cube.level, cube.corner, &first, &last);
+                const int owner = domain::owner_of_key(domain, first);
+                if (owner == domain::owner_of_key(domain, last)) {
+                    if (owner == domain.this_rank) continue;
+                    if (!(time_at_least(query, box_min, box_max, of_rank[owner]) < query.shortest)) continue;
+                    bool known = false;
+                    for (int i = 0; i < n_remembered; i++)
+                        known = known || remembered[i] == owner;
+                    if (known) continue;
+                    if (n_remembered < RANKS_REMEMBERED) remembered[n_remembered++] = owner;
+                    function(owner);
                     continue;
                 }
-                waiting[n_waiting++] = 2 * node + 1;
-                waiting[n_waiting++] = 2 * node;
+                for (int child = 0; child < domain::CHILDREN_OF_CUBE; child++)
+                    waiting[n_waiting++] = domain::child_of(cube, child);
             }
-        }
-
-        HD BoundsOfRank both_ranks(const BoundsOfRank& a, const BoundsOfRank& b) {
-            BoundsOfRank both{a.box_min, a.box_max, combined(a.bounds, b.bounds)};
-            for (int d = 0; d < config::dim; d++) {
-                both.box_min[d] = fmin(a.box_min[d], b.box_min[d]);
-                both.box_max[d] = fmax(a.box_max[d], b.box_max[d]);
-            }
-            return both;
         }
 
         HD Bounds bounds_of_point(const Vec& velocity, double sound) {
@@ -358,6 +386,23 @@ namespace signals {
             const double speed = query.sound + bounds.sound + sqrt(squared_towards) + BOUND_SAFETY * away;
             if (!(speed > 0.0)) return INFINITY;
             return (1.0 - BOUND_SAFETY) * (sqrt(squared_distance) + query.radius) / speed;
+        }
+
+        // never longer than time_at_least for any box at least distance away: the distance is the nearest it can be,
+        // and every approach the fastest of the two sides
+        HD double time_at_least_from_beyond(const Query& query, double distance, const Bounds& bounds) {
+            if (bounds.sound < 0.0) return INFINITY;
+            double squared_towards = 0.0, away = 0.0;
+            for (int d = 0; d < config::dim; d++) {
+                const double from_below = bounds.fastest[d] - query.velocity[d];
+                const double from_above = query.velocity[d] - bounds.slowest[d];
+                const double towards    = fmax(fmax(from_below, from_above), 0.0);
+                squared_towards += towards * towards;
+                away += fmax(fabs(from_below), fabs(from_above));
+            }
+            const double speed = query.sound + bounds.sound + sqrt(squared_towards) + BOUND_SAFETY * away;
+            if (!(speed > 0.0)) return INFINITY;
+            return (1.0 - BOUND_SAFETY) * ((1.0 - BOUND_SAFETY) * distance + query.radius) / speed;
         }
 
         // no time where the two part faster than their sound speeds

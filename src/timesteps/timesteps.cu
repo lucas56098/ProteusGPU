@@ -426,7 +426,8 @@ namespace timesteps {
             }
         }
 
-        // every need at least a face neighbour's need minus one, sweep after sweep until none changes; collective
+        // every need at least a face neighbour's need minus one, sweep after sweep until none changes; two sweeps per
+        // global check, as one more sweep after the last change changes nothing; collective
         void limit_needs_by_face_neighbours(const mesh::CellList&     active,
                                             const mesh::MeshPointers& mesh,
                                             ghosts::Ghosts&           ghosts,
@@ -436,8 +437,7 @@ namespace timesteps {
             int* next       = next_need.data();
             int* needed_bin = steps.needed_bin.data();
 
-            long long n_changed = 1;
-            while (n_changed > 0) {
+            const auto sweep = [&]() {
                 ghosts.copy_active_to_ghost_cells(
                     active.is_every_cell(), mesh.n_cells, [&](auto function) { function(steps.needed_bin); });
                 device::parallel_for(active.n, [=] HD(long i) {
@@ -445,9 +445,15 @@ namespace timesteps {
                     const int limited = largest_need_of_face_neighbours(mesh, needed_bin, cell) - 1;
                     next[i]           = (limited > needed_bin[cell]) ? limited : needed_bin[cell];
                 });
-                n_changed = mpi::sum_over_ranks(device::sum(
-                    active.n, [=] HD(long i) { return (long long)(next[i] != needed_bin[active[(int)i]]); }));
+                const long long changed = device::sum(
+                    active.n, [=] HD(long i) { return (long long)(next[i] != needed_bin[active[(int)i]]); });
                 device::parallel_for(active.n, [=] HD(long i) { needed_bin[active[(int)i]] = next[i]; });
+                return changed;
+            };
+            long long n_changed = 1;
+            while (n_changed > 0) {
+                sweep();
+                n_changed = mpi::sum_over_ranks(sweep());
             }
         }
 
@@ -495,10 +501,12 @@ namespace timesteps {
         BinRange bins_of(const mesh::CellList& list, const CellSteps& steps) {
             if constexpr (!config::individual_timesteps) return BinRange{0, 0};
 
-            const int* bin     = steps.bin.data();
-            const int coarsest = mpi::min_over_ranks(device::min(list.n, [=] HD(long i) { return bin[list[(int)i]]; }));
-            const int finest   = mpi::max_over_ranks(device::max(list.n, [=] HD(long i) { return bin[list[(int)i]]; }));
-            return BinRange{coarsest, finest};
+            // one reduction: the coarsest as the largest negative
+            const int* bin       = steps.bin.data();
+            double     bounds[2] = {-(double)device::min(list.n, [=] HD(long i) { return bin[list[(int)i]]; }),
+                                    (double)device::max(list.n, [=] HD(long i) { return bin[list[(int)i]]; })};
+            mpi::max_over_ranks(bounds, 2);
+            return BinRange{(int)-bounds[0], (int)bounds[1]};
         }
 
         void print_fluxes(Half half, const BinRange& bins) {

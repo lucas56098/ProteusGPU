@@ -39,12 +39,15 @@ namespace integrator {
                             const mesh::Mesh&            mesh,
                             const astro::Sources&        sources,
                             double                       longest_step_that_matters,
+                            const domain::Domain&        domain,
+                            double                       drift_margin,
                             signals::Signals&            signals,
                             cells::Cells&                cells);
         mesh::CellList go_to_next_sync(simulation::Simulation& sim, const CellsOfSync& of_sync);
         void end_steps_longer_than_their_cfl_step(const params::RunParameters& parameters,
                                                   const mesh::Mesh&            mesh,
                                                   ghosts::Ghosts&              ghosts,
+                                                  const domain::Domain&        domain,
                                                   const astro::Sources&        sources,
                                                   signals::Signals&            signals,
                                                   const timesteps::Sync&       sync,
@@ -167,6 +170,8 @@ namespace integrator {
                            sim.mesh,
                            sim.sources,
                            sim.top.longest_step_that_matters(sim.sync, stop_time),
+                           sim.domain,
+                           sim.top.drift_margin(sim.sync),
                            sim.signals,
                            sim.cells);
             {
@@ -226,6 +231,8 @@ namespace integrator {
                             const mesh::Mesh&            mesh,
                             const astro::Sources&        sources,
                             double                       longest_step_that_matters,
+                            const domain::Domain&        domain,
+                            double                       drift_margin,
                             signals::Signals&            signals,
                             cells::Cells&                cells) {
             const mesh::MeshPointers     on_mesh = mesh.pointers();
@@ -244,8 +251,14 @@ namespace integrator {
             }
             if constexpr (config::individual_timesteps) {
                 const timers::Scope timer("SIGNALS");
-                signals.shorten_cfl_steps(
-                    list, mesh, state, parameters.cfl_fraction, longest_step_that_matters, cells.cfl_step.data());
+                signals.shorten_cfl_steps(list,
+                                          mesh,
+                                          state,
+                                          parameters.cfl_fraction,
+                                          longest_step_that_matters,
+                                          domain,
+                                          drift_margin,
+                                          cells.cfl_step.data());
             }
         }
 
@@ -262,8 +275,15 @@ namespace integrator {
             if (over_ranks[2] > 0.0) redo_fluxes_with_limiter(sim, timesteps::Half::first, of_sync.with_faces);
             sim.sync = sim.top.sync_at((int)-over_ranks[1]);
             if (sim.sources.agn_switched_on() && !sim.sync.ends_top_step) {
-                end_steps_longer_than_their_cfl_step(
-                    sim.parameters, sim.mesh, sim.ghosts, sim.sources, sim.signals, sim.sync, sim.top, sim.cells);
+                end_steps_longer_than_their_cfl_step(sim.parameters,
+                                                     sim.mesh,
+                                                     sim.ghosts,
+                                                     sim.domain,
+                                                     sim.sources,
+                                                     sim.signals,
+                                                     sim.sync,
+                                                     sim.top,
+                                                     sim.cells);
             }
             return sim.top.active_cells(sim.sync, sim.mesh.pointers(), sim.cells.steps);
         }
@@ -271,6 +291,7 @@ namespace integrator {
         void end_steps_longer_than_their_cfl_step(const params::RunParameters& parameters,
                                                   const mesh::Mesh&            mesh,
                                                   ghosts::Ghosts&              ghosts,
+                                                  const domain::Domain&        domain,
                                                   const astro::Sources&        sources,
                                                   signals::Signals&            signals,
                                                   const timesteps::Sync&       sync,
@@ -282,6 +303,8 @@ namespace integrator {
                            mesh,
                            sources,
                            top.longest_step_that_matters(sync, parameters.time_end),
+                           domain,
+                           top.drift_margin(sync),
                            signals,
                            cells);
             top.end_steps_longer_than(cells.cfl_step.data(), sync, on_mesh, ghosts, cells.steps);
