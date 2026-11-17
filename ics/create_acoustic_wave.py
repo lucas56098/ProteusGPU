@@ -56,7 +56,7 @@ if __name__ == "__main__":
         default_n=32,
         default_dim=3,
         default_mesh_mode="cartesian",
-        default_perturbation=0.00001,
+        default_perturbation=0.05,
     )
     parser.add_argument("--rho_0", type=float, default=1.0)
     parser.add_argument("--p_0", type=float, default=3.0 / 5.0)
