@@ -85,6 +85,7 @@ def main():
         ctx['target'], ctx['radius'],
         np.deg2rad(args.elev_deg),
         np.deg2rad(args.azim_deg),
+        orbit_axis=args.orbit_axis,
     )
 
     sim_t = provider._times.get(snap_idx, 0.0)

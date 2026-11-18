@@ -20,6 +20,14 @@ Example (GPU):
     python visualize/plot3D_anim.py -i output/snapshot_1.hdf5 \
         -o visualize/render.mp4 --frames 240 --width 1280 --height 720
 
+Example (time series, linear mapping, jet along y kept upright, physical labels):
+    python visualize/plot3D_anim.py --snap-pattern output/snapshot_{}.hdf5 \
+        --start-snap 0 --end-snap 239 --frames 240 --fps 15 \
+        -q rho --color-quantity vel_mag --linear --vmin 0 --vmax 2.271 \
+        --color-vmin 0 --color-vmax 0.6 --cmap afmhot --orbit-axis y \
+        --brightness 13 --brightness-gamma 2.8 --smbh \
+        --length-unit kpc --velocity-unit km/s --time-unit Gyr
+
 Example (CPU debug):
     python visualize/plot3D_anim.py -i output/snapshot_1.hdf5 --cpu \
         --width 320 --height 180 --frames 8 --n-steps 256
@@ -54,11 +62,13 @@ def load_snapshot(path, n_ranks=None):
     extent = 1.0  # domain is hardcoded to [0,1]^D in the code
     sim_time = None
 
+    units = None
     for fp in files:
         with h5py.File(fp, 'r') as f:
             if dim is None:
                 dim = int(f['header'].attrs['dimension'])
                 sim_time = float(f['header'].attrs['time'])
+                units = _read_units(f['header'].attrs)
             seeds_parts.append(f['mesh/pos'][:])
             rho_parts.append(f['hydro/rho'][:])
             vel_parts.append(f['hydro/vel'][:])
@@ -71,10 +81,45 @@ def load_snapshot(path, n_ranks=None):
     rho = np.concatenate(rho_parts, axis=0)
     vel = np.concatenate(vel_parts, axis=0)
     E = np.concatenate(E_parts, axis=0)
-    return seeds, rho, vel, E, extent, sim_time
+    return seeds, rho, vel, E, extent, sim_time, units
 
 
-QUANTITIES = ('rho', 'vel_mag', 'energy')
+QUANTITIES = ('rho', 'vel_mag', 'energy', 'temperature', 'xray')
+
+
+# Physical-unit display factors. Each entry is (unit-in-cgs, suffix).
+# 'code' means "no conversion" — display value 1:1 in whatever the sim uses.
+_LEN_CM   = {'code': None,  'pc':   3.0857e18, 'kpc':   3.0857e21, 'Mpc':   3.0857e24}
+_VEL_CMPS = {'code': None,  'cm/s': 1.0,       'km/s':  1.0e5}
+_TIME_S   = {'code': None,  's':    1.0,       'yr':    3.1557e7,  'Myr':   3.1557e13, 'Gyr': 3.1557e16}
+
+
+def _read_units(header_attrs):
+    """cgs unit factors from a snapshot header, or None when the header has
+    none (the code writes them only with ASTRO_PHYSICS). Time unit is derived
+    as UnitLength / UnitVelocity."""
+    if 'UnitLength_in_cm' not in header_attrs or 'UnitVelocity_in_cm_per_s' not in header_attrs:
+        return None
+    u_len = float(header_attrs['UnitLength_in_cm'])
+    u_vel = float(header_attrs['UnitVelocity_in_cm_per_s'])
+    return dict(length_cm=u_len, velocity_cm_per_s=u_vel,
+                time_s=u_len / u_vel if u_vel > 0 else 1.0)
+
+
+def _display_factor(kind, choice, units):
+    """Given a unit kind ('length'/'velocity'/'time'), a CLI choice, and the
+    per-snapshot cgs unit dict, return (multiplicative_factor, suffix). A
+    factor of 1.0 with '' suffix means 'display raw code values'."""
+    if choice == 'code' or units is None:
+        return 1.0, ''
+    table, key = {
+        'length':   (_LEN_CM,   'length_cm'),
+        'velocity': (_VEL_CMPS, 'velocity_cm_per_s'),
+        'time':     (_TIME_S,   'time_s'),
+    }[kind]
+    if choice not in table or table[choice] is None:
+        return 1.0, ''
+    return units[key] / table[choice], choice
 
 
 def _extract_quantity(name, rho, vel, E):
@@ -84,12 +129,32 @@ def _extract_quantity(name, rho, vel, E):
         return np.sqrt((vel ** 2).sum(axis=1))
     if name == 'energy':
         return E
+    if name == 'temperature':
+        # E is total energy per volume: E = rho*u + 0.5*rho*|v|^2
+        # Return specific internal energy u ∝ T (up to μ/k_B in code units).
+        v2 = (vel ** 2).sum(axis=1)
+        return (E - 0.5 * rho * v2) / np.maximum(rho, 1e-30)
+    if name == 'xray':
+        # Mock thermal-bremsstrahlung emissivity ∝ ρ² · √T.
+        v2 = (vel ** 2).sum(axis=1)
+        u = (E - 0.5 * rho * v2) / np.maximum(rho, 1e-30)
+        return rho * rho * np.sqrt(np.maximum(u, 1e-30))
     raise ValueError(f"unknown quantity: {name}")
 
 
-def build_transfer_function(name='fire', n=256, opacity_gamma=2.0):
+def build_transfer_function(name='fire', n=256, opacity_gamma=2.0,
+                            tf_mu1=None, tf_s1=0.05,
+                            tf_mu2=None, tf_s2=0.05):
     """Return [n,4] float32 RGBA LUT. Alpha here is the opacity multiplier κ
-    (not the final composited alpha) — gets fed to (1 - exp(-κ*dt))."""
+    (not the final composited alpha) — gets fed to (1 - exp(-κ*dt)).
+
+    Opacity modes:
+    - monotonic (default, both mu unset): κ(t) = t ** opacity_gamma
+    - single Gaussian bump (only one mu set): κ(t) = exp(-(t-μ)²/(2σ²))
+    - double Gaussian bump (both mu set): sum of the two Gaussians (additive
+      where they overlap; each peaks at 1). Useful for showing two populations
+      — e.g. μ1 near the cold-gas band, μ2 near the hot cocoon band.
+    """
     t = np.linspace(0, 1, n)
 
     if name == 'fire':
@@ -97,6 +162,37 @@ def build_transfer_function(name='fire', n=256, opacity_gamma=2.0):
         g = np.clip(2.5 * t - 1.0, 0, 1)
         b = np.clip(3.0 * t - 2.3, 0, 1) + 0.35 * np.exp(-((t - 0.05) / 0.08)**2)
         b = np.clip(b, 0, 1)
+    elif name == 'coolwarm_dark':
+        # Diverging cmap with a *dark* middle (Berlin-style pivot). Blue half
+        # samples GnBu, red half samples YlOrRd — so each side has its own
+        # tonal variation instead of a flat blue↔red interpolation. The
+        # brightness envelope (d^0.6, d = 2|t-0.5|) fades both sides to black
+        # at the pivot so neutral gas disappears into the background.
+        import matplotlib as mpl
+        gnbu  = mpl.colormaps['GnBu']
+        ylord = mpl.colormaps['YlOrRd']
+
+        d = 2.0 * np.abs(t - 0.5)           # 1 at edges, 0 at pivot
+        env = d ** 0.6                       # soft-shoulder brightness fade
+
+        # Per-side palette sweep. Blue half skips GnBu's yellow-green bottom
+        # (pos>=0.42) so near-pivot is a light teal-blue, edge is a saturated
+        # blue but stops before near-black navy that would vanish on black bg.
+        left  = t <= 0.5
+        right = ~left
+        pos = np.empty_like(t)
+        pos[left]  = 0.65 + 0.30 * d[left]   # 0.65 near pivot (clean blue) → 0.95 (deep navy) at edge
+        pos[right] = 0.20 + 0.55 * d[right]  # 0.20 near pivot (bright yellow) → 0.75 (fiery red-orange) at edge
+
+        r = np.empty_like(t)
+        g = np.empty_like(t)
+        b = np.empty_like(t)
+
+        for mask, palette in ((left, gnbu), (right, ylord)):
+            rgba = palette(pos[mask])        # (N,4) samples of chosen palette
+            r[mask] = rgba[:, 0] * env[mask]
+            g[mask] = rgba[:, 1] * env[mask]
+            b[mask] = rgba[:, 2] * env[mask]
     elif name == 'ice':
         r = np.clip(1.4 * t - 0.5, 0, 1)
         g = np.clip(1.2 * t - 0.05, 0, 1)
@@ -106,11 +202,18 @@ def build_transfer_function(name='fire', n=256, opacity_gamma=2.0):
         g = np.clip(1.6 * t + 0.05, 0, 1)
         b = np.clip(1.4 - 1.6 * t + 0.5 * np.exp(-((t-0.85)/0.1)**2), 0, 1)
     else:
-        import matplotlib.cm as cm
-        rgba = cm.get_cmap(name)(t)
+        import matplotlib as mpl
+        rgba = mpl.colormaps[name](t)
         r, g, b = rgba[:, 0], rgba[:, 1], rgba[:, 2]
 
-    a = t ** opacity_gamma
+    if tf_mu1 is None and tf_mu2 is None:
+        a = t ** opacity_gamma
+    else:
+        a = np.zeros_like(t)
+        if tf_mu1 is not None:
+            a = a + np.exp(-((t - tf_mu1) ** 2) / (2.0 * max(tf_s1, 1e-4) ** 2))
+        if tf_mu2 is not None:
+            a = a + np.exp(-((t - tf_mu2) ** 2) / (2.0 * max(tf_s2, 1e-4) ** 2))
     return np.stack([r, g, b, a], axis=1).astype(np.float32)
 
 
@@ -267,13 +370,16 @@ __global__ void raycast_voronoi(
     float fov,
     int W, int H,
     int n_steps,
+    // These are "map-space" (log(vmin/vmax) if log_map==1, else raw vmin/vmax).
     float log_vmin_op, float log_vmax_op,
     float log_vmin_c,  float log_vmax_c,
+    int log_map,
     float opacity_scale,
     const float4* __restrict__ tf, int tf_n,
     float bg_r, float bg_g, float bg_b,
     float box_r, float box_g, float box_b,
     float brightness,
+    float brightness_gamma,
     int do_shade,
     float light_x, float light_y, float light_z,
     float ambient, float shade_h,
@@ -348,15 +454,15 @@ __global__ void raycast_voronoi(
         if (seed_idx < 0) continue;
 
         float val_op = values_op_sorted[seed_idx];
-        float lv_op  = (logf(fmaxf(val_op, 1e-30f)) - log_vmin_op) /
-                       (log_vmax_op - log_vmin_op);
+        float mv_op  = log_map ? logf(fmaxf(val_op, 1e-30f)) : val_op;
+        float lv_op  = (mv_op - log_vmin_op) / (log_vmax_op - log_vmin_op);
         lv_op = fminf(fmaxf(lv_op, 0.f), 1.f);
         int   idx_op = (int)(lv_op * (float)(tf_n - 1));
         float alpha_factor = tf[idx_op].w;
 
         float val_c = values_c_sorted[seed_idx];
-        float lv_c  = (logf(fmaxf(val_c, 1e-30f)) - log_vmin_c) /
-                      (log_vmax_c - log_vmin_c);
+        float mv_c  = log_map ? logf(fmaxf(val_c, 1e-30f)) : val_c;
+        float lv_c  = (mv_c - log_vmin_c) / (log_vmax_c - log_vmin_c);
         lv_c = fminf(fmaxf(lv_c, 0.f), 1.f);
         int   idx_c = (int)(lv_c * (float)(tf_n - 1));
         float4 c = tf[idx_c];
@@ -420,6 +526,15 @@ __global__ void raycast_voronoi(
     Gc *= brightness;
     B  *= brightness;
 
+    // display-gamma mid-tone lift: powf(x, 1/g). g==1 is a no-op; g>1 lifts
+    // mid-tones without pulling highlights or shadows off their endpoints.
+    if (fabsf(brightness_gamma - 1.f) > 1e-4f) {
+        float inv_g = 1.f / brightness_gamma;
+        R  = powf(fmaxf(R,  0.f), inv_g);
+        Gc = powf(fmaxf(Gc, 0.f), inv_g);
+        B  = powf(fmaxf(B,  0.f), inv_g);
+    }
+
     R  = fminf(fmaxf(R,  0.f), 1.f);
     Gc = fminf(fmaxf(Gc, 0.f), 1.f);
     B  = fminf(fmaxf(B,  0.f), 1.f);
@@ -445,7 +560,8 @@ def _cpu_raycast_strip(tree, values_op, values_c,
                        sample_pos, dt_over_ext, opacity_scale,
                        log_vmin_op, log_vmax_op, log_vmin_c, log_vmax_c,
                        tf_alpha, tf_rgb, tf_n,
-                       box_bg, brightness=1.0, shade=None):
+                       box_bg, brightness=1.0, brightness_gamma=1.0,
+                       shade=None, log_map=True):
     """Composite one strip given prebuilt sample positions. Returns (tile_h, W, 3)
     float32 in [0, 1] over hit pixels; non-hit values are arbitrary and must be
     masked by the caller. dt_over_ext is per-step distance / extent.
@@ -480,12 +596,14 @@ def _cpu_raycast_strip(tree, values_op, values_c,
     log_range_op = log_vmax_op - log_vmin_op
     log_range_c  = log_vmax_c  - log_vmin_c
 
-    lv_op = (np.log(np.maximum(val_op, 1e-30)) - log_vmin_op) / log_range_op
+    mv_op = np.log(np.maximum(val_op, 1e-30)) if log_map else val_op
+    lv_op = (mv_op - log_vmin_op) / log_range_op
     lv_op = np.clip(lv_op, 0.0, 1.0)
     idx_op = (lv_op * (tf_n - 1)).astype(np.int32)
     alpha_factor = tf_alpha[idx_op]
 
-    lv_c = (np.log(np.maximum(val_c, 1e-30)) - log_vmin_c) / log_range_c
+    mv_c = np.log(np.maximum(val_c, 1e-30)) if log_map else val_c
+    lv_c = (mv_c - log_vmin_c) / log_range_c
     lv_c = np.clip(lv_c, 0.0, 1.0)
     idx_c = (lv_c * (tf_n - 1)).astype(np.int32)
     c_rgb = tf_rgb[idx_c]  # (tile_h, W, n_steps, 3)
@@ -523,6 +641,8 @@ def _cpu_raycast_strip(tree, values_op, values_c,
     rgb = rgb + (1.0 - A)[..., None] * box_arr
     rgb = rgb / (1.0 + rgb) * 1.2
     rgb = rgb * float(brightness)
+    if abs(brightness_gamma - 1.0) > 1e-4:
+        rgb = np.power(np.maximum(rgb, 0.0), 1.0 / float(brightness_gamma))
     rgb = np.clip(rgb, 0.0, 1.0)
     return rgb
 
@@ -559,7 +679,9 @@ class GPUBackend:
                      cam, fwd, right, up, fov,
                      W, H, n_steps,
                      log_vmin_op, log_vmax_op, log_vmin_c, log_vmax_c,
-                     opacity_scale, bg, box_bg, brightness=1.0, shade=None):
+                     opacity_scale, bg, box_bg, brightness=1.0,
+                     brightness_gamma=1.0, shade=None,
+                     log_map=True):
         if shade is None:
             do_shade, light, ambient, shade_h = 0, (0.0, 0.0, 1.0), 1.0, 0.0
         else:
@@ -585,11 +707,13 @@ class GPUBackend:
              np.int32(W), np.int32(H), np.int32(n_steps),
              np.float32(log_vmin_op), np.float32(log_vmax_op),
              np.float32(log_vmin_c),  np.float32(log_vmax_c),
+             np.int32(1 if log_map else 0),
              np.float32(opacity_scale),
              self.tf, np.int32(self.tf_n),
              np.float32(bg[0]),     np.float32(bg[1]),     np.float32(bg[2]),
              np.float32(box_bg[0]), np.float32(box_bg[1]), np.float32(box_bg[2]),
              np.float32(brightness),
+             np.float32(brightness_gamma),
              np.int32(do_shade),
              np.float32(light[0]), np.float32(light[1]), np.float32(light[2]),
              np.float32(ambient), np.float32(shade_h),
@@ -617,7 +741,9 @@ class CPUBackend:
                      cam, fwd, right, up, fov,
                      W, H, n_steps,
                      log_vmin_op, log_vmax_op, log_vmin_c, log_vmax_c,
-                     opacity_scale, bg, box_bg, brightness=1.0, shade=None):
+                     opacity_scale, bg, box_bg, brightness=1.0,
+                     brightness_gamma=1.0, shade=None,
+                     log_map=True):
         tree      = snap['tree']
         values_op = snap['values_op']
         values_c  = snap['values_c']
@@ -683,7 +809,8 @@ class CPUBackend:
                 opacity_scale,
                 log_vmin_op, log_vmax_op, log_vmin_c, log_vmax_c,
                 tf_alpha, tf_rgb, tf_n,
-                box_bg, brightness=brightness, shade=shade,
+                box_bg, brightness=brightness, brightness_gamma=brightness_gamma,
+                shade=shade, log_map=log_map,
             )
             out[r0:r1] = np.where(tile_hit[..., None], rgb, out[r0:r1])
 
@@ -765,9 +892,35 @@ def draw_cube_edges_on_frame(frame_rgb, extent, cam, fwd, right, up, fov,
     return np.asarray(Image.alpha_composite(img, overlay).convert('RGB'))
 
 
+def draw_smbh_marker_on_frame(frame_rgb, cam, fwd, right, up, fov, W, H,
+                              pos, size_px, edge_px,
+                              fill_rgb=(0, 0, 0), edge_rgb=(255, 255, 255)):
+    """Draw a filled circle at the SMBH world position with a contrasting ring.
+    Coordinates use the same projection as the volume raycaster. No-op if the
+    point is behind the camera or the projected pixel falls outside [-r, W+r]."""
+    p = _project_world_to_pixel(pos, cam, fwd, right, up, fov, W, H)
+    if p is None:
+        return frame_rgb
+    r_outer = max(1, int(size_px)) + max(0, int(edge_px))
+    i, j = p
+    if i < -r_outer or i > W + r_outer or j < -r_outer or j > H + r_outer:
+        return frame_rgb
+    img = Image.fromarray(frame_rgb).convert('RGBA')
+    d = ImageDraw.Draw(img)
+    if edge_px > 0:
+        d.ellipse([i - r_outer, j - r_outer, i + r_outer, j + r_outer],
+                  fill=(int(edge_rgb[0]), int(edge_rgb[1]), int(edge_rgb[2]), 255))
+    r_inner = max(1, int(size_px))
+    d.ellipse([i - r_inner, j - r_inner, i + r_inner, j + r_inner],
+              fill=(int(fill_rgb[0]), int(fill_rgb[1]), int(fill_rgb[2]), 255))
+    return np.asarray(img.convert('RGB'))
+
+
 def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
                  brand='ProteusGPU', brand_color=(200, 200, 205), brand_opacity=0.20,
-                 colorbar=None):
+                 colorbar=None,
+                 length_factor=1.0, length_unit='',
+                 time_factor=1.0, time_unit=''):
     """Burn a HUD onto an (H,W,3) uint8 RGB frame. Returns a new array."""
     H, W = frame_rgb.shape[:2]
     img = Image.fromarray(frame_rgb).convert('RGBA')
@@ -777,7 +930,9 @@ def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
     margin = max(16, int(0.022 * H))
 
     f_time = _load_font('regular', max(16, int(0.030 * H)))
-    t_text = f't = {sim_t:.2f}'
+    t_val = sim_t * float(time_factor)
+    t_suf = f' {time_unit}' if time_unit else ''
+    t_text = f't = {t_val:.2f}{t_suf}'
     bbox = d.textbbox((0, 0), t_text, font=f_time)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     d.text((W - tw - margin, margin), t_text, font=f_time, fill=(255, 255, 255, 230))
@@ -817,7 +972,7 @@ def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
                 vv = np.exp(lv1 - frac * (lv1 - lv0))
             else:
                 vv = vmax - frac * (vmax - vmin)
-            label = f'{vv:.2g}'
+            label = f'{vv:.4g}'
             bbox = d.textbbox((0, 0), label, font=f_tick)
             ltw, lth = bbox[2] - bbox[0], bbox[3] - bbox[1]
             d.line([(cbar_x0 - 6, y), (cbar_x0 - 1, y)],
@@ -826,7 +981,9 @@ def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
                    label, font=f_tick, fill=(255, 255, 255, 230))
 
     f_scale = _load_font('regular', max(20, int(0.038 * H)))
-    label = f'{scale_bar_unit:g}'
+    sb_val = scale_bar_unit * float(length_factor)
+    sb_suf = f' {length_unit}' if length_unit else ''
+    label = f'{sb_val:.4g}{sb_suf}'
     bbox = d.textbbox((0, 0), label, font=f_scale)
     lw, lh = bbox[2] - bbox[0], bbox[3] - bbox[1]
     bar_y = H - margin
@@ -862,16 +1019,30 @@ def camera_basis(cam, target, world_up=(0, 0, 1)):
     return fwd, right, up
 
 
-def orbit_camera(target, radius, elev_rad, azim_rad):
+_AXIS_POLE = {'x': (1, 0, 0), 'y': (0, 1, 0), 'z': (0, 0, 1)}
+
+
+def orbit_camera(target, radius, elev_rad, azim_rad, orbit_axis='z'):
     """Place a camera on the orbit sphere around `target` and return
     (cam, fwd, right, up). Used by both the animation (varying azim_rad over
-    frames) and plot3D.py (fixed angle)."""
-    cam = target + np.array([
-        radius * np.cos(elev_rad) * np.cos(azim_rad),
-        radius * np.cos(elev_rad) * np.sin(azim_rad),
-        radius * np.sin(elev_rad),
-    ], dtype=np.float32)
-    fwd, right, up = camera_basis(cam, target)
+    frames) and plot3D.py (fixed angle).
+
+    `orbit_axis` picks which world axis is the orbit "pole" — the axis kept
+    vertical in the frame as azim sweeps. elev is the angle above the
+    equatorial plane (perpendicular to orbit_axis); azim wraps around it,
+    starting from the next axis in cyclic order (z→x→y→z)."""
+    ce, se = np.cos(elev_rad), np.sin(elev_rad)
+    ca, sa = np.cos(azim_rad), np.sin(azim_rad)
+    if orbit_axis == 'z':      # azim starts at +x, sweeps toward +y
+        offset = np.array([ce * ca, ce * sa, se], dtype=np.float32)
+    elif orbit_axis == 'x':    # azim starts at +y, sweeps toward +z
+        offset = np.array([se, ce * ca, ce * sa], dtype=np.float32)
+    elif orbit_axis == 'y':    # azim starts at +z, sweeps toward +x
+        offset = np.array([ce * sa, se, ce * ca], dtype=np.float32)
+    else:
+        raise ValueError(f"orbit_axis must be one of x/y/z, got {orbit_axis!r}")
+    cam = target + radius * offset
+    fwd, right, up = camera_basis(cam, target, world_up=_AXIS_POLE[orbit_axis])
     return cam, fwd, right, up
 
 
@@ -896,6 +1067,7 @@ class SnapshotProvider:
     def __init__(self, args):
         self.args = args
         self.extent = None
+        self.units = None
         self._fields_share = (args.color_quantity == args.quantity)
         # snap_idx → simulation time
         self._times = {}
@@ -986,11 +1158,13 @@ class SnapshotProvider:
                        np.load(c_p).astype(np.float32, copy=False)
             with h5py.File(path, 'r') as fh:
                 sim_t = float(fh['header'].attrs.get('time', 0.0))
+                self.units = _read_units(fh['header'].attrs)
             extent = 1.0  # domain is hardcoded to [0,1]^D in the code
             print(f"[cache] loaded snap {snap_idx} from {os.path.dirname(seeds_p)}")
         else:
             n_ranks = getattr(self.args, 'n_ranks', None)
-            full_seeds, rho, vel, E, extent, sim_t = load_snapshot(path, n_ranks=n_ranks)
+            full_seeds, rho, vel, E, extent, sim_t, units = load_snapshot(path, n_ranks=n_ranks)
+            self.units = units
             seeds = full_seeds.astype(np.float32, copy=False)
             values_op = _extract_quantity(self.args.quantity, rho, vel, E)\
                             .astype(np.float32, copy=False)
@@ -1099,12 +1273,21 @@ def prepare_render_context(provider, extent, args, backend):
                                          args.pmin, args.pmax)
     vmin_c, vmax_c   = _percentile_range(c_first, args.color_vmin, args.color_vmax,
                                          args.pmin, args.pmax)
-    print(f"[render] opacity '{args.quantity}'  vmin={vmin_op:.3e} vmax={vmax_op:.3e}")
+    print(f"[render] opacity '{args.quantity}'  vmin={vmin_op:.3e} vmax={vmax_op:.3e}"
+          f"  ({'log' if args.log else 'linear'})")
     print(f"[render] color   '{args.color_quantity}'  vmin={vmin_c:.3e}  vmax={vmax_c:.3e}")
-    log_vmin_op, log_vmax_op = np.log(vmin_op), np.log(vmax_op)
-    log_vmin_c,  log_vmax_c  = np.log(vmin_c),  np.log(vmax_c)
+    if args.log:
+        log_vmin_op, log_vmax_op = np.log(vmin_op), np.log(vmax_op)
+        log_vmin_c,  log_vmax_c  = np.log(vmin_c),  np.log(vmax_c)
+    else:
+        log_vmin_op, log_vmax_op = float(vmin_op), float(vmax_op)
+        log_vmin_c,  log_vmax_c  = float(vmin_c),  float(vmax_c)
 
-    tf_np = build_transfer_function(args.cmap, opacity_gamma=args.opacity_gamma)
+    tf_np = build_transfer_function(
+        args.cmap, opacity_gamma=args.opacity_gamma,
+        tf_mu1=args.tf_mu1, tf_s1=args.tf_s1,
+        tf_mu2=args.tf_mu2, tf_s2=args.tf_s2,
+    )
     backend.upload_tf(tf_np)
 
     fov = np.tan(np.deg2rad(args.fov_deg) * 0.5)
@@ -1126,12 +1309,37 @@ def prepare_render_context(provider, extent, args, backend):
         print(f"[shade] enabled: light={shade['light']} ambient={shade['ambient']:.2f} "
               f"h_world={shade['h_world']:.4g} (= {args.shade_h_frac:.4g} * extent)")
 
+    # Physical-unit display factors (1.0/'' when --*-unit is 'code' or header
+    # attrs missing). These convert values at DISPLAY time only — internal
+    # math (kernel, TF, vmin/vmax) stays in code units.
+    len_fac,  len_unit  = _display_factor('length',   args.length_unit,   provider.units)
+    vel_fac,  vel_unit  = _display_factor('velocity', args.velocity_unit, provider.units)
+    time_fac, time_unit = _display_factor('time',     args.time_unit,     provider.units)
+    if provider.units is None and any(u != 'code' for u in
+                                      (args.length_unit, args.velocity_unit, args.time_unit)):
+        print("[units] snapshot header has no UnitLength_in_cm/UnitVelocity_in_cm_per_s "
+              "(run without ASTRO_PHYSICS?) -> labels stay in code units")
+    if provider.units is not None and (len_unit or vel_unit or time_unit):
+        print(f"[units] header L={provider.units['length_cm']:.3e} cm  "
+              f"V={provider.units['velocity_cm_per_s']:.3e} cm/s  "
+              f"T={provider.units['time_s']:.3e} s")
+        if len_unit:  print(f"[units] length:   1 code = {len_fac:.4g} {len_unit}")
+        if vel_unit:  print(f"[units] velocity: 1 code = {vel_fac:.4g} {vel_unit}")
+        if time_unit: print(f"[units] time:     1 code = {time_fac:.4g} {time_unit}")
+
     cbar_info = None
     if not args.no_overlay and not args.no_colorbar:
         cbar_tf_rgb = (np.clip(tf_np[:, :3], 0.0, 1.0) * 255).astype(np.uint8)
+        cb_label = args.color_quantity
+        cb_fac = 1.0
+        # Only vel_mag gets a physical velocity unit for now (rho/energy/temp/xray
+        # need extra conversions or μ; deliberately out of scope).
+        if args.color_quantity == 'vel_mag' and vel_unit:
+            cb_fac = vel_fac
+            cb_label = f'vel_mag [{vel_unit}]'
         cbar_info = dict(tf_rgb=cbar_tf_rgb,
-                         vmin=float(vmin_c), vmax=float(vmax_c),
-                         label=args.color_quantity, log=True)
+                         vmin=float(vmin_c) * cb_fac, vmax=float(vmax_c) * cb_fac,
+                         label=cb_label, log=bool(args.log))
 
     pixels_per_box_unit = args.height / (2.0 * radius * fov)
     scale_bar_pixels = max(2, int(round(args.scale_bar_unit * pixels_per_box_unit)))
@@ -1143,10 +1351,13 @@ def prepare_render_context(provider, extent, args, backend):
         log_vmin_op=log_vmin_op, log_vmax_op=log_vmax_op,
         log_vmin_c=log_vmin_c,   log_vmax_c=log_vmax_c,
         vmin_op=vmin_op, vmax_op=vmax_op, vmin_c=vmin_c, vmax_c=vmax_c,
+        log_map=bool(args.log),
         fov=fov, target=target, radius=radius,
         bg=bg, box_bg=box_bg, shade=shade,
         cbar_info=cbar_info, scale_bar_pixels=scale_bar_pixels,
         tf_np=tf_np,
+        length_factor=len_fac,   length_unit=len_unit,
+        time_factor=time_fac,    time_unit=time_unit,
     )
 
 
@@ -1161,7 +1372,8 @@ def render_one_frame(backend, snap, extent, args, ctx,
         ctx['log_vmin_op'], ctx['log_vmax_op'],
         ctx['log_vmin_c'],  ctx['log_vmax_c'],
         args.opacity_scale, ctx['bg'], ctx['box_bg'],
-        brightness=args.brightness, shade=ctx['shade'],
+        brightness=args.brightness, brightness_gamma=args.brightness_gamma,
+        shade=ctx['shade'], log_map=ctx['log_map'],
     )
     if args.cube_edges:
         frame = draw_cube_edges_on_frame(
@@ -1171,13 +1383,27 @@ def render_one_frame(backend, snap, extent, args, ctx,
             alpha=float(args.cube_edge_alpha),
             width=int(args.cube_edge_width),
         )
+    if args.smbh:
+        frame = draw_smbh_marker_on_frame(
+            frame, cam, fwd, right, up, ctx['fov'],
+            args.width, args.height,
+            pos=tuple(args.smbh_pos),
+            size_px=int(args.smbh_size),
+            edge_px=int(args.smbh_edge_width),
+            fill_rgb=tuple(args.smbh_fill),
+            edge_rgb=tuple(args.smbh_edge),
+        )
     if not args.no_overlay:
         frame = draw_overlay(frame, sim_t, args.scale_bar_unit,
                              ctx['scale_bar_pixels'],
                              brand=args.brand,
                              brand_color=tuple(args.brand_color),
                              brand_opacity=args.brand_opacity,
-                             colorbar=ctx['cbar_info'])
+                             colorbar=ctx['cbar_info'],
+                             length_factor=ctx['length_factor'],
+                             length_unit=ctx['length_unit'],
+                             time_factor=ctx['time_factor'],
+                             time_unit=ctx['time_unit'])
     return frame
 
 
@@ -1223,7 +1449,8 @@ def render_animation(provider, extent, args, backend):
             else:
                 phi = 2 * np.pi * (args.turns
                                    + args.hold_turns * (f - evolve) / max(1, hold))
-            cam, fwd, right, up = orbit_camera(ctx['target'], ctx['radius'], elev, phi)
+            cam, fwd, right, up = orbit_camera(ctx['target'], ctx['radius'], elev, phi,
+                                               orbit_axis=args.orbit_axis)
 
             sim_t = provider._times.get(snap_idx, 0.0)
             frame = render_one_frame(backend, snap, extent, args, ctx,
@@ -1267,16 +1494,38 @@ def add_common_render_args(p):
     p.add_argument('--n-steps', type=int, default=512)
     p.add_argument('--fov-deg', type=float, default=35.0)
     p.add_argument('--elev-deg', type=float, default=20.0)
+    p.add_argument('--orbit-axis', default='z', choices=('x', 'y', 'z'),
+                   help="world axis kept vertical as the camera orbits. Use 'y' "
+                        "for jets aligned with the y-axis so they stay upright.")
     p.add_argument('--radius-factor', type=float, default=1.15,
                    help='multiplier on auto-fit radius (1.0 = bounding sphere just fills view)')
 
     p.add_argument('--cmap', default='fire',
-                   help='fire | ice | aurora | <any matplotlib cmap>')
+                   help='fire | ice | aurora | coolwarm_dark | <any matplotlib cmap>')
     p.add_argument('--opacity-scale', type=float, default=4.0,
                    help='optical depth multiplier; the kernel scales by a fixed '
                         'historical density factor of 256, so this default '
                         'matches the previous grid-based renderer at --grid 256.')
     p.add_argument('--opacity-gamma', type=float, default=2.0)
+    scale = p.add_mutually_exclusive_group()
+    scale.add_argument('--log', dest='log', action='store_true', default=True,
+                       help='map values to color/opacity in log-space (default). '
+                            '--vmin/--vmax need to be > 0.')
+    scale.add_argument('--linear', dest='log', action='store_false',
+                       help='map values to color/opacity linearly between '
+                            '--vmin and --vmax (and --color-vmin/--color-vmax).')
+    p.add_argument('--tf-mu1', type=float, default=None,
+                   help='center μ1 (in normalized value space [0,1]) of the first '
+                        'opacity Gaussian. When set (with optional --tf-mu2), '
+                        'replaces the default α = t^gamma. Values outside [0,1] '
+                        'push the bump partly off-range.')
+    p.add_argument('--tf-s1', type=float, default=0.05,
+                   help='sigma σ1 of the first Gaussian (only used if --tf-mu1 set)')
+    p.add_argument('--tf-mu2', type=float, default=None,
+                   help='center μ2 of an optional second opacity Gaussian; enables '
+                        'a two-population TF (e.g. cold+hot in the same frame)')
+    p.add_argument('--tf-s2', type=float, default=0.05,
+                   help='sigma σ2 of the second Gaussian (only used if --tf-mu2 set)')
 
     p.add_argument('--vmin', type=float, default=None,
                    help='opacity field vmin (auto from percentile if unset)')
@@ -1291,6 +1540,11 @@ def add_common_render_args(p):
                    help='final-stage RGB multiplier applied after tonemap, '
                         'before the 0-1 clamp. >1 brightens, <1 darkens; '
                         'default 1.0 (no change).')
+    p.add_argument('--brightness-gamma', type=float, default=1.0,
+                   help='display-gamma mid-tone lift applied after --brightness. '
+                        'out = in ** (1/g). g=1 (default) is no-op; g>1 brightens '
+                        'mid-tones without pulling highlights or shadows off their '
+                        'endpoints; g<1 does the opposite (mid-tones darker).')
 
     p.add_argument('--bg', type=float, nargs=3, default=(0.0, 0.0, 0.0),
                    metavar=('R', 'G', 'B'),
@@ -1312,6 +1566,21 @@ def add_common_render_args(p):
                         'channel (default 0.1 gray)')
     p.add_argument('--cube-edge-alpha', type=float, default=1.0,
                    help='opacity of the cube edges, 0-1 (default 1.0)')
+    p.add_argument('--smbh', action='store_true',
+                   help='draw a circular SMBH marker at --smbh-pos over the frame')
+    p.add_argument('--smbh-pos', type=float, nargs=3, default=(0.5, 0.5, 0.5),
+                   metavar=('X', 'Y', 'Z'),
+                   help='SMBH world coordinates for the marker overlay')
+    p.add_argument('--smbh-size', type=int, default=6,
+                   help='radius of the filled core in pixels')
+    p.add_argument('--smbh-edge-width', type=int, default=2,
+                   help='thickness of the contrasting ring, in pixels')
+    p.add_argument('--smbh-fill', type=int, nargs=3, default=(0, 0, 0),
+                   metavar=('R', 'G', 'B'),
+                   help='SMBH core color, 0..255 (default: black)')
+    p.add_argument('--smbh-edge', type=int, nargs=3, default=(255, 255, 255),
+                   metavar=('R', 'G', 'B'),
+                   help='SMBH ring color, 0..255 (default: white)')
     p.add_argument('--cube-edge-width', type=int, default=1,
                    help='line width in pixels for the cube edges (default 1)')
     p.add_argument('--no-cache', action='store_true')
@@ -1319,6 +1588,16 @@ def add_common_render_args(p):
                    help='disable HUD (time, length scale, brand, colorbar)')
     p.add_argument('--no-colorbar', action='store_true',
                    help='disable just the colorbar; keep other HUD elements')
+    p.add_argument('--length-unit', default='code', choices=list(_LEN_CM.keys()),
+                   help="physical length unit for the scale-bar label. 'code' "
+                        "keeps values raw. Requires UnitLength_in_cm in the "
+                        "snapshot header (present by default).")
+    p.add_argument('--velocity-unit', default='code', choices=list(_VEL_CMPS.keys()),
+                   help="physical velocity unit for the colorbar (only when "
+                        "--color-quantity=vel_mag). Requires UnitVelocity_in_cm_per_s.")
+    p.add_argument('--time-unit', default='code', choices=list(_TIME_S.keys()),
+                   help="physical time unit for the t= overlay. Derived from "
+                        "UnitLength/UnitVelocity in the header.")
     p.add_argument('--scale-bar-unit', type=float, default=0.1,
                    help='length scale label in box units (default 0.1)')
     p.add_argument('--brand', default='ProteusGPU',
