@@ -99,16 +99,29 @@ ifeq ($(SYSTYPE),HorekaGH200)
     HDF5_PARALLEL_LIBRARY := -L$(EBROOTHDF5)/lib -lhdf5
 endif
 
-# HoreKa2 Jade (GB200)
-#       module load nvidia-compilers/25.9-CUDA-12.9.1 HDF5/1.14.6-NVHPC-25.9-CUDA-12.9.1 gompi/2025b
-ifeq ($(SYSTYPE),Horeka2)
+# HoreKa2 (H100/H200, x64 login nodes)
+#       module load nvidia-compilers/25.9-CUDA-12.9.1 HDF5/1.14.6-NVHPC-25.9-CUDA-12.9.1 
+ifeq ($(SYSTYPE),Horeka)
     HOST_CXX              := g++
     MPI_CXX               := mpicxx
-    GPU_ARCH              := sm_100f
+    GPU_ARCH              := sm_90
     HDF5_SERIAL_INCLUDE   := -I$(EBROOTHDF5)/include
     HDF5_SERIAL_LIBRARY   := -L$(EBROOTHDF5)/lib -lhdf5
     HDF5_PARALLEL_INCLUDE := -I$(EBROOTHDF5)/include
     HDF5_PARALLEL_LIBRARY := -L$(EBROOTHDF5)/lib -lhdf5
+endif
+
+# HoreKa2 Jade (GB200, arm login nodes)
+#       module load nvidia-compilers/25.9-CUDA-12.9.1 HDF5/1.14.6-NVHPC-25.9-CUDA-12.9.1
+#       module load GCCcore/15.2.0 NVHPC/26.9-CUDA-13.3.0
+ifeq ($(SYSTYPE),Horeka2)
+    HOST_CXX              := g++
+    MPI_CXX               := mpicxx
+    GPU_ARCH              := sm_100f
+    HDF5_SERIAL_INCLUDE   := -I$(HDF5_HOME)/include
+    HDF5_SERIAL_LIBRARY   := -L$(HDF5_HOME)/lib64 -lhdf5
+    HDF5_PARALLEL_INCLUDE := -I$(HDF5_HOME)/include
+    HDF5_PARALLEL_LIBRARY := -L$(HDF5_HOME)/lib64 -lhdf5
 endif
 
 #########################################
@@ -166,7 +179,7 @@ else
 endif
 ifneq ($(call is_on,CUDA),)
     CXX         := nvcc
-    GPU_FLAGS   := -arch=$(GPU_ARCH) -ccbin $(HOST) $(GPU_MATH)
+    GPU_FLAGS   := -arch=$(GPU_ARCH) -ccbin $(HOST) $(GPU_MATH) -lineinfo -g #-G (i.e. -O0)
     CXXFLAGS    := -std=c++17 $(GPU_FLAGS) --extended-lambda -Werror all-warnings $(addprefix -Xcompiler ,$(HOST_FLAGS))
     LDFLAGS     := $(GPU_FLAGS) $(addprefix -Xcompiler ,$(HOST_FLAGS))
     SOURCE_LANG :=

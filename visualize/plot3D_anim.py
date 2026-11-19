@@ -302,7 +302,7 @@ def build_spatial_hash(seeds, extent, G, R):
 KERNEL_SRC = r"""
 extern "C" {
 
-__device__ inline int find_nearest_seed(
+__device__ inline long long find_nearest_seed(
     float px, float py, float pz,
     const float* __restrict__ seeds_sorted,
     int G, float voxel_size,
@@ -335,7 +335,7 @@ __device__ inline int find_nearest_seed(
         int base = voxel_ptr[voxel];
         int n    = voxel_count[voxel];
         for (int s = 0; s < n; ++s) {
-            int sidx = base + s;
+            long long sidx = base + s;
             float sx = seeds_sorted[3 * sidx + 0];
             float sy = seeds_sorted[3 * sidx + 1];
             float sz = seeds_sorted[3 * sidx + 2];
@@ -425,8 +425,7 @@ __global__ void raycast_voronoi(
     if (t0 < 0.f) t0 = 0.f;
 
     float dt = (t1 - t0) / (float)n_steps;
-    // historical opacity-density factor: keeps default --opacity-scale visually
-    // calibrated to the old grid-based renderer with --grid 256.
+    // historical opacity-density factor
     float ds = dt / ext * 256.f;
 
     float lx = 0.f, ly = 0.f, lz = 0.f;
@@ -444,7 +443,7 @@ __global__ void raycast_voronoi(
         float py = cam_y + t * dy;
         float pz = cam_z + t * dz;
 
-        int seed_idx = find_nearest_seed(
+        long long seed_idx = find_nearest_seed(
             px, py, pz,
             seeds_sorted, G, voxel_size,
             voxel_count, voxel_ptr,
@@ -821,11 +820,13 @@ class CPUBackend:
 _FONT_CANDIDATES = {
     'regular': [
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        '/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
         '/usr/share/fonts/TTF/DejaVuSans.ttf',
     ],
     'bold': [
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
         '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
     ],
@@ -928,15 +929,19 @@ def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
     d = ImageDraw.Draw(overlay)
 
     margin = max(16, int(0.022 * H))
+    fontsize = max(16, int(0.030 * H))
+    linewidth = max(3, int(0.0055 * H))
 
-    f_time = _load_font('regular', max(16, int(0.030 * H)))
+    # current time
+    f_time = _load_font('regular', fontsize)
     t_val = sim_t * float(time_factor)
     t_suf = f' {time_unit}' if time_unit else ''
-    t_text = f't = {t_val:.2f}{t_suf}'
+    t_text = f't = {sim_t:.2f}{t_suf}'
     bbox = d.textbbox((0, 0), t_text, font=f_time)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    d.text((W - tw - margin, margin), t_text, font=f_time, fill=(255, 255, 255, 230))
+    d.text((W - tw - margin, H - th - margin), t_text, font=f_time, fill=(255, 255, 255, 230))
 
+    # colorbar
     if colorbar is not None:
         cbar_w = max(20, int(0.025 * W))
         cbar_x1 = W - margin
@@ -951,16 +956,16 @@ def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
         bar_img = Image.fromarray(strip).resize((cbar_w, cbar_h), Image.BILINEAR)
         overlay.paste(bar_img.convert('RGBA'), (cbar_x0, cbar_y0))
         d.rectangle([cbar_x0, cbar_y0, cbar_x1, cbar_y1],
-                    outline=(255, 255, 255, 200), width=1)
+                    outline=(255, 255, 255, 200), width=linewidth)
 
-        f_title = _load_font('regular', max(16, int(0.028 * H)))
+        f_title = _load_font('regular', fontsize)
         title = colorbar['label']
         bbox = d.textbbox((0, 0), title, font=f_title)
         ttw, tth = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        d.text((cbar_x1 - ttw, cbar_y0 - tth - 10),
+        d.text((cbar_x1 - ttw, cbar_y0 - tth - fontsize - margin),
                title, font=f_title, fill=(255, 255, 255, 230))
 
-        f_tick = _load_font('regular', max(13, int(0.022 * H)))
+        f_tick = _load_font('regular', fontsize)
         n_ticks = 5
         log_scale = colorbar.get('log', True)
         vmin, vmax = colorbar['vmin'], colorbar['vmax']
@@ -975,12 +980,13 @@ def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
             label = f'{vv:.4g}'
             bbox = d.textbbox((0, 0), label, font=f_tick)
             ltw, lth = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            d.line([(cbar_x0 - 6, y), (cbar_x0 - 1, y)],
-                   fill=(255, 255, 255, 200), width=1)
-            d.text((cbar_x0 - ltw - 10, y - lth / 2),
+            #d.line([(cbar_x0 - 6, y), (cbar_x0 - 1, y)],
+            #       fill=(255, 255, 255, 200), width=linewidth)
+            d.text((cbar_x0 - ltw - fontsize//2, y - lth / 2),
                    label, font=f_tick, fill=(255, 255, 255, 230))
 
-    f_scale = _load_font('regular', max(20, int(0.038 * H)))
+    # scalebar
+    f_scale = _load_font('regular', fontsize)
     sb_val = scale_bar_unit * float(length_factor)
     sb_suf = f' {length_unit}' if length_unit else ''
     label = f'{sb_val:.4g}{sb_suf}'
@@ -993,8 +999,9 @@ def draw_overlay(frame_rgb, sim_t, scale_bar_unit, scale_bar_pixels,
     d.text((bar_x0 + (scale_bar_pixels - lw) / 2, bar_y - lh - label_gap),
            label, font=f_scale, fill=(255, 255, 255, 230))
     d.line([(bar_x0, bar_y), (bar_x1, bar_y)],
-           fill=(255, 255, 255, 230), width=max(3, int(0.0055 * H)))
+           fill=(255, 255, 255, 230), width=linewidth)
 
+    # code name
     f_brand = _load_font('bold', max(20, int(0.050 * H)))
     bbox = d.textbbox((0, 0), brand, font=f_brand)
     bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -1503,9 +1510,7 @@ def add_common_render_args(p):
     p.add_argument('--cmap', default='fire',
                    help='fire | ice | aurora | coolwarm_dark | <any matplotlib cmap>')
     p.add_argument('--opacity-scale', type=float, default=4.0,
-                   help='optical depth multiplier; the kernel scales by a fixed '
-                        'historical density factor of 256, so this default '
-                        'matches the previous grid-based renderer at --grid 256.')
+                   help='optical depth multiplier')
     p.add_argument('--opacity-gamma', type=float, default=2.0)
     scale = p.add_mutually_exclusive_group()
     scale.add_argument('--log', dest='log', action='store_true', default=True,

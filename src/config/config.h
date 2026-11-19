@@ -92,6 +92,11 @@ namespace config {
 #else
     constexpr bool cuda_profiling = false;
 #endif
+#ifdef SINGLE_STEP
+    constexpr bool single_step = true;
+#else
+    constexpr bool single_step = false;
+#endif
 
 // astrophysical sources: potentials, SMBH, cooling, feedback, limiters
 #ifdef ASTRO_PHYSICS
