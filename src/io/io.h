@@ -15,6 +15,9 @@ namespace io {
     // reads the initial conditions into cells, an even share of the rows per rank; id = row in the file; collective
     void read_initial_conditions(const char* path, cells::Cells& cells);
 
+    // ACOUSTIC_TEST: the same from the acoustic wave made in the code (acoustic_wave.h) instead of a file
+    void make_acoustic_wave(long cells_per_wave, long waves_per_side, cells::Cells& cells);
+
     // makes the output directory; stops the run if it already holds a first snapshot; collective
     void prepare_output_directory(const std::string& directory);
 

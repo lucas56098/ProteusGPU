@@ -154,7 +154,12 @@ namespace begrun {
         Start read_cells(const params::RunParameters& parameters, cells::Cells& cells) {
             const timers::Scope timer("READ");
             if (!parameters.from_last_snapshot) {
-                io::read_initial_conditions(parameters.ic_file.c_str(), cells);
+                if constexpr (config::acoustic_test) {
+                    io::make_acoustic_wave(
+                        parameters.acoustic_cells_per_wave, parameters.acoustic_waves_per_side, cells);
+                } else {
+                    io::read_initial_conditions(parameters.ic_file.c_str(), cells);
+                }
                 return Start{START_TIME, 0, simulation::Snapshots{1, START_TIME + parameters.output_dt}};
             }
             const int last = io::last_snapshot_number(parameters.output_directory);

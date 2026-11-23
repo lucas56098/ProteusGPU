@@ -82,6 +82,12 @@ namespace config {
     constexpr bool output_debug = false;
 #endif
 
+#ifdef ACOUSTIC_TEST
+    constexpr bool acoustic_test = true;
+#else
+    constexpr bool acoustic_test = false;
+#endif
+
 #ifdef ENABLE_PROFILING
     constexpr bool profiling = true;
 #else

@@ -2,6 +2,7 @@
 
 #include "io/io.h"
 
+#include "io/acoustic_wave.h"
 #include "io/h5.h"
 
 #include <dirent.h>
@@ -62,6 +63,44 @@ namespace io {
             if constexpr (config::moving_mesh) cells.mesh_velocity[c] = Vec{};
         }
         logging::print("INPUT: IC file %s loaded successfully!", path);
+    }
+
+    // the rows of a file of these cells, so that the run starts as from the file
+    void make_acoustic_wave(long cells_per_wave, long waves_per_side, cells::Cells& cells) {
+        const long side = cells_per_wave * waves_per_side;
+        if (side > MOST_CELLS_PER_SIDE) {
+            logging::stop_run(
+                "INPUT: the acoustic wave would have %ld cells per side, at most %ld fit the cell numbers",
+                side,
+                MOST_CELLS_PER_SIDE);
+        }
+        const long n_all = (config::dim == 2) ? side * side : side * side * side;
+        const Rows rows  = rows_of_this_rank(n_all);
+        cells.n_cells    = (int)rows.n;
+        cells::make_room_for(cells, cells.n_cells, 0);
+
+        long*      id       = cells.id.data();
+        Vec*       position = cells.position.data();
+        double*    density  = cells.density.data();
+        Vec*       velocity = cells.velocity.data();
+        double*    pressure = cells.pressure.data();
+        Vec*       mesh_v   = cells.mesh_velocity.data();
+        const long first    = rows.first;
+        device::parallel_for_on_cpu(rows.n, [=](long c) {
+            const CellOfFile cell = acoustic_wave_cell(first + c, cells_per_wave, waves_per_side);
+            id[c]                 = first + c;
+            position[c]           = wrapped_into_box(cell.position);
+            density[c]            = cell.density;
+            velocity[c]           = cell.velocity;
+            pressure[c]           = gas::pressure_of(cell.density, cell.velocity, cell.energy);
+            if constexpr (config::moving_mesh) mesh_v[c] = Vec{};
+        });
+        logging::print("INPUT: acoustic wave made in the code: %ld^%d copies of %ld^%d cells, %ld cells",
+                       waves_per_side,
+                       config::dim,
+                       cells_per_wave,
+                       config::dim,
+                       n_all);
     }
 
     // the ranks agree whether the first snapshot is there before any rank writes one

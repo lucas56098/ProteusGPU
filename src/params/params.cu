@@ -4,6 +4,7 @@
 
 #include "logging/logging.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,9 @@ namespace params {
         constexpr double SMALLEST_POSITIVE = std::numeric_limits<double>::min();
         constexpr double NO_UPPER_END      = std::numeric_limits<double>::max();
 
+        // the acoustic wave: cells per wave and waves per side; their product is checked where the wave is made
+        constexpr long MOST_PER_SIDE = 1L << 20;
+
         // the keys and values of a parameter file, and which keys were read
         class ParameterFile {
           public:
@@ -26,6 +30,7 @@ namespace params {
 
             // value of key, a number in [smallest, largest] or a text; meaning goes into the message when it is wrong
             double number(const char* key, double smallest, double largest, const char* meaning);
+            long whole_number(const char* key, long smallest, long largest, const char* meaning);
             std::string text(const char* key, const char* meaning);
 
             bool has(const char* key) const { return value_of.count(key) > 0; }
@@ -57,7 +62,14 @@ namespace params {
         RunParameters run;
         run.from_last_snapshot = argc == 3 && !strcmp(argv[2], "1");
 
-        run.ic_file          = file.text("ic_file", "the initial conditions, an HDF5 file");
+        if constexpr (config::acoustic_test) {
+            run.acoustic_cells_per_wave = file.whole_number(
+                "acoustic_cells_per_wave", 1, MOST_PER_SIDE, "the cells along a side of one acoustic wave");
+            run.acoustic_waves_per_side = file.whole_number(
+                "acoustic_waves_per_side", 1, MOST_PER_SIDE, "the acoustic waves along a side of the box");
+        } else {
+            run.ic_file = file.text("ic_file", "the initial conditions, an HDF5 file");
+        }
         run.output_directory = file.text("output_directory", "where the snapshots go");
         run.output_dt    = file.number("output_dt", SMALLEST_POSITIVE, NO_UPPER_END, "the time between two snapshots");
         run.time_end     = file.number("time_end", SMALLEST_POSITIVE, NO_UPPER_END, "the time the run ends at");
@@ -215,6 +227,15 @@ namespace params {
                                   meaning);
             }
             return number;
+        }
+
+        long ParameterFile::whole_number(const char* key, long smallest, long largest, const char* meaning) {
+            const double value = number(key, (double)smallest, (double)largest, meaning);
+            if (value != std::floor(value)) {
+                logging::stop_run(
+                    "INPUT: %s = %g in %s must be a whole number; %s is %s", key, value, path.c_str(), key, meaning);
+            }
+            return (long)value;
         }
 
         std::string ParameterFile::text(const char* key, const char* meaning) {

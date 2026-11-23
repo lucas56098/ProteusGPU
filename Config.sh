@@ -19,6 +19,8 @@ ENABLE_PROFILING        # hierarchical timers and profile.hdf5
 #SINGLE_STEP            # exit after first timesteps (for scaling tests)
 
 #OUTPUT_DEBUG           # snapshots also hold mesh geometry and more timestep info
+#ACOUSTIC_TEST          # the IC is the acoustic wave made in the code, no ic_file: acoustic_cells_per_wave and
+                        # acoustic_waves_per_side in param.txt (as create_acoustic_wave.py --perturbation 0.05, tiled)
 
 ################################################################
 # hydro options

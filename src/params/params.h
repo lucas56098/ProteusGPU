@@ -20,6 +20,10 @@ namespace params {
         double      memory_limit_in_gb  = 0.0; // per rank
         double      reference_cell_size = 0.0; // of the volume regularization; 0 for the mean cell
 
+        // with ACOUSTIC_TEST, instead of ic_file: the cells along a side of one wave, and the waves along a side
+        long acoustic_cells_per_wave = 0;
+        long acoustic_waves_per_side = 0;
+
         // with ASTRO_PHYSICS: the code units and the sources of the switches turned on
         astro::Parameters astro;
     };
