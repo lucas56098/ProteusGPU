@@ -54,7 +54,7 @@ namespace integrator {
                                                   timesteps::TopStep&          top,
                                                   cells::Cells&                cells);
         void move_mesh(simulation::Simulation& sim, mesh::CellList& active, device::Array<Vec>& seeds);
-        double cut_again_if_unbalanced(domain::Domain& domain, cells::Cells& cells);
+        double cut_again_if_unbalanced(domain::Domain& domain, cells::Cells& cells, long long most_cells, bool& bound);
         double imbalance_of_ranks(const cells::Cells& cells);
         mesh::CellList build_around_active_cells(const timesteps::Sync& sync,
                                                  timesteps::TopStep&    top,
@@ -329,9 +329,11 @@ namespace integrator {
             if (!sim.sync.ends_top_step) return;
 
             double imbalance_before = 0.0;
+            bool   bound            = false;
             {
                 const timers::Scope timer("CUTS");
-                imbalance_before = cut_again_if_unbalanced(sim.domain, sim.cells);
+                imbalance_before =
+                    cut_again_if_unbalanced(sim.domain, sim.cells, sim.parameters.most_cells_per_rank, bound);
             }
             {
                 const timers::Scope timer("MIGRATE");
@@ -339,10 +341,12 @@ namespace integrator {
             }
             if (imbalance_before > 0.0) {
                 logging::print_labelled("DECOMP",
-                                        "Rebalanced at t = %g. Imbalance %.2f -> %.2f",
+                                        "Rebalanced at t = %g. Imbalance %.2f -> %.2f, cells %.2f times the mean%s",
                                         sim.sync.time,
                                         imbalance_before,
-                                        imbalance_of_ranks(sim.cells));
+                                        imbalance_of_ranks(sim.cells),
+                                        domain::imbalance(sim.cells.n_cells),
+                                        bound ? " (most_cells_per_rank bound)" : "");
             }
             {
                 const timers::Scope timer("ORDER");
@@ -362,13 +366,13 @@ namespace integrator {
         }
 
         // new cuts if the ranks are unbalanced; returns the imbalance before them, 0 without new cuts; collective
-        double cut_again_if_unbalanced(domain::Domain& domain, cells::Cells& cells) {
+        double cut_again_if_unbalanced(domain::Domain& domain, cells::Cells& cells, long long most_cells, bool& bound) {
             if constexpr (config::individual_timesteps) {
                 device::Array<long> work("integrator: work of the cells in the top step", cells.n_cells);
                 timesteps::work_of_cells(cells.steps, cells.n_cells, work.data());
                 if (!domain::is_unbalanced_by_work(work.data(), cells.n_cells)) return 0.0;
                 const double before = domain::imbalance_by_work(work.data(), cells.n_cells);
-                domain.cut_by_work(cells.position.data(), work.data(), cells.n_cells);
+                bound               = domain.cut_by_work(cells.position.data(), work.data(), cells.n_cells, most_cells);
                 return before;
             } else {
                 if (!domain::is_unbalanced(cells.n_cells)) return 0.0;

@@ -80,6 +80,10 @@ namespace params {
         }
         run.memory_limit_in_gb =
             file.number("memory_limit_in_gb", SMALLEST_POSITIVE, NO_UPPER_END, "the memory one rank may use, in GB");
+        if (file.has("most_cells_per_rank")) {
+            run.most_cells_per_rank = (long long)file.number(
+                "most_cells_per_rank", 1.0, NO_UPPER_END, "the most cells the rebalancing gives a rank");
+        }
         if constexpr (config::regularization_speed_by_volume > 0.0) {
             if (file.has("vol_ref_cell_size")) {
                 run.reference_cell_size = file.number(

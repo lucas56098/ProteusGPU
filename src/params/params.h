@@ -19,6 +19,7 @@ namespace params {
         double      cfl_fraction        = 0.0; // the share of its CFL step a cell takes
         double      memory_limit_in_gb  = 0.0; // per rank
         double      reference_cell_size = 0.0; // of the volume regularization; 0 for the mean cell
+        long long   most_cells_per_rank = 0; // the rebalancing gives no rank more cells; 0 for no limit
 
         // with ACOUSTIC_TEST, instead of ic_file: the cells along a side of one wave, and the waves along a side
         long acoustic_cells_per_wave = 0;

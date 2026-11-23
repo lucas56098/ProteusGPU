@@ -17,8 +17,9 @@ namespace domain {
         // cut r is the smallest key with at least r N / n_ranks of the N cells of all ranks below it; collective
         void cut_by_number_of_cells(const Vec* positions, int n_cells);
 
-        // the same by work[c]: cut r has at least r W / n_ranks of the work W of all ranks below it; collective
-        void cut_by_work(const Vec* positions, const long* work, int n_cells);
+        // the same by work[c]: cut r has at least r W / n_ranks of the work W of all ranks below it; with most_cells >
+        // 0 no rank gets more cells, the cuts then as near to equal work as that allows; true if it did; collective
+        bool cut_by_work(const Vec* positions, const long* work, int n_cells, long long most_cells);
 
         DomainPointers pointers() const;
 
