@@ -2,7 +2,10 @@
 
 #include "ghosts/ghosts.h"
 
+#include "logging/logging.h"
+
 #include <algorithm>
+#include <climits>
 #include <utility>
 
 namespace ghosts {
@@ -367,6 +370,15 @@ namespace ghosts {
                 });
                 count[q] = n;
             });
+            // the hits are numbered by int: stop with the numbers rather than write past the arrays
+            const long long all_hits = device::sum(queries.total, [=] HD(long q) { return (long long)count[q]; });
+            if (all_hits > (long long)INT_MAX) {
+                logging::stop_run(
+                    "GHOSTS: rank %d holds %lld points in the %d balls asked for, more than an int counts",
+                    mpi::rank(),
+                    all_hits,
+                    queries.total);
+            }
             hits.n = device::offsets_from_counts(queries.total, count, hits.first_of_query.data());
 
             hits.key.grow_to_at_least(hits.n);
