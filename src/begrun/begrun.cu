@@ -89,7 +89,7 @@ namespace begrun {
             const timers::Scope timer("IO_SNAPSHOT");
             io::prepare_output_directory(parameters.output_directory);
             if (parameters.write_snapshots)
-	        if constexpr (!config::single_step)
+                if constexpr (!config::single_step)
                     io::write_snapshot(parameters.output_directory,
                                        0,
                                        start.time,

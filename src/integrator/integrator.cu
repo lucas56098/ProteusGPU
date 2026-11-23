@@ -135,9 +135,8 @@ namespace integrator {
                     write_snapshot_if_due(sim);
                 }
 
-		if constexpr (config::single_step)
-	            if (sim.step > 2)
-		      break;
+                if constexpr (config::single_step)
+                    if (sim.step > 2) break;
             }
         }
         if constexpr (config::individual_timesteps) logging::print("\n%s", timesteps::LINE_BETWEEN_TOP_STEPS);
