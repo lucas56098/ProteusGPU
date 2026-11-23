@@ -83,10 +83,9 @@ namespace mesh {
 
         // what a cell learned in the builds of this top step, as the ghost seeds stay until its end: every point within
         // knowledge - 2 drift_margin of its seed is here, as no seed moved farther than the drift margin since; and its
-        // security radius at its last build, with the drift margin then, for the first guess of the next one
+        // security radius at its last build, for the first guess of the next one
         device::Array<double> knowledge{"mesh: known radius plus twice the drift margin then", 0};
         device::Array<double> last_security_radius{"mesh: security radius at the last build", 0};
-        device::Array<double> drift_at_last_build{"mesh: drift margin at the last build", 0};
 
         // the faces taken so far, one int, and where it stood when the build began
         device::Array<int> face_counter{"mesh: counter of faces", 0};

@@ -46,7 +46,6 @@ namespace mesh {
             const double*          known_radius;
             double*                next_radius;
             double*                last_security_radius;
-            double*                drift_at_last_build;
             Progress*              progress;
             voronoi_cell::Status*  status;
             double*                volume;
@@ -148,7 +147,6 @@ namespace mesh {
             p.known_radius         = work.known_radius.data();
             p.next_radius          = work.next_radius.data();
             p.last_security_radius = work.last_security_radius.data();
-            p.drift_at_last_build  = work.drift_at_last_build.data();
             p.progress             = work.progress.data();
             p.status               = work.status.data();
             p.volume               = volume.data();
@@ -233,7 +231,6 @@ namespace mesh {
                 return;
             }
             p.last_security_radius[cell] = security_radius;
-            p.drift_at_last_build[cell]  = p.drift_margin;
             store(voronoi, cell, p);
         }
 

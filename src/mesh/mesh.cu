@@ -23,7 +23,7 @@ namespace mesh {
         // every round doubles the balls that are still open, so a build needs only a few
         constexpr int MAX_ROUNDS = 24;
 
-        // the first guess of a ball: the security radius of the last build, grown by the drift since and this share
+        // the first guess of a ball: the last security radius, grown by this share; a cell asks again if short
         constexpr double GROWTH_OF_GUESS = 1.1;
 
         void start_build(const Vec*             positions,
@@ -86,7 +86,6 @@ namespace mesh {
         // the ghost seeds go, and the cells may have moved to other places
         work.knowledge.grow_to_at_least(n_cells);
         work.last_security_radius.grow_to_at_least(n_cells);
-        work.drift_at_last_build.grow_to_at_least(n_cells);
         work.knowledge.fill(-1.0);
         work.last_security_radius.fill(-1.0);
         const CellList     every = CellList{n_cells, nullptr};
@@ -368,7 +367,6 @@ namespace mesh {
             Progress*                   progress   = work.progress.data();
             const double*               knowledge  = work.knowledge.data();
             const double*               security   = work.last_security_radius.data();
-            const double*               drift_then = work.drift_at_last_build.data();
             device::parallel_for(cells.n, [=] HD(long i) {
                 const int cell = cells[(int)i];
                 const int t    = tree_index[cell];
@@ -382,7 +380,7 @@ namespace mesh {
                 // the security radius of the last build, else the farthest of the nearest points
                 double guess = 0.0;
                 if (security[cell] > 0.0) {
-                    guess = GROWTH_OF_GUESS * (security[cell] + 2.0 * (drift_margin - drift_then[cell]));
+                    guess = GROWTH_OF_GUESS * security[cell];
                 } else {
                     int neighbours[NEAREST_NEIGHBOURS];
                     ngbtree::nearest_neighbours<NEAREST_NEIGHBOURS>(tree, (int)t, neighbours);
