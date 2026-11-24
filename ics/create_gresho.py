@@ -42,7 +42,12 @@ def fill_gresho(row_lo, n_local, args):
 
     vrot = np.zeros(n_local, dtype=np.float64)
     vrot[inner] = 5.0 * xi[inner]
-    vrot[mid] = 2.0 - 5.0 * xi[mid]
+    if args.broken:
+        # wrong. middle ring spins about ten times too fast for its pressure. just for vis.
+        vrot[mid] = 2.0 * (5.0 - xi[mid])
+    else:
+        # correct.
+        vrot[mid] = 2.0 - 5.0 * xi[mid]
 
     vel = np.zeros((n_local, args.dimension), dtype=np.float64)
     nonzero_radius = radius > 0.0
@@ -65,10 +70,16 @@ if __name__ == "__main__":
         default_mesh_mode="polar_ring",
         fixed={"dimension": 2},
     )
+    parser.add_argument(
+        "--broken", action="store_true",
+        help="Use broken (incorrect) version of the vortex, only for vis! (default: False)",
+    )
     args = parser.parse_args()
 
+    filename = "gresho_broken" if args.broken else "gresho"
+
     write_ic(
-        filename=resolve_filename(args, "gresho"),
+        filename=resolve_filename(args, filename),
         n_global=args.n ** args.dimension,
         dimension=args.dimension,
         fill_fn=fill_gresho,

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Uniform medium at rest — the trivial test IC for Proteus.
 

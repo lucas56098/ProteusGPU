@@ -14,7 +14,8 @@ EXEC      ?= Proteus
 MAKEFLAGS += -j
 
 # fist word of every line in CONFIG that doesnt start with #
-SWITCHES := $(shell awk '!/^[[:space:]]*#/ && NF {print $$1}' $(CONFIG))
+HASH     := \#
+SWITCHES := $(shell awk '!/^[[:space:]]*$(HASH)/ && NF {print $$1}' $(CONFIG))
 is_on     = $(filter $(1),$(SWITCHES))
 
 # ==========================================================
