@@ -3,7 +3,6 @@
 #include "integrator/integrator.h"
 
 #include "astro/astro.h"
-#include "begrun/begrun.h"
 #include "cells/cells.h"
 #include "device/device.h"
 #include "domain/domain.h"
@@ -95,10 +94,7 @@ namespace integrator {
 
     } // namespace
 
-    void run(int argc, char* argv[]) {
-        simulation::Simulation sim;
-        begrun::begrun(argc, argv, sim);
-
+    void run(simulation::Simulation& sim) {
         // one pass per sync; every cell is active at the first one
         CellsOfSync        of_sync{mesh::every_cell(sim.mesh.pointers()), mesh::every_cell(sim.mesh.pointers())};
         device::Array<Vec> seeds("integrator: seeds at the sync", 0);
@@ -143,8 +139,6 @@ namespace integrator {
         if constexpr (config::profiling)
             io::write_profile(sim.parameters.output_directory, sim.profile, profile::profile_of_run());
         logging::print("\nHYDRO: Finished after %d steps at t = %g", sim.step, sim.sync.time);
-
-        begrun::endrun(sim);
     }
 
     namespace {

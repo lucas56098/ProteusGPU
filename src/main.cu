@@ -12,8 +12,10 @@ Version: 0.8
 Authors: Lucas Schleuss (MPA Garching), Dylan Nelson (ITA Heidelberg)
 ===========================================================================*/
 
+#include "begrun/begrun.h"
 #include "integrator/integrator.h"
 #include "mpi/mpi.h"
+#include "simulation/simulation.h"
 #include "timers/timers.h"
 #include <cstdlib>
 
@@ -21,7 +23,13 @@ int main(int argc, char* argv[]) {
     mpi::init(&argc, &argv);
     {
         const timers::Scope total("TOTAL");
-        integrator::run(argc, argv);
+
+        simulation::Simulation sim;
+        begrun::begrun(argc, argv, sim);
+
+        integrator::run(sim);
+
+        begrun::endrun(sim);
     }
     mpi::finalize();
     return EXIT_SUCCESS;

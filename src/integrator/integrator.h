@@ -1,10 +1,14 @@
 #pragma once
 
-// The algorithm of a run: begrun, the loop over the syncs (START, TIME, MESH, FINISH, OUTPUT), endrun.
+// The algorithm of a run: the loop over the syncs (START, TIME, MESH, FINISH, OUTPUT).
+
+namespace simulation {
+    struct Simulation;
+} // namespace simulation
 
 namespace integrator {
 
-    // from the initial conditions or the last snapshot up to time_end; collective
-    void run(int argc, char* argv[]);
+    // from the state begrun left in sim up to time_end; collective
+    void run(simulation::Simulation& sim);
 
 } // namespace integrator
